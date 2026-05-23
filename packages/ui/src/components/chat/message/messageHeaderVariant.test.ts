@@ -1,0 +1,21 @@
+import { describe, expect, test } from 'bun:test';
+
+import { resolveMessageHeaderVariant } from './messageHeaderVariant';
+
+describe('resolveMessageHeaderVariant', () => {
+    test('keeps a recorded thinking level when the model supports it', () => {
+        expect(resolveMessageHeaderVariant('high', ['minimal', 'low', 'medium', 'high'])).toBe('high');
+    });
+
+    test('uses medium as the visible header default when available', () => {
+        expect(resolveMessageHeaderVariant(undefined, ['minimal', 'low', 'medium', 'high'])).toBe('medium');
+    });
+
+    test('uses the first supported thinking level when medium is unavailable', () => {
+        expect(resolveMessageHeaderVariant(undefined, ['low', 'high'])).toBe('low');
+    });
+
+    test('hides the thinking badge for models without thinking variants', () => {
+        expect(resolveMessageHeaderVariant(undefined, [])).toBe(undefined);
+    });
+});

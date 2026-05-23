@@ -1,0 +1,20 @@
+# packages/ui/
+
+## Responsibility
+Workspace package for the shared React UI runtime used by web, Electron, and VS Code shells. It owns app composition, feature components, client-side state, sync/event handling, and runtime API bridging.
+
+## Design
+- **Runtime-agnostic UI package**: runtime differences are abstracted behind injected APIs (`window.__OPENCHAMBER_RUNTIME_APIS__`) and `lib/desktop` helpers.
+- **Store + sync split**: long-lived app/preferences state lives in Zustand stores (`src/stores/*`), while high-frequency live session/message state is handled by `src/sync/*` child stores and event reducers.
+- **Thin entrypoint**: `src/main.tsx` wires providers, hydration side effects, and mounts `App`.
+
+## Flow
+1. Host runtime injects runtime APIs and loads UI entrypoint.
+2. `src/main.tsx` initializes locale/appearance persistence and mounts provider tree.
+3. `src/App.tsx` initializes config/runtime wiring, mounts sync provider, and routes to views.
+4. Feature components consume selectors/hooks from `stores`, `sync`, and `lib` helpers.
+
+## Integration
+- **Depends on**: `@opencode-ai/sdk` (sessions/messages/providers), host-provided runtime APIs, and backend `/api/*` routes.
+- **Consumed by**: `packages/web`, `packages/electron`, and `packages/vscode` renderer entrypoints.
+- **Cross-package contract**: shared types and runtime capability gates (desktop/vscode/web) keep one UI codepath across shells.

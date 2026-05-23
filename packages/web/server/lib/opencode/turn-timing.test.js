@@ -1,0 +1,521 @@
+import express from 'express';
+import request from 'supertest';
+import { describe, expect, it } from 'vitest';
+
+import { createTurnTimingRuntime, registerTurnTimingRoutes } from './turn-timing.js';
+
+describe('turn timing runtime', () => {
+  it('correlates client timing marks with OpenCode turn events', () => {
+    let now = 1_000;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({
+      sessionId: 'ses_1',
+      messageId: 'msg_user',
+      mark: 'send_started',
+      directory: '/project',
+    });
+
+    now = 1_250;
+    runtime.recordClientMark({
+      sessionId: 'ses_1',
+      messageId: 'msg_user',
+      mark: 'prompt_accepted',
+      directory: '/project',
+    });
+
+    now = 1_500;
+    runtime.processOpenCodeEvent({
+      type: 'session.status',
+      properties: {
+        sessionID: 'ses_1',
+        status: { type: 'busy' },
+      },
+    });
+
+    now = 2_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 2_000 },
+        },
+      },
+    });
+
+    now = 3_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'prt_step',
+          messageID: 'msg_assistant',
+          sessionID: 'ses_1',
+          type: 'step-start',
+        },
+      },
+    });
+
+    now = 4_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'prt_tool',
+          messageID: 'msg_assistant',
+          sessionID: 'ses_1',
+          type: 'tool',
+          state: { status: 'running' },
+        },
+      },
+    });
+
+    now = 5_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'prt_tool',
+          messageID: 'msg_assistant',
+          sessionID: 'ses_1',
+          type: 'tool',
+          state: { status: 'completed' },
+        },
+      },
+    });
+
+    now = 6_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: {
+        messageID: 'msg_assistant',
+        partID: 'prt_text',
+        field: 'text',
+        delta: 'Hello',
+      },
+    });
+
+    now = 7_000;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 2_000, completed: 7_000 },
+          finish: 'stop',
+        },
+      },
+    });
+
+    now = 7_100;
+    runtime.processOpenCodeEvent({
+      type: 'session.status',
+      properties: {
+        sessionID: 'ses_1',
+        status: { type: 'idle' },
+      },
+    });
+
+    const recent = runtime.getRecentTimings({ sessionId: 'ses_1' });
+
+    expect(recent.records).toHaveLength(1);
+    expect(recent.records[0]).toEqual(expect.objectContaining({
+      sessionId: 'ses_1',
+      userMessageId: 'msg_user',
+      assistantMessageId: 'msg_assistant',
+      directory: '/project',
+    }));
+    expect(Object.keys(recent.records[0].marks)).toEqual([
+      'send_started',
+      'prompt_accepted',
+      'session_status_busy',
+      'assistant_message_created',
+      'first_part_updated',
+      'first_step_start',
+      'first_tool_started',
+      'first_tool_completed',
+      'first_text_delta',
+      'assistant_message_completed',
+      'session_status_idle',
+    ]);
+    expect(recent.records[0].durationsMs).toEqual(expect.objectContaining({
+      send_started_to_prompt_accepted: 250,
+      prompt_accepted_to_assistant_message_created: 750,
+      prompt_accepted_to_first_text_delta: 4_750,
+      prompt_accepted_to_assistant_message_completed: 5_750,
+    }));
+  });
+
+  it('records first-event marks only once', () => {
+    let now = 1;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({ sessionId: 'ses_1', messageId: 'msg_user', mark: 'send_started' });
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 1 },
+        },
+      },
+    });
+
+    now = 10;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: { messageID: 'msg_assistant', partID: 'a', field: 'text', delta: 'a' },
+    });
+    now = 20;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: { messageID: 'msg_assistant', partID: 'a', field: 'text', delta: 'b' },
+    });
+
+    const record = runtime.getRecentTimings({ sessionId: 'ses_1' }).records[0];
+
+    expect(record.marks.first_text_delta.at).toBe(10);
+  });
+
+  it('records provider metadata and Cursor tool-schema diagnostics without response text', () => {
+    let now = 1;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({
+      sessionId: 'ses_1',
+      messageId: 'msg_user',
+      mark: 'prompt_accepted',
+      metadata: {
+        providerID: 'cursor-acp',
+        modelID: 'composer-2.5',
+        agent: 'builder',
+        variant: 'default',
+      },
+    });
+
+    now = 2;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 2 },
+        },
+      },
+    });
+
+    now = 3;
+    const repeated = 'Checking the relevant profile form file.';
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: { messageID: 'msg_assistant', partID: 'prt_text', field: 'text', delta: repeated },
+    });
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: { messageID: 'msg_assistant', partID: 'prt_text', field: 'text', delta: repeated },
+    });
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: {
+        messageID: 'msg_assistant',
+        partID: 'prt_text',
+        field: 'text',
+        delta: 'Skipped malformed tool call "edit": Invalid arguments for tool "edit": missing required: old_string.',
+      },
+    });
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: {
+        messageID: 'msg_assistant',
+        partID: 'prt_text',
+        field: 'text',
+        delta: 'Tool loop guard stopped repeated schema-invalid calls to "edit" after 4 attempts (limit 2).',
+      },
+    });
+
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 2, completed: 4 },
+          summary: { diffs: [{ additions: 1, deletions: 0 }] },
+        },
+      },
+    });
+
+    const record = runtime.getRecentTimings({ sessionId: 'ses_1' }).records[0];
+
+    expect(record.model).toEqual({
+      providerID: 'cursor-acp',
+      modelID: 'composer-2.5',
+      agent: 'builder',
+      variant: 'default',
+    });
+    expect(record.diagnostics).toMatchObject({
+      malformedToolCallCount: 1,
+      toolLoopGuardCount: 1,
+      repeatedTextFrameCount: 1,
+      mutationEvidence: true,
+    });
+    expect(JSON.stringify(record)).not.toContain(repeated);
+    expect(JSON.stringify(record)).not.toContain('old_string');
+  });
+
+  it('records Cursor workspace and mutating tool diagnostics without raw payloads', () => {
+    let now = 10;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_user',
+      mark: 'send_started',
+      directory: '/project',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+    });
+
+    now = 20;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_user',
+      mark: 'cursor_workspace_repair_started',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+    });
+
+    now = 45;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_user',
+      mark: 'cursor_workspace_repair_completed',
+      metadata: { changed: true, restarted: false, path: '/secret/path.ts' },
+    });
+
+    now = 50;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_user',
+      mark: 'prompt_request_started',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+    });
+
+    now = 60;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_user',
+      mark: 'prompt_accepted',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+    });
+
+    now = 70;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_cursor',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 70 },
+        },
+      },
+    });
+
+    now = 80;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'tool_patch',
+          messageID: 'msg_assistant',
+          sessionID: 'ses_cursor',
+          type: 'tool',
+          tool: 'patchToolCall',
+          state: {
+            status: 'done',
+            input: {
+              patchText: '--- a/src/secret.ts\n+++ b/src/secret.ts\n@@ -1 +1 @@\n-old\n+new',
+            },
+          },
+        },
+      },
+    });
+
+    const record = runtime.getRecentTimings({ sessionId: 'ses_cursor' }).records[0];
+
+    expect(Object.keys(record.marks)).toEqual([
+      'send_started',
+      'cursor_workspace_repair_started',
+      'cursor_workspace_repair_completed',
+      'prompt_request_started',
+      'prompt_accepted',
+      'assistant_message_created',
+      'first_part_updated',
+      'first_tool_completed',
+    ]);
+    expect(record.durationsMs).toMatchObject({
+      cursor_workspace_repair_started_to_cursor_workspace_repair_completed: 25,
+      prompt_request_started_to_prompt_accepted: 10,
+    });
+    expect(record.diagnostics.mutatingToolCalls).toEqual([
+      { tool: 'apply_patch', status: 'done', final: true },
+    ]);
+    expect(record.diagnostics.cursorWorkspaceRepair).toEqual({ changed: true, restarted: false });
+    expect(JSON.stringify(record)).not.toContain('secret.ts');
+    expect(JSON.stringify(record)).not.toContain('patchText');
+  });
+
+  it('correlates proxy timing marks and ignores user text part updates', () => {
+    let now = 100;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({ sessionId: 'ses_1', mark: 'send_started', directory: '/project' });
+    now = 150;
+    runtime.recordClientMark({ sessionId: 'ses_1', mark: 'prompt_accepted', directory: '/project' });
+
+    now = 200;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'prt_user_text',
+          messageID: 'msg_user',
+          sessionID: 'ses_1',
+          type: 'text',
+          text: 'hello',
+        },
+      },
+    });
+
+    now = 300;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 300 },
+        },
+      },
+    });
+
+    now = 400;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'prt_step',
+          messageID: 'msg_assistant',
+          sessionID: 'ses_1',
+          type: 'step-start',
+        },
+      },
+    });
+
+    const recent = runtime.getRecentTimings({ sessionId: 'ses_1' });
+
+    expect(recent.records).toHaveLength(1);
+    expect(recent.records[0]).toEqual(expect.objectContaining({
+      userMessageId: 'msg_user',
+      assistantMessageId: 'msg_assistant',
+    }));
+    expect(recent.records[0].marks.first_part_updated.metadata).toEqual({
+      partId: 'prt_step',
+      type: 'step-start',
+    });
+    expect(recent.records[0].durationsMs).toEqual(expect.objectContaining({
+      send_started_to_prompt_accepted: 50,
+      prompt_accepted_to_assistant_message_created: 150,
+      prompt_accepted_to_first_part_updated: 250,
+    }));
+  });
+
+  it('caps records and evicts old entries', () => {
+    let now = 0;
+    const runtime = createTurnTimingRuntime({
+      now: () => now,
+      maxRecords: 2,
+      maxAgeMs: 50,
+    });
+
+    runtime.recordClientMark({ sessionId: 'ses_1', messageId: 'msg_old', mark: 'send_started' });
+    now = 40;
+    runtime.recordClientMark({ sessionId: 'ses_1', messageId: 'msg_keep_1', mark: 'send_started' });
+    now = 60;
+    runtime.recordClientMark({ sessionId: 'ses_1', messageId: 'msg_keep_2', mark: 'send_started' });
+    now = 89;
+
+    expect(runtime.getRecentTimings({ sessionId: 'ses_1' }).records.map((record) => record.userMessageId)).toEqual([
+      'msg_keep_1',
+      'msg_keep_2',
+    ]);
+
+    now = 110;
+    expect(runtime.getRecentTimings({ sessionId: 'ses_1' }).records.map((record) => record.userMessageId)).toEqual([
+      'msg_keep_2',
+    ]);
+  });
+
+  it('wraps diagnostic route responses while preserving existing fields and status codes', async () => {
+    const app = express();
+    app.use(express.json());
+    const runtime = createTurnTimingRuntime();
+    registerTurnTimingRoutes(app, runtime);
+
+    await request(app)
+      .post('/api/diagnostics/turn-timing/mark')
+      .send({ sessionId: 'ses_1', mark: 'send_started' })
+      .expect(200)
+      .expect((res) => {
+        expect(res.body.ok).toBe(true);
+        expect(res.body.harness).toEqual(expect.objectContaining({
+          status: 'success',
+          summary: 'Turn timing mark recorded',
+        }));
+      });
+
+    await request(app)
+      .post('/api/diagnostics/turn-timing/mark')
+      .send({ mark: 'send_started' })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.ok).toBe(false);
+        expect(res.body.error).toBe('Invalid turn timing mark');
+        expect(res.body.harness).toEqual(expect.objectContaining({
+          status: 'error',
+          recovery: expect.objectContaining({
+            retryable: true,
+            stopCondition: expect.any(String),
+          }),
+        }));
+      });
+
+    await request(app)
+      .get('/api/diagnostics/turn-timing/recent')
+      .expect(200)
+      .expect((res) => {
+        expect(Array.isArray(res.body.records)).toBe(true);
+        expect(res.body.harness).toEqual(expect.objectContaining({
+          status: 'success',
+          summary: 'Turn timing diagnostics loaded',
+        }));
+      });
+  });
+});

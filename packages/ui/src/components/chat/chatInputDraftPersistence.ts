@@ -1,0 +1,151 @@
+export type ComposerDraftTarget =
+  | { kind: "session"; id: string }
+  | { kind: "draft"; id: string }
+  | { kind: "none" }
+
+export const resolveComposerDraftTarget = (
+  sessionId: string | null | undefined,
+  draftId: string | null | undefined,
+): ComposerDraftTarget => {
+  if (sessionId) return { kind: "session", id: sessionId }
+  if (draftId) return { kind: "draft", id: draftId }
+  return { kind: "none" }
+}
+
+export const getComposerDraftTargetKey = (target: ComposerDraftTarget): string => {
+  if (target.kind === "none") return "none"
+  return `${target.kind}:${target.id}`
+}
+
+export const getComposerDraftStorageKey = (target: ComposerDraftTarget): string | null => {
+  if (target.kind === "session") return `openchamber_chat_input_draft_${target.id}`
+  if (target.kind === "draft") return `openchamber_chat_input_draft_draft_${target.id}`
+  return null
+}
+
+export const getComposerConfirmedMentionsStorageKey = (target: ComposerDraftTarget): string | null => {
+  if (target.kind === "session") return `openchamber_chat_confirmed_mentions_${target.id}`
+  if (target.kind === "draft") return `openchamber_chat_confirmed_mentions_draft_${target.id}`
+  return null
+}
+
+const readStorage = (storage: Storage, key: string | null): string => {
+  if (!key) return ""
+  try {
+    return storage.getItem(key) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+const writeStorage = (storage: Storage, key: string | null, value: string): void => {
+  if (!key) return
+  try {
+    if (value) {
+      storage.setItem(key, value)
+    } else {
+      storage.removeItem(key)
+    }
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+const loadMentions = (storage: Storage, target: ComposerDraftTarget): Set<string> => {
+  const raw = readStorage(storage, getComposerConfirmedMentionsStorageKey(target))
+  if (!raw) return new Set()
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((value): value is string => typeof value === "string"))
+  } catch {
+    return new Set()
+  }
+}
+
+const saveMentions = (storage: Storage, target: ComposerDraftTarget, mentions: Set<string>): void => {
+  const key = getComposerConfirmedMentionsStorageKey(target)
+  if (!key) return
+  try {
+    if (mentions.size > 0) {
+      storage.setItem(key, JSON.stringify([...mentions]))
+    } else {
+      storage.removeItem(key)
+    }
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+export const createComposerDraftPersistenceController = (options: {
+  storage: Storage
+  updateDraftText: (draftId: string, text: string) => void
+}) => {
+  const retiredDraftIds = new Set<string>()
+  const lastPersistedDraftByKey = new Map<string, string>()
+
+  const isRetired = (target: ComposerDraftTarget): boolean =>
+    target.kind === "draft" && retiredDraftIds.has(target.id)
+
+  const load = (target: ComposerDraftTarget): string =>
+    readStorage(options.storage, getComposerDraftStorageKey(target))
+
+  const loadConfirmedMentions = (target: ComposerDraftTarget): Set<string> =>
+    loadMentions(options.storage, target)
+
+  const clear = (target: ComposerDraftTarget): void => {
+    const key = getComposerDraftStorageKey(target)
+    writeStorage(options.storage, key, "")
+    saveMentions(options.storage, target, new Set())
+    if (key) lastPersistedDraftByKey.set(key, "")
+  }
+
+  const save = (target: ComposerDraftTarget, draft: string, confirmedMentions: Set<string>): Set<string> => {
+    if (target.kind === "none" || isRetired(target)) {
+      return confirmedMentions
+    }
+
+    const key = getComposerDraftStorageKey(target)
+    if (!key) return confirmedMentions
+    if (lastPersistedDraftByKey.get(key) === draft) {
+      return confirmedMentions
+    }
+
+    writeStorage(options.storage, key, draft)
+    if (target.kind === "draft") {
+      options.updateDraftText(target.id, draft)
+    }
+
+    const activeMentions = new Set<string>()
+    for (const mention of confirmedMentions) {
+      if (draft.includes(`@${mention}`)) {
+        activeMentions.add(mention)
+      }
+    }
+    saveMentions(options.storage, target, activeMentions)
+    lastPersistedDraftByKey.set(key, draft)
+    return activeMentions
+  }
+
+  const retire = (target: ComposerDraftTarget): void => {
+    if (target.kind !== "draft") return
+    retiredDraftIds.add(target.id)
+    clear(target)
+  }
+
+  const release = (target: ComposerDraftTarget): void => {
+    if (target.kind === "draft") {
+      retiredDraftIds.delete(target.id)
+    }
+  }
+
+  return {
+    clear,
+    isRetired,
+    load,
+    loadConfirmedMentions,
+    release,
+    retire,
+    save,
+  }
+}

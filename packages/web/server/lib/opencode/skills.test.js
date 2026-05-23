@@ -1,0 +1,84 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+import { discoverSkills, getSkillSources } from './skills.js';
+
+describe('skill discovery', () => {
+  it('does not treat non-file discovered skill paths as editable markdown sources', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-runtime-skill-'));
+
+    try {
+      const sources = getSkillSources('runtime-helper', root, {
+        name: 'runtime-helper',
+        description: 'Runtime helper',
+        path: '<built-in>',
+        scope: 'user',
+        source: 'opencode',
+        preferDiscoveredPath: true,
+      });
+
+      expect(sources.md.exists).toBe(false);
+      expect(sources.md.path).toBe(null);
+      expect(sources.md.supportingFiles).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps duplicate skill names when their canonical paths differ', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-skills-'));
+    const opencodeSkill = path.join(root, '.opencode', 'skills', 'lint-helper');
+    const agentsSkill = path.join(root, '.agents', 'skills', 'lint-helper');
+    fs.mkdirSync(opencodeSkill, { recursive: true });
+    fs.mkdirSync(agentsSkill, { recursive: true });
+    fs.writeFileSync(path.join(opencodeSkill, 'SKILL.md'), '---\nname: lint-helper\ndescription: Project default\n---\n');
+    fs.writeFileSync(path.join(agentsSkill, 'SKILL.md'), '---\nname: lint-helper\ndescription: Agents skill\n---\n');
+
+    const skills = discoverSkills(root)
+      .filter((skill) => skill.name === 'lint-helper' && skill.path.startsWith(root))
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    expect(skills).toHaveLength(2);
+    expect(skills.map((skill) => skill.path)).toEqual([
+      path.join(root, '.agents', 'skills', 'lint-helper', 'SKILL.md'),
+      path.join(root, '.opencode', 'skills', 'lint-helper', 'SKILL.md'),
+    ]);
+  });
+
+  it('discovers nested user skills from a config skills directory without an active project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-user-skills-'));
+    const originalConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    const skillDir = path.join(root, 'skills', 'superpowers', 'writing-plans');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: writing-plans\ndescription: Plan work\n---\n',
+      'utf8',
+    );
+
+    try {
+      process.env.OPENCODE_CONFIG_DIR = root;
+
+      const skills = discoverSkills(null).filter((skill) => skill.path.startsWith(root));
+
+      expect(skills).toEqual([
+        {
+          name: 'writing-plans',
+          description: 'Plan work',
+          path: path.join(skillDir, 'SKILL.md'),
+          scope: 'user',
+          source: 'opencode',
+        },
+      ]);
+    } finally {
+      if (originalConfigDir === undefined) {
+        delete process.env.OPENCODE_CONFIG_DIR;
+      } else {
+        process.env.OPENCODE_CONFIG_DIR = originalConfigDir;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

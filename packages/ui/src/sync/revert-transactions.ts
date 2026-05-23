@@ -1,0 +1,89 @@
+import type { Message, Session } from "@opencode-ai/sdk/v2/client"
+
+export type RevertTransactionStatus = "pending" | "confirmed" | "failed"
+
+export type RevertTransaction = {
+  messageID: string
+  hiddenMessageIDs?: string[]
+  version: number
+  status: RevertTransactionStatus
+  startedAt: number
+  serverAcknowledged?: boolean
+}
+
+export type RevertAwareState = {
+  session?: Session[]
+  revert_transaction?: Record<string, RevertTransaction | undefined>
+}
+
+export function getSessionRevertMessageID(session: Session | undefined): string | undefined {
+  return (session as (Session & { revert?: { messageID?: string } }) | undefined)?.revert?.messageID
+}
+
+export function getEffectiveSessionRevertMessageID(
+  state: RevertAwareState,
+  sessionID: string,
+  session?: Session,
+): string | undefined {
+  const transaction = state.revert_transaction?.[sessionID]
+  if (transaction && transaction.status !== "failed") {
+    return transaction.messageID
+  }
+
+  return getSessionRevertMessageID(
+    session ?? state.session?.find((candidate) => candidate.id === sessionID),
+  )
+}
+
+export function isMessageHiddenByRevert(
+  state: RevertAwareState,
+  sessionID: string | undefined,
+  messageID: string,
+): boolean {
+  if (!sessionID) return false
+  const revertMessageID = getEffectiveSessionRevertMessageID(state, sessionID)
+  return Boolean(revertMessageID && messageID >= revertMessageID)
+}
+
+export function hasActiveRevertTransactions(state: RevertAwareState): boolean {
+  const transactions = state.revert_transaction
+  if (!transactions) return false
+  for (const transaction of Object.values(transactions)) {
+    if (transaction && transaction.status !== "failed") return true
+  }
+  return false
+}
+
+export function isMessageHiddenByAnyActiveRevert(
+  state: RevertAwareState,
+  messageID: string,
+): boolean {
+  const transactions = state.revert_transaction
+  if (!transactions) return false
+  for (const [sessionID, transaction] of Object.entries(transactions)) {
+    if (!transaction || transaction.status === "failed") continue
+    if (transaction.hiddenMessageIDs?.includes(messageID)) {
+      const session = state.session?.find((candidate) => candidate.id === sessionID)
+      if (!session || getEffectiveSessionRevertMessageID(state, sessionID, session) === transaction.messageID) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+export function filterMessagesForRevert(
+  messages: readonly Message[],
+  revertMessageID: string | undefined,
+): Message[] | readonly Message[] {
+  if (!revertMessageID) return messages
+  let firstHiddenIndex = -1
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index].id >= revertMessageID) {
+      firstHiddenIndex = index
+      break
+    }
+  }
+  if (firstHiddenIndex < 0) return messages
+  return messages.slice(0, firstHiddenIndex)
+}

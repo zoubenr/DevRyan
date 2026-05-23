@@ -1,0 +1,2432 @@
+/**
+ * Session UI Store — ephemeral UI state only.
+ *
+ * Domain data (sessions, messages, parts, permissions, questions, status)
+ * lives in sync child stores. This store owns ONLY transient UI concerns:
+ * current selection, draft state, viewport anchors, model/agent preferences,
+ * voice state, abort prompts, attached files, worktree metadata.
+ *
+ * Session↔worktree attachments are the authoritative exception: they live in
+ * session-worktree-store (shared sync), and session-ui-store routes through it.
+ *
+ * SDK-calling actions that need domain data read it from sync-refs.
+ */
+
+import { create } from "zustand"
+import type { Session, Part, Message, TextPart } from "@opencode-ai/sdk/v2/client"
+import type { AttachedFile, SessionContextUsage, SessionWorktreeAttachment } from "@/stores/types/sessionTypes"
+import type { WorktreeMetadata } from "@/types/worktree"
+import { opencodeClient } from "@/lib/opencode/client"
+import { useConfigStore } from "@/stores/useConfigStore"
+import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { useProjectsStore } from "@/stores/useProjectsStore"
+import { useDirectoryStore } from "@/stores/useDirectoryStore"
+import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
+import { useCommandsStore } from "@/stores/useCommandsStore"
+import { getSafeStorage } from "@/stores/utils/safeStorage"
+import {
+  attachRelatedSubagentContextUsage,
+  getContextUsageFromMessages,
+  getSubagentContextUsageForSession,
+  type ContextUsageMessage,
+} from "@/stores/utils/contextUsageUtils"
+import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
+import { flattenAssistantTextParts } from "@/lib/messages/messageText"
+import { EXECUTION_FORK_META_TEXT } from "@/lib/messages/executionMeta"
+import { isSyntheticPart } from "@/lib/messages/synthetic"
+import { waitForWorktreeBootstrap } from "@/lib/worktrees/worktreeBootstrap"
+import { waitForPendingDraftWorktreeRequest } from "@/lib/worktrees/pendingDraftWorktree"
+import { resolveProjectForSessionDirectory } from "@/lib/projectResolution"
+import { streamDebugMark } from "@/stores/utils/streamDebug"
+import { isGitGenerationSessionRecord } from "@/lib/git/gitGenerationSessions"
+import { deriveSessionTitleFromUserText, isCursorAcpErrorTitle, isGeneratedNewSessionTitle } from "@/lib/sessionTitles"
+import { assertPdfAttachmentsSupported } from "@/lib/attachments/attachmentCapabilities"
+import {
+  resolveDraftSendSelection,
+  resolveSessionSendConfig,
+  type SendConfig,
+  type SendConfigAgent,
+  type SendConfigProvider,
+} from "./send-config"
+import {
+  getSyncSessions,
+  getAllSyncSessions,
+  getSyncMessages,
+  getSyncParts,
+  getDirectoryState,
+  getSyncChildStores,
+  getSyncSessionDirectoryAnyDirectory,
+} from "./sync-refs"
+import { markSessionsViewed } from "./notification-store"
+import { setActiveSession } from "./sync-context"
+import {
+  createSession as createSessionAction,
+  createSessionRecord as createSessionRecordAction,
+  deleteSession as deleteSessionAction,
+  deleteSessions as deleteSessionsAction,
+  archiveSession as archiveSessionAction,
+  archiveSessions as archiveSessionsAction,
+  unarchiveSession as unarchiveSessionAction,
+  unarchiveSessions as unarchiveSessionsAction,
+  updateSessionTitle as updateSessionTitleAction,
+  shareSession as shareSessionAction,
+  unshareSession as unshareSessionAction,
+  optimisticSend,
+  refetchSessionMessages,
+  getSessionIdsWithDescendants,
+  consumeLastCreateSessionError,
+} from "./session-actions"
+import { useInputStore, type SyntheticContextPart } from "./input-store"
+import { useSelectionStore } from "./selection-store"
+import { useViewportStore } from "./viewport-store"
+import { useSessionWorktreeStore } from "./session-worktree-store"
+import { getAttachedSessionDirectory } from "./session-worktree-contract"
+import { nextPlanIndicatorEntry, type PlanIndicatorEntry } from "./plan-indicator"
+import {
+  clearLegacyNewDraftInput,
+  createDraftId,
+  persistDrafts,
+  readPersistedDrafts,
+  removePersistedDraftInput,
+} from "./session-draft-storage"
+
+export type { AttachedFile }
+
+const CURSOR_ACP_PROVIDER_ID = "cursor-acp"
+const CROSS_RUNTIME_HANDOFF_MAX_MESSAGES = 8
+const CROSS_RUNTIME_HANDOFF_MAX_CHARS = 6000
+const CROSS_RUNTIME_HANDOFF_MAX_TEXT_CHARS = 1400
+
+function isKnownArchivedSession(sessionId: string | null | undefined): boolean {
+  if (!sessionId) return false
+
+  const archivedSessions = useGlobalSessionsStore.getState().archivedSessions ?? []
+  if (archivedSessions.some((session) => session.id === sessionId)) {
+    return true
+  }
+
+  return getAllSyncSessions().some((session) => session.id === sessionId && Boolean(session.time?.archived))
+}
+
+async function autoUnarchiveAfterSuccessfulSend(sessionId: string | null | undefined): Promise<void> {
+  if (!sessionId || !isKnownArchivedSession(sessionId)) return
+
+  try {
+    const success = await unarchiveSessionAction(sessionId)
+    if (!success) {
+      console.warn(`[session-ui-store] Failed to auto-unarchive session after send: ${sessionId}`)
+    }
+  } catch (error) {
+    console.warn(`[session-ui-store] Failed to auto-unarchive session after send: ${sessionId}`, error)
+  }
+}
+
+function readSessionTitle(sessionId: string, directory?: string | null): string | null {
+  const dirState = getDirectoryState(directory ?? undefined)
+  const sessions = (dirState as { session?: unknown } | null | undefined)?.session
+  if (Array.isArray(sessions)) {
+    const match = sessions.find((candidate): candidate is { id: string; title?: string | null } => (
+      Boolean(candidate)
+      && typeof candidate === "object"
+      && "id" in candidate
+      && (candidate as { id?: unknown }).id === sessionId
+    ))
+    if (typeof match?.title === "string") {
+      return match.title
+    }
+  }
+
+  const fallback = getAllSyncSessions().find((session) => session.id === sessionId)
+  return typeof fallback?.title === "string" ? fallback.title : null
+}
+
+async function repairCursorSessionTitleAfterSuccessfulSend(params: {
+  sessionId: string
+  providerID: string
+  content: string
+  directory?: string | null
+}): Promise<void> {
+  if (params.providerID !== CURSOR_ACP_PROVIDER_ID) {
+    return
+  }
+
+  const currentTitle = readSessionTitle(params.sessionId, params.directory)
+  if (!isCursorAcpErrorTitle(currentTitle) && !isGeneratedNewSessionTitle(currentTitle)) {
+    return
+  }
+
+  try {
+    await updateSessionTitleAction(params.sessionId, deriveSessionTitleFromUserText(params.content))
+  } catch (error) {
+    console.warn(`[session-ui-store] Failed to repair Cursor session title: ${params.sessionId}`, error)
+  }
+}
+
+// Decision: keep the runtime plan-mode prompt in this shared UI module instead
+// of reading plan.md at send time, so web/Electron/VS Code use the same
+// synchronous contract even when project agent files are unavailable or stale.
+export const buildPlanModeSyntheticInstruction = (): string => [
+  "User has requested to enter plan mode.",
+  "Produce an implementation plan only; do not edit files, run modifying commands, or make changes yet.",
+  "Write the plan as ordinary markdown — no code fences, no plan.md wrapper. Use headings, lists, and bold for structure so the chat UI can render it as typeset prose.",
+  "Use the actual plan name as the top heading; do not prefix it with 'Implementation Plan:'.",
+  "End the message with a single approval question to the user, written as ordinary prose.",
+  "",
+  "CHAT UI MARKER (REQUIRED, no exceptions): the chat UI renders the final plan in a dedicated card and needs a sentinel to know where the plan starts. Any reasoning, tool-use commentary, exploration notes, or preamble MUST come BEFORE the final plan. When you are ready to emit the final plan, output the literal HTML comment <!--plan--> on its own line as a sentinel, then on the next line begin the plan body (top heading, sections, etc.). Emit <!--plan--> exactly once per message, immediately before the plan body. Do not wrap it in a code fence. Do not put any other text on the same line as the marker. Do not emit it anywhere else in the message. If you do not emit this marker, the plan card will not render and the user will not be able to click \"Implement Plan\".",
+  "",
+  "Plan output format — the body that follows <!--plan--> must use exactly this structure, in this order, as ordinary markdown (no code fences around the plan itself):",
+  "",
+  "# <Plan title — short noun phrase, no \"Implementation Plan:\" prefix>",
+  "",
+  "## Context",
+  "",
+  "Explain why this change is being made — the problem or need it addresses, what prompted it, and the intended outcome. 1–2 short paragraphs.",
+  "",
+  "## Critical files",
+  "",
+  "**New files**",
+  "- `path/to/new/file.ext` — one-line purpose.",
+  "",
+  "**Files modified**",
+  "- `path/to/existing/file.ext` — what changes and why.",
+  "",
+  "**Files read (no edit) for behavior reuse**",
+  "- `path/to/reference.ext:line` — the function/pattern being reused.",
+  "",
+  "Omit any of the three Critical files subsections that do not apply, but keep the bold sub-headings on the ones you include.",
+  "",
+  "## Implementation",
+  "",
+  "Numbered steps grouped into meaningful phases. Each step is concrete and actionable. Include short code or markdown snippets inline only where the exact shape of a change matters (function signature, JSX wiring, schema, etc.). Do not paste whole files. Reference existing functions/utilities by file path with line numbers so the implementer can navigate directly.",
+  "Count only actionable implementation tasks as tasks. Keep acceptance criteria, files, risks, and verification separate from task counts.",
+  "",
+  "## Visual details",
+  "",
+  "Only when the change is user-visible (UI, output formatting, etc.). Describe spacing, tokens, motion, accessibility (reduced-motion, dark mode). Skip this section entirely for non-visual work.",
+  "",
+  "## Verification",
+  "",
+  "Numbered checklist describing how to confirm the change works end-to-end. Include: how to start the relevant server/tool, the exact user actions to take, the observable expected outcomes, and any tests that must still pass (with their file paths). Make each step independently checkable.",
+  "",
+  "End the message with a single approval question to the user, written as ordinary prose, on its own line after the Verification section.",
+].join("\n")
+
+// ---------------------------------------------------------------------------
+// Send routing — shell mode, slash commands, or normal prompt
+// ---------------------------------------------------------------------------
+
+async function routeMessage(params: {
+  sessionId: string
+  content: string
+  providerID: string
+  modelID: string
+  agent?: string
+  variant?: string
+  planMode?: boolean
+  inputMode?: "normal" | "shell"
+  files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
+  directory?: string | null
+  additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
+  lifecycleCallbacks?: SendLifecycleCallbacks
+}): Promise<boolean> {
+  const messageDirectory = normalizePath(params.directory ?? useSessionUIStore.getState().getDirectoryForSession(params.sessionId) ?? opencodeClient.getDirectory() ?? null)
+  if (params.inputMode === "shell") {
+    if (messageDirectory) {
+      await waitForWorktreeBootstrap(messageDirectory)
+    }
+    const sdk = opencodeClient.getSdkClient()
+    await sdk.session.shell({
+      sessionID: params.sessionId,
+      directory: messageDirectory || undefined,
+      agent: params.agent,
+      model: { providerID: params.providerID, modelID: params.modelID },
+      command: params.content,
+    })
+    await autoUnarchiveAfterSuccessfulSend(params.sessionId)
+    return false
+  }
+
+  const handoffAdditionalParts = withCrossRuntimeHandoffContext(
+    params.additionalParts,
+    buildCrossRuntimeHandoffPart({
+      sessionId: params.sessionId,
+      targetProviderID: params.providerID,
+      directory: messageDirectory,
+    }),
+  )
+
+  const additionalParts = params.planMode === true
+    ? [
+        {
+          text: buildPlanModeSyntheticInstruction(),
+          synthetic: true,
+        },
+        ...(handoffAdditionalParts ?? []),
+      ]
+    : handoffAdditionalParts
+
+  assertPdfAttachmentsSupported({
+    providerID: params.providerID,
+    modelID: params.modelID,
+    files: [
+      ...(params.files ?? []),
+      ...((additionalParts ?? []).flatMap((part) => part.files ?? [])),
+    ],
+  })
+
+  // Slash commands — fire and forget, SSE delivers messages and status
+  if (params.content.startsWith("/")) {
+    const [head, ...tail] = params.content.split(" ")
+    const cmdName = head.slice(1)
+
+    const dirState = getDirectoryState(messageDirectory ?? undefined)
+    const syncCommands = dirState?.command ?? []
+    const storeCommands = useCommandsStore.getState().commands
+
+    const isCommand = syncCommands.find((c) => c.name === cmdName)
+      || storeCommands.find((c) => c.name === cmdName)
+
+    if (isCommand) {
+      await optimisticSend({
+        sessionId: params.sessionId,
+        content: params.content,
+        providerID: params.providerID,
+        modelID: params.modelID,
+        agent: params.agent,
+        files: params.files,
+        directory: messageDirectory,
+        planMode: params.planMode,
+        onMessageID: (messageID) => {
+          useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, params.planMode === true)
+          params.lifecycleCallbacks?.onMessageID?.(messageID)
+        },
+        onMessageRollback: (messageID) => {
+          useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, false)
+          params.lifecycleCallbacks?.onMessageRollback?.(messageID)
+        },
+        send: (messageID) => opencodeClient.sendCommand({
+          id: params.sessionId,
+          providerID: params.providerID,
+          modelID: params.modelID,
+          command: cmdName,
+          arguments: tail.join(" "),
+          agent: params.agent,
+          variant: params.variant,
+          files: params.files,
+          messageId: messageID,
+          directory: messageDirectory,
+        }).then(() => {}),
+      })
+      await repairCursorSessionTitleAfterSuccessfulSend({
+        sessionId: params.sessionId,
+        providerID: params.providerID,
+        content: params.content,
+        directory: messageDirectory,
+      })
+      await autoUnarchiveAfterSuccessfulSend(params.sessionId)
+      return false
+    }
+  }
+
+  // Normal prompt — optimistic insert so message appears instantly
+  await optimisticSend({
+    sessionId: params.sessionId,
+    content: params.content,
+    providerID: params.providerID,
+    modelID: params.modelID,
+    agent: params.agent,
+    files: params.files,
+    directory: messageDirectory,
+    planMode: params.planMode,
+    onMessageID: (messageID) => {
+      useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, params.planMode === true)
+      params.lifecycleCallbacks?.onMessageID?.(messageID)
+    },
+    onMessageRollback: (messageID) => {
+      useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, false)
+      params.lifecycleCallbacks?.onMessageRollback?.(messageID)
+    },
+    send: (messageID) => opencodeClient.sendMessage({
+      id: params.sessionId,
+      providerID: params.providerID,
+      modelID: params.modelID,
+      text: params.content,
+      agent: params.agent,
+      variant: params.variant,
+      files: params.files,
+      additionalParts,
+      messageId: messageID,
+      directory: messageDirectory,
+    }).then(() => {}),
+  })
+  await repairCursorSessionTitleAfterSuccessfulSend({
+    sessionId: params.sessionId,
+    providerID: params.providerID,
+    content: params.content,
+    directory: messageDirectory,
+  })
+  await autoUnarchiveAfterSuccessfulSend(params.sessionId)
+  return true
+}
+
+function notifyMessageSent(sessionId: string): void {
+  fetch(`/api/sessions/${sessionId}/message-sent`, { method: "POST" })
+    .catch(() => { /* ignore */ })
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type { SyntheticContextPart } from "./input-store"
+export type { SessionMemoryState } from "./viewport-store"
+export type { VoiceStatus, VoiceMode } from "./voice-store"
+
+export type NewSessionDraftState = {
+  open: boolean
+  id?: string | null
+  selectedProjectId?: string | null
+  directoryOverride: string | null
+  pendingWorktreeRequestId?: string | null
+  bootstrapPendingDirectory?: string | null
+  preserveDirectoryOverride?: boolean
+  parentID: string | null
+  title?: string
+  initialPrompt?: string
+  syntheticParts?: SyntheticContextPart[]
+  planMode?: boolean
+  sendConfig?: SendConfig
+  targetFolderId?: string
+}
+
+export type ChatDraft = Omit<NewSessionDraftState, "open"> & {
+  id: string
+  text: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type StarterAssistantMessage = {
+  sessionId: string
+  sourceMessageId: string
+  messageId: string
+  partId: string
+  text: string
+  createdAt: number
+  pendingContext: boolean
+}
+
+type ProviderModelLimit = {
+  context?: number
+  output?: number
+}
+
+type ProviderModelLike = {
+  id?: string
+  limit?: ProviderModelLimit
+}
+
+type ProviderLike = {
+  id?: string
+  models?: ProviderModelLike[]
+}
+
+const getContextMessageInfo = (message: ContextUsageMessage): Message => {
+  return "info" in message ? message.info as Message : message as Message
+}
+
+const resolveContextLimitsFromMessages = (messages: ContextUsageMessage[]): { contextLimit: number; outputLimit: number } => {
+  const providers = useConfigStore.getState().providers as ProviderLike[]
+  if (!Array.isArray(providers) || providers.length === 0) {
+    return { contextLimit: 0, outputLimit: 0 }
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const info = getContextMessageInfo(messages[index]) as Message & { providerID?: unknown; modelID?: unknown }
+    if (info.role !== "assistant" || typeof info.providerID !== "string" || typeof info.modelID !== "string") {
+      continue
+    }
+
+    const provider = providers.find((entry) => entry.id === info.providerID)
+    const model = provider?.models?.find((entry) => entry.id === info.modelID)
+    const limit = model?.limit
+    return {
+      contextLimit: typeof limit?.context === "number" ? limit.context : 0,
+      outputLimit: typeof limit?.output === "number" ? limit.output : 0,
+    }
+  }
+
+  return { contextLimit: 0, outputLimit: 0 }
+}
+
+export type ViewportAnchor = {
+  sessionId: string
+  value: number
+}
+
+type SendLifecycleCallbacks = {
+  onMessageID?: (messageID: string) => void
+  onMessageRollback?: (messageID: string) => void
+}
+
+export type SessionHistoryMeta = {
+  limit: number
+  hasMore: boolean
+  complete: boolean
+  isLoading: boolean
+  loading?: boolean
+  nextCursor?: string
+}
+
+export type SessionUIState = {
+  currentSessionId: string | null
+  currentDraftId: string | null
+  draftsById: Record<string, ChatDraft>
+  draftOrder: string[]
+  newSessionDraft: NewSessionDraftState
+  abortPromptSessionId: string | null
+  abortPromptExpiresAt: number | null
+  error: string | null
+  worktreeMetadata: Map<string, WorktreeMetadata>
+  sessionDirectoryHints: Map<string, string>
+  availableWorktrees: WorktreeMetadata[]
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>
+  webUICreatedSessions: Set<string>
+  sessionAbortFlags: Map<string, { timestamp: number; acknowledged: boolean; reason?: "manual"; id?: string }>
+  abortControllers: Map<string, AbortController>
+  isLoading: boolean
+  lastLoadedDirectory: string | null
+  // Plan mode - per-session plan file availability (set when plan_enter tool creates a plan)
+  sessionPlanAvailable: Map<string, boolean>
+  sessionPlanIndicator: Map<string, PlanIndicatorEntry>
+  implementedPlanRequests: Set<string>
+  planModeUserMessages: Set<string>
+  planModeUserMessagesBySession: Map<string, string>
+  starterAssistantMessages: Map<string, StarterAssistantMessage>
+  markSessionPlanAvailable: (sessionId: string) => void
+  isSessionPlanAvailable: (sessionId: string) => boolean
+  recordUserMessagePlanMode: (sessionId: string, messageId: string, enabled: boolean) => void
+  isUserMessagePlanMode: (messageId: string) => boolean
+  isPlanSourceImplemented: (sessionId: string, sourceMessageId: string) => boolean
+  markPlanProposed: (sessionId: string, sourceMessageId?: string) => void
+  markPlanImplementing: (sessionId: string, sourceMessageId?: string, implementationMessageId?: string) => void
+  markPlanCompleted: (sessionId: string, sourceMessageId?: string) => void
+  markPlanImplementationRequested: (planKey: string) => void
+  rollbackPlanImplementation: (
+    sessionId: string,
+    sourceMessageId: string | undefined,
+    implementationKey: string,
+    implementationMessageId?: string,
+  ) => void
+  getStarterAssistantMessage: (sessionId: string) => StarterAssistantMessage | undefined
+  clearStarterAssistantPendingContext: (sessionId: string) => void
+
+  // Non-Git mode: dismissed signature hash per session, hides bar until new turn arrives
+  pendingChangesBarDismissed: Map<string, string>
+  dismissPendingChangesBar: (sessionId: string, signature: string | null) => void
+
+  // Actions — UI state management
+  setCurrentSession: (id: string | null, directoryHint?: string | null) => void
+  openNewSessionDraft: (options?: Partial<NewSessionDraftState>) => void
+  selectNewSessionDraft: (draftId: string) => void
+  updateNewSessionDraftText: (draftId: string, text: string) => void
+  deleteNewSessionDraft: (draftId: string) => void
+  closeNewSessionDraft: () => void
+  promoteDraftToSession: (options: {
+    draftId?: string | null
+    sessionId: string
+    directoryHint?: string | null
+    submittedText?: string
+  }) => void
+  setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
+  updateNewSessionDraftSendConfig: (patch: SendConfig) => void
+  setDraftPreserveDirectoryOverride: (value: boolean) => void
+  acknowledgeSessionAbort: (sessionId: string) => void
+  clearAbortPrompt: () => void
+  armAbortPrompt: (durationMs?: number) => number | null
+  clearError: () => void
+  markSessionAsOpenChamberCreated: (sessionId: string) => void
+  isOpenChamberCreatedSession: (sessionId: string) => boolean
+  getContextUsage: (contextLimit: number, outputLimit: number) => SessionContextUsage | null
+  initializeNewOpenChamberSession: (sessionId: string, agents: unknown[]) => void
+  setWorktreeMetadata: (sessionId: string, metadata: WorktreeMetadata | null) => void
+  overrideNewSessionDraftTarget: (options: Record<string, unknown>) => void
+  resolvePendingDraftWorktreeTarget: (requestId: string, directory: string | null, options?: Record<string, unknown>) => void
+  setDraftBootstrapPendingDirectory: (directory: string | null) => void
+  setPendingDraftWorktreeRequest: (requestId: string | null) => void
+  getWorktreeMetadata: (sessionId: string) => WorktreeMetadata | undefined
+
+  // Actions — SDK-calling operations (read domain data from sync-refs)
+  sendMessage: (
+    content: string,
+    providerID: string,
+    modelID: string,
+    agent?: string,
+    attachments?: AttachedFile[],
+    agentMentionName?: string,
+    additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
+    variant?: string,
+    inputMode?: "normal" | "shell",
+    planMode?: boolean,
+  ) => Promise<void>
+
+  sendMessageToSession: (
+    sessionId: string,
+    content: string,
+    providerID: string,
+    modelID: string,
+    agent?: string,
+    attachments?: AttachedFile[],
+    agentMentionName?: string,
+    additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
+    variant?: string,
+    inputMode?: "normal" | "shell",
+    planMode?: boolean,
+    lifecycleCallbacks?: SendLifecycleCallbacks,
+  ) => Promise<void>
+
+  createSession: (title?: string, directoryOverride?: string | null, parentID?: string | null) => Promise<Session | null>
+  deleteSession: (id: string, options?: Record<string, unknown>) => Promise<boolean>
+  deleteSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ deletedIds: string[]; failedIds: string[] }>
+  archiveSession: (id: string) => Promise<boolean>
+  archiveSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ archivedIds: string[]; failedIds: string[] }>
+  unarchiveSession: (id: string) => Promise<boolean>
+  unarchiveSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ unarchivedIds: string[]; failedIds: string[] }>
+  updateSessionTitle: (sessionId: string, title: string) => Promise<void>
+  shareSession: (sessionId: string) => Promise<Session | null>
+  unshareSession: (sessionId: string) => Promise<Session | null>
+  revertToMessage: (sessionId: string, messageId: string) => Promise<void>
+  forkFromMessage: (sessionId: string, messageId: string) => Promise<void>
+  handleSlashUndo: (sessionId: string) => Promise<void>
+  handleSlashRedo: (sessionId: string) => Promise<void>
+  createSessionFromAssistantMessage: (sourceMessageId: string) => Promise<void>
+
+  // Data access helpers (read from sync)
+  getSessionsByDirectory: (directory: string) => Session[]
+  getDirectoryForSession: (sessionId: string) => string | null
+  getLastUserChoice: (sessionId: string) => { agent?: string; providerID?: string; modelID?: string; variant?: string } | null
+  getCurrentAgent: (sessionId: string) => string | undefined
+  debugSessionMessages: (sessionId: string) => Promise<void>
+  pollForTokenUpdates: () => void
+  setSessionDirectory: (sessionId: string, directory: string | null) => void
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const normalizePath = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const replaced = trimmed.replace(/\\/g, "/")
+  if (replaced === "/") return "/"
+  return replaced.length > 1 ? replaced.replace(/\/+$/, "") : replaced
+}
+
+const resolveDirectoryKey = (session: Session): string | null => {
+  const sessionRecord = session as Session & {
+    directory?: string | null
+    project?: { worktree?: string | null } | null
+  }
+  return normalizePath(sessionRecord.directory ?? null)
+    ?? normalizePath(sessionRecord.project?.worktree ?? null)
+}
+
+const safeStorage = getSafeStorage()
+const DRAFT_TARGET_STORAGE_KEY = "oc.chatInput.lastDraftTarget"
+const PLAN_MESSAGE_STATE_STORAGE_KEY = "openchamber_plan_message_state"
+const MAX_PERSISTED_PLAN_MESSAGE_IDS = 2000
+
+type PersistedDraftTarget = { projectId: string | null; directory: string | null }
+
+const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
+  try {
+    const raw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown }
+    return {
+      projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
+      directory: normalizePath(typeof parsed?.directory === "string" ? parsed.directory : null),
+    }
+  } catch {
+    return null
+  }
+}
+
+const persistDraftTarget = (target: PersistedDraftTarget): void => {
+  try {
+    safeStorage.setItem(DRAFT_TARGET_STORAGE_KEY, JSON.stringify(target))
+  } catch { /* ignored */ }
+}
+
+const createLocalStarterId = (prefix: "msg" | "prt"): string => `local_starter_${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`
+
+const buildStarterAssistantContextText = (starter: StarterAssistantMessage): string => [
+  EXECUTION_FORK_META_TEXT,
+  "",
+  "Assistant response shown at the top of this chat:",
+  starter.text,
+].join("\n")
+
+const withStarterAssistantContext = <T extends { text: string; synthetic?: boolean }>(
+  parts: T[] | undefined,
+  starter: StarterAssistantMessage | undefined,
+): T[] | undefined => {
+  if (!starter?.pendingContext) return parts
+  const contextPart = { text: buildStarterAssistantContextText(starter), synthetic: true } as T
+  return [contextPart, ...(parts ?? [])]
+}
+
+const getProviderBackend = (providerId?: string | null): "cursor" | "opencode" | null => {
+  const cleaned = typeof providerId === "string" ? providerId.trim() : ""
+  if (!cleaned) return null
+  return cleaned === CURSOR_ACP_PROVIDER_ID ? "cursor" : "opencode"
+}
+
+const getMessageProviderId = (message: Message | Record<string, unknown>): string | undefined => {
+  const model = (message as { model?: { providerID?: unknown } }).model
+  const modelProvider = typeof model?.providerID === "string" ? model.providerID.trim() : ""
+  if (modelProvider) return modelProvider
+
+  const providerID = (message as { providerID?: unknown }).providerID
+  return typeof providerID === "string" && providerID.trim().length > 0 ? providerID.trim() : undefined
+}
+
+const getVisibleTextFromParts = (parts: Part[]): string => (
+  parts
+    .filter((part) => part?.type === "text" && !isSyntheticPart(part))
+    .map((part) => {
+      const textPart = part as Part & { text?: string; content?: string }
+      return (textPart.text || textPart.content || "").trim()
+    })
+    .filter((text) => text.length > 0)
+    .join("\n")
+    .replace(/\n\s*\n+/g, "\n")
+    .trim()
+)
+
+const truncateHandoffText = (text: string): string => {
+  if (text.length <= CROSS_RUNTIME_HANDOFF_MAX_TEXT_CHARS) return text
+  return `${text.slice(0, CROSS_RUNTIME_HANDOFF_MAX_TEXT_CHARS).trimEnd()}\n[truncated]`
+}
+
+const buildCrossRuntimeHandoffPart = (params: {
+  sessionId: string
+  targetProviderID: string
+  directory?: string | null
+}): { text: string; synthetic: true } | undefined => {
+  const targetBackend = getProviderBackend(params.targetProviderID)
+  if (!targetBackend || !params.sessionId) return undefined
+
+  const sourceBackend = targetBackend === "cursor" ? "opencode" : "cursor"
+  const messages = getSyncMessages(params.sessionId, params.directory ?? undefined) as Array<Message & Record<string, unknown>>
+  if (!Array.isArray(messages) || messages.length === 0) return undefined
+
+  const selected: Array<{ role: "user" | "assistant"; text: string }> = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const role = message?.role
+    if (role !== "user" && role !== "assistant") {
+      continue
+    }
+
+    const backend = getProviderBackend(getMessageProviderId(message))
+    if (backend !== sourceBackend) {
+      if (selected.length > 0) break
+      continue
+    }
+
+    const text = getVisibleTextFromParts(getSyncParts(message.id, params.directory ?? undefined) as Part[])
+    if (!text) continue
+
+    selected.push({ role, text: truncateHandoffText(text) })
+    if (selected.length >= CROSS_RUNTIME_HANDOFF_MAX_MESSAGES) break
+  }
+
+  if (selected.length === 0) return undefined
+
+  const sourceLabel = sourceBackend === "cursor" ? "Cursor SDK" : "OpenCode"
+  const targetLabel = targetBackend === "cursor" ? "Cursor SDK" : "OpenCode"
+  const lines = [
+    `Conversation context from ${sourceLabel} turns, supplied because this reply is switching to ${targetLabel}:`,
+    "",
+    ...selected.reverse().map((entry) => `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text}`),
+  ]
+  let text = lines.join("\n\n").trim()
+  if (text.length > CROSS_RUNTIME_HANDOFF_MAX_CHARS) {
+    text = `${text.slice(0, CROSS_RUNTIME_HANDOFF_MAX_CHARS).trimEnd()}\n[conversation context truncated]`
+  }
+
+  return { text, synthetic: true }
+}
+
+const withCrossRuntimeHandoffContext = <T extends { text: string; synthetic?: boolean }>(
+  parts: T[] | undefined,
+  handoff: { text: string; synthetic: true } | undefined,
+): T[] | undefined => {
+  if (!handoff) return parts
+  return [handoff as T, ...(parts ?? [])]
+}
+
+const consumeStarterAssistantContext = (
+  get: () => SessionUIState,
+  set: (partial: Partial<SessionUIState> | ((state: SessionUIState) => Partial<SessionUIState> | SessionUIState)) => void,
+  sessionId: string | null | undefined,
+): StarterAssistantMessage | undefined => {
+  if (!sessionId) return undefined
+  const starter = get().starterAssistantMessages.get(sessionId)
+  if (!starter?.pendingContext) return undefined
+  set((state) => {
+    const current = state.starterAssistantMessages.get(sessionId)
+    if (!current?.pendingContext) return state
+    const starterAssistantMessages = new Map(state.starterAssistantMessages)
+    starterAssistantMessages.set(sessionId, { ...current, pendingContext: false })
+    return { starterAssistantMessages }
+  })
+  return starter
+}
+
+const restoreStarterAssistantContext = (
+  set: (partial: Partial<SessionUIState> | ((state: SessionUIState) => Partial<SessionUIState> | SessionUIState)) => void,
+  starter: StarterAssistantMessage | undefined,
+): void => {
+  if (!starter) return
+  set((state) => {
+    const current = state.starterAssistantMessages.get(starter.sessionId)
+    if (!current || current.pendingContext) return state
+    const starterAssistantMessages = new Map(state.starterAssistantMessages)
+    starterAssistantMessages.set(starter.sessionId, { ...current, pendingContext: true })
+    return { starterAssistantMessages }
+  })
+}
+
+const injectStarterAssistantMessage = (params: {
+  sessionId: string
+  directory: string | null
+  sourceMessage: Message
+  messageId: string
+  partId: string
+  text: string
+  createdAt: number
+}): void => {
+  const directory = normalizePath(params.directory ?? opencodeClient.getDirectory() ?? null)
+  if (!directory) return
+
+  const starterMessage = {
+    ...params.sourceMessage,
+    id: params.messageId,
+    sessionID: params.sessionId,
+    parentID: "",
+    role: "assistant" as const,
+    time: {
+      created: params.createdAt,
+      completed: params.createdAt,
+    },
+  } as Message
+
+  const starterPart = {
+    id: params.partId,
+    sessionID: params.sessionId,
+    messageID: params.messageId,
+    type: "text" as const,
+    text: params.text,
+  } as Part
+
+  const stores = getSyncChildStores()
+  const store = stores.ensureChild(directory, { bootstrap: false })
+  store.setState((state) => {
+    const existingMessages = state.message[params.sessionId] ?? []
+    const hasMessage = existingMessages.some((message) => message.id === params.messageId)
+    const nextMessages = hasMessage
+      ? existingMessages
+      : [...existingMessages, starterMessage].sort((left, right) => left.id.localeCompare(right.id))
+    const existingParts = state.part[params.messageId]
+
+    if (nextMessages === existingMessages && existingParts?.length === 1 && existingParts[0]?.id === params.partId) {
+      return state
+    }
+
+    return {
+      message: nextMessages === existingMessages ? state.message : { ...state.message, [params.sessionId]: nextMessages },
+      part: existingParts ? state.part : { ...state.part, [params.messageId]: [starterPart] },
+    }
+  })
+}
+
+type PersistedPlanMessageState = {
+  planModeUserMessages: Set<string>
+  planModeUserMessagesBySession: Map<string, string>
+  implementedPlanRequests: Set<string>
+}
+
+const limitStringSet = (values: Set<string>, maxSize: number): Set<string> => {
+  if (values.size <= maxSize) return values
+  return new Set([...values].slice(values.size - maxSize))
+}
+
+const limitStringMap = (values: Map<string, string>, maxSize: number): Map<string, string> => {
+  if (values.size <= maxSize) return values
+  return new Map([...values].slice(values.size - maxSize))
+}
+
+const readPersistedPlanMessageState = (): PersistedPlanMessageState => {
+  try {
+    const raw = safeStorage.getItem(PLAN_MESSAGE_STATE_STORAGE_KEY)
+    if (!raw) return { planModeUserMessages: new Set(), planModeUserMessagesBySession: new Map(), implementedPlanRequests: new Set() }
+    const parsed = JSON.parse(raw) as {
+      planModeUserMessages?: unknown
+      planModeUserMessagesBySession?: unknown
+      implementedPlanRequests?: unknown
+    }
+    const planModeUserMessages = new Set(
+      (Array.isArray(parsed.planModeUserMessages) ? parsed.planModeUserMessages : [])
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    )
+    const planModeUserMessagesBySession = new Map(
+      (Array.isArray(parsed.planModeUserMessagesBySession) ? parsed.planModeUserMessagesBySession : [])
+        .filter((value): value is [string, string] => Array.isArray(value)
+          && typeof value[0] === "string"
+          && value[0].length > 0
+          && typeof value[1] === "string"
+          && value[1].length > 0),
+    )
+    const implementedPlanRequests = new Set(
+      (Array.isArray(parsed.implementedPlanRequests) ? parsed.implementedPlanRequests : [])
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    )
+    return {
+      planModeUserMessages: limitStringSet(planModeUserMessages, MAX_PERSISTED_PLAN_MESSAGE_IDS),
+      planModeUserMessagesBySession: limitStringMap(planModeUserMessagesBySession, MAX_PERSISTED_PLAN_MESSAGE_IDS),
+      implementedPlanRequests: limitStringSet(implementedPlanRequests, MAX_PERSISTED_PLAN_MESSAGE_IDS),
+    }
+  } catch {
+    return { planModeUserMessages: new Set(), planModeUserMessagesBySession: new Map(), implementedPlanRequests: new Set() }
+  }
+}
+
+const persistPlanMessageState = (
+  planModeUserMessages: Set<string>,
+  implementedPlanRequests: Set<string>,
+  planModeUserMessagesBySession: Map<string, string>,
+): void => {
+  try {
+    if (planModeUserMessages.size === 0 && implementedPlanRequests.size === 0 && planModeUserMessagesBySession.size === 0) {
+      safeStorage.removeItem(PLAN_MESSAGE_STATE_STORAGE_KEY)
+      return
+    }
+    safeStorage.setItem(PLAN_MESSAGE_STATE_STORAGE_KEY, JSON.stringify({
+      planModeUserMessages: [...limitStringSet(planModeUserMessages, MAX_PERSISTED_PLAN_MESSAGE_IDS)],
+      planModeUserMessagesBySession: [...limitStringMap(planModeUserMessagesBySession, MAX_PERSISTED_PLAN_MESSAGE_IDS)],
+      implementedPlanRequests: [...limitStringSet(implementedPlanRequests, MAX_PERSISTED_PLAN_MESSAGE_IDS)],
+    }))
+  } catch { /* ignored */ }
+}
+
+const toNewSessionDraftState = (draft: ChatDraft | null | undefined): NewSessionDraftState => {
+  if (!draft) return { ...DEFAULT_DRAFT }
+  return {
+    open: true,
+    id: draft.id,
+    selectedProjectId: draft.selectedProjectId ?? null,
+    directoryOverride: draft.directoryOverride ?? null,
+    pendingWorktreeRequestId: draft.pendingWorktreeRequestId ?? null,
+    bootstrapPendingDirectory: draft.bootstrapPendingDirectory ?? null,
+    preserveDirectoryOverride: draft.preserveDirectoryOverride === true,
+    parentID: draft.parentID ?? null,
+    title: draft.title,
+    initialPrompt: draft.initialPrompt,
+    syntheticParts: draft.syntheticParts,
+    planMode: draft.planMode,
+    sendConfig: normalizeDraftSendConfig(draft.sendConfig),
+    targetFolderId: draft.targetFolderId,
+  }
+}
+
+const resolveDraftProjectForDirectory = resolveProjectForSessionDirectory
+
+const getAttachmentForSession = (sessionId: string | null | undefined): SessionWorktreeAttachment | undefined => {
+  if (!sessionId) return undefined
+  return useSessionWorktreeStore.getState().getAttachment(sessionId)
+}
+
+const resolveSessionDirectory = (
+  sessionId: string | null | undefined,
+  getWtMeta: (id: string) => WorktreeMetadata | undefined,
+): string | null => {
+  if (!sessionId) return null
+  const attachmentDirectory = getAttachedSessionDirectory(getAttachmentForSession(sessionId))
+  if (attachmentDirectory) return attachmentDirectory
+  const metaPath = getWtMeta(sessionId)?.path
+  if (typeof metaPath === "string" && metaPath.trim().length > 0) return normalizePath(metaPath)
+  const sessions = getAllSyncSessions()
+  const target = sessions.find((s) => s.id === sessionId)
+  if (!target) return null
+  return resolveDirectoryKey(target)
+}
+
+const resolveDirectoryForDraftSend = (draft: NewSessionDraftState): string | null => {
+  const explicit = normalizePath(draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null)
+  if (explicit) return explicit
+
+  const projectsState = useProjectsStore.getState()
+  const selectedProject = draft.selectedProjectId
+    ? projectsState.projects.find((project) => project.id === draft.selectedProjectId) ?? null
+    : null
+  const activeProject = selectedProject ?? projectsState.getActiveProject()
+  const projectDirectory = normalizePath(activeProject?.path ?? null)
+  if (projectDirectory) return projectDirectory
+
+  const currentDirectory = normalizePath(useDirectoryStore.getState().currentDirectory ?? null)
+  if (currentDirectory) return currentDirectory
+
+  return normalizePath(opencodeClient.getDirectory() ?? null)
+}
+
+const activateConfigForDirectory = async (directory: string | null | undefined): Promise<void> => {
+  await useConfigStore.getState().activateDirectory(normalizePath(directory))
+}
+
+const applyCurrentSessionSideEffects = (
+  id: string | null,
+  directoryHint: string | null | undefined,
+  previousSessionId: string | null,
+  get: () => SessionUIState,
+): void => {
+  const directoryState = useDirectoryStore.getState()
+  const sessionDir = resolveSessionDirectory(
+    id,
+    (sid) => get().worktreeMetadata.get(sid),
+  )
+  const fallbackDir = opencodeClient.getDirectory() ?? directoryState.currentDirectory ?? null
+  const resolvedDir = (directoryHint ? normalizePath(directoryHint) : null) ?? sessionDir ?? fallbackDir
+
+  try {
+    if (resolvedDir && directoryState.currentDirectory !== resolvedDir) {
+      directoryState.setDirectory(resolvedDir, { showOverlay: false })
+    }
+    opencodeClient.setDirectory(resolvedDir ?? undefined)
+  } catch (e) {
+    console.warn("Failed to set OpenCode directory for session switch:", e)
+  }
+
+  // Defer viewport anchor save for previous session — not needed for the
+  // skeleton to render and reads messages which can be expensive.
+  if (previousSessionId && previousSessionId !== id) {
+    const prevId = previousSessionId
+    setTimeout(() => {
+      const memState = useViewportStore.getState().sessionMemoryState.get(prevId)
+      if (!memState?.isStreaming) {
+        const prevMessages = getSyncMessages(prevId)
+        if (prevMessages.length > 0) {
+          useViewportStore.getState().updateViewportAnchor(prevId, prevMessages.length - 1)
+        }
+      }
+    }, 0)
+  }
+
+  // Mark the selected session and any loaded descendants viewed; parent rows
+  // aggregate subagent completions, so selecting the parent must clear that scope.
+  if (id) {
+    markSessionsViewed(getSessionIdsWithDescendants([id]))
+    setActiveSession(resolvedDir ?? "", id)
+  }
+}
+
+const DEFAULT_DRAFT: NewSessionDraftState = {
+  open: false,
+  directoryOverride: null,
+  parentID: null,
+}
+
+const cleanSendConfigString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+const hasDraftSendModel = (sendConfig: SendConfig | null | undefined): boolean => (
+  !!cleanSendConfigString(sendConfig?.providerID) && !!cleanSendConfigString(sendConfig?.modelID)
+)
+
+const normalizeDraftSendConfig = (sendConfig: SendConfig | null | undefined): SendConfig | undefined => {
+  if (!sendConfig) return undefined
+  const next: SendConfig = {}
+  const providerID = cleanSendConfigString(sendConfig.providerID)
+  const modelID = cleanSendConfigString(sendConfig.modelID)
+  const agent = cleanSendConfigString(sendConfig.agent)
+  const variant = cleanSendConfigString(sendConfig.variant)
+  if (providerID) next.providerID = providerID
+  if (modelID) next.modelID = modelID
+  if (agent) next.agent = agent
+  if (variant) next.variant = variant
+  if (typeof sendConfig.planMode === "boolean") next.planMode = sendConfig.planMode
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+const mergeDraftSendConfig = (current: SendConfig | null | undefined, patch: SendConfig): SendConfig | undefined => {
+  const next: SendConfig = { ...(normalizeDraftSendConfig(current) ?? {}) }
+  const assignString = (key: "providerID" | "modelID" | "agent" | "variant") => {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) return
+    const value = cleanSendConfigString(patch[key])
+    if (value) {
+      next[key] = value
+    } else {
+      delete next[key]
+    }
+  }
+
+  assignString("providerID")
+  assignString("modelID")
+  assignString("agent")
+  assignString("variant")
+
+  if (Object.prototype.hasOwnProperty.call(patch, "planMode")) {
+    if (typeof patch.planMode === "boolean") {
+      next.planMode = patch.planMode
+    } else {
+      delete next.planMode
+    }
+  }
+
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+const getDraftPromotionText = (value?: string | null): string => (
+  typeof value === "string" ? value.trim() : ""
+)
+
+const getDraftPromotionDirectory = (
+  draft: Pick<ChatDraft, "bootstrapPendingDirectory" | "directoryOverride"> | null | undefined,
+  fallback?: string | null,
+): string | null => normalizePath(draft?.bootstrapPendingDirectory ?? draft?.directoryOverride ?? fallback ?? null)
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
+  currentSessionId: null,
+  currentDraftId: null,
+  ...readPersistedDrafts(safeStorage),
+  newSessionDraft: { ...DEFAULT_DRAFT },
+  abortPromptSessionId: null,
+  abortPromptExpiresAt: null,
+  error: null,
+  worktreeMetadata: new Map(),
+  sessionDirectoryHints: new Map(),
+  availableWorktrees: [],
+  availableWorktreesByProject: new Map(),
+  webUICreatedSessions: new Set(),
+  sessionAbortFlags: new Map(),
+  abortControllers: new Map(),
+  isLoading: false,
+  lastLoadedDirectory: null,
+  sessionPlanAvailable: new Map(),
+  sessionPlanIndicator: new Map(),
+  starterAssistantMessages: new Map(),
+  ...readPersistedPlanMessageState(),
+  pendingChangesBarDismissed: new Map(),
+
+  getStarterAssistantMessage: (sessionId) => get().starterAssistantMessages.get(sessionId),
+
+  clearStarterAssistantPendingContext: (sessionId) => {
+    set((state) => {
+      const current = state.starterAssistantMessages.get(sessionId)
+      if (!current?.pendingContext) return state
+      const next = new Map(state.starterAssistantMessages)
+      next.set(sessionId, { ...current, pendingContext: false })
+      return { starterAssistantMessages: next }
+    })
+  },
+
+  // ---------------------------------------------------------------------------
+  // setCurrentSession
+  // ---------------------------------------------------------------------------
+  setCurrentSession: (id, directoryHint?: string | null) => {
+    const previousSessionId = get().currentSessionId
+
+    // Set currentSessionId immediately so the skeleton renders without delay.
+    set({
+      currentSessionId: id,
+      currentDraftId: id ? null : get().currentDraftId,
+      newSessionDraft: id ? { ...DEFAULT_DRAFT } : get().newSessionDraft,
+    })
+    applyCurrentSessionSideEffects(id, directoryHint, previousSessionId, get)
+  },
+
+  // ---------------------------------------------------------------------------
+  // openNewSessionDraft
+  // ---------------------------------------------------------------------------
+  openNewSessionDraft: (options) => {
+    const projectsState = useProjectsStore.getState()
+    const projects = projectsState.projects
+    const availableWorktreesByProject = get().availableWorktreesByProject
+    const activeProject = projectsState.getActiveProject()
+    const currentDirectory = normalizePath(useDirectoryStore.getState().currentDirectory ?? null)
+    const persistedTarget = readPersistedDraftTarget()
+
+    const explicitDirectory = options?.directoryOverride !== undefined
+      ? normalizePath(options.directoryOverride)
+      : null
+    const explicitProject = options?.selectedProjectId
+      ? projects.find((p) => p.id === options.selectedProjectId) ?? null
+      : null
+
+    const inferredProjectFromDir = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, explicitDirectory)
+    const fallbackProject = (() => {
+      if (activeProject) return activeProject
+      if (projectsState.activeProjectId) return projects.find((p) => p.id === projectsState.activeProjectId) ?? null
+      return projects[0] ?? null
+    })()
+
+    const persistedProjectById = persistedTarget?.projectId
+      ? projects.find((p) => p.id === persistedTarget.projectId) ?? null
+      : null
+    const persistedProjectByDir = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, persistedTarget?.directory ?? null)
+    const currentDirProject = resolveDraftProjectForDirectory(projects, availableWorktreesByProject, currentDirectory)
+
+    const selectedProject = (() => {
+      if (explicitProject || explicitDirectory !== null) {
+        return explicitProject ?? inferredProjectFromDir ?? fallbackProject
+      }
+      if (currentDirectory) return currentDirProject ?? fallbackProject
+      return persistedProjectByDir ?? persistedProjectById ?? fallbackProject
+    })()
+
+    const directory = (() => {
+      if (explicitDirectory !== null) return explicitDirectory
+      if (explicitProject) return normalizePath(explicitProject.path ?? null)
+      if (currentDirectory) return currentDirectory
+      if (persistedTarget?.directory) return persistedTarget.directory
+      return normalizePath(selectedProject?.path ?? null)
+    })()
+
+    persistDraftTarget({ projectId: selectedProject?.id ?? null, directory })
+
+    const now = Date.now()
+    const draft: ChatDraft = {
+      id: createDraftId(),
+      text: options?.initialPrompt ?? "",
+      createdAt: now,
+      updatedAt: now,
+      selectedProjectId: selectedProject?.id ?? null,
+      directoryOverride: directory,
+      pendingWorktreeRequestId: options?.pendingWorktreeRequestId ?? null,
+      bootstrapPendingDirectory: normalizePath(options?.bootstrapPendingDirectory ?? null),
+      preserveDirectoryOverride: options?.preserveDirectoryOverride === true,
+      parentID: options?.parentID ?? null,
+      title: options?.title,
+      initialPrompt: options?.initialPrompt,
+      syntheticParts: options?.syntheticParts,
+      planMode: options?.planMode,
+      sendConfig: normalizeDraftSendConfig(options?.sendConfig),
+      targetFolderId: options?.targetFolderId,
+    }
+
+    set((s) => {
+      // Empty inactive drafts are editor placeholders, not saved draft rows.
+      // Drop them when a new draft is created so they cannot accumulate in storage.
+      Object.entries(s.draftsById).forEach(([id, existing]) => {
+        if (id !== s.currentDraftId && existing.text.trim().length === 0) {
+          removePersistedDraftInput(safeStorage, id)
+        }
+      })
+      const retainedDrafts = Object.fromEntries(
+        Object.entries(s.draftsById).filter(([id, existing]) => id === s.currentDraftId || existing.text.trim().length > 0),
+      ) as Record<string, ChatDraft>
+      const draftsById = { ...retainedDrafts, [draft.id]: draft }
+      const draftOrder = [draft.id, ...s.draftOrder.filter((id) => id !== draft.id && Boolean(retainedDrafts[id]))]
+      persistDrafts(safeStorage, draftsById, draftOrder)
+      return {
+        draftsById,
+        draftOrder,
+        currentDraftId: draft.id,
+        newSessionDraft: toNewSessionDraftState(draft),
+        currentSessionId: null,
+        error: null,
+      }
+    })
+
+    useInputStore.getState().clearAttachedFiles()
+
+    if (options?.initialPrompt) {
+      useInputStore.getState().setPendingInputText(options.initialPrompt)
+    }
+
+    void activateConfigForDirectory(directory).then(() => {
+      const state = get()
+      const currentDraftSendConfig = state.draftsById[draft.id]?.sendConfig ?? (state.currentDraftId === draft.id ? state.newSessionDraft.sendConfig : undefined)
+      const hasExplicitDraftModel = state.currentDraftId === draft.id
+        && (hasDraftSendModel(currentDraftSendConfig) || !!useSelectionStore.getState().getDraftModelSelection(draft.id))
+      useConfigStore.getState().applyDefaultsToCurrent({ preserveCurrentModel: hasExplicitDraftModel })
+    })
+  },
+
+  selectNewSessionDraft: (draftId) => {
+    const draft = get().draftsById[draftId]
+    if (!draft) return
+    persistDraftTarget({ projectId: draft.selectedProjectId ?? null, directory: normalizePath(draft.directoryOverride ?? null) })
+    set({ currentSessionId: null, currentDraftId: draftId, newSessionDraft: toNewSessionDraftState(draft), error: null })
+    void activateConfigForDirectory(draft.directoryOverride ?? null)
+  },
+
+  updateNewSessionDraftText: (draftId, text) => {
+    set((s) => {
+      const existing = s.draftsById[draftId]
+      if (!existing || existing.text === text) return s
+      const nextDraft = { ...existing, text, updatedAt: Date.now() }
+      const draftsById = { ...s.draftsById, [draftId]: nextDraft }
+      persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return { draftsById }
+    })
+  },
+
+  deleteNewSessionDraft: (draftId) => {
+    useSelectionStore.getState().clearDraftSelection(draftId)
+    set((s) => {
+      if (!s.draftsById[draftId]) return s
+      const draftsById = { ...s.draftsById }
+      delete draftsById[draftId]
+      removePersistedDraftInput(safeStorage, draftId)
+      const draftOrder = s.draftOrder.filter((id) => id !== draftId)
+      const nextDraftId = s.currentDraftId === draftId ? draftOrder[0] ?? null : s.currentDraftId
+      const nextDraft = nextDraftId ? draftsById[nextDraftId] : null
+      persistDrafts(safeStorage, draftsById, draftOrder)
+      return {
+        draftsById,
+        draftOrder,
+        currentDraftId: nextDraftId,
+        currentSessionId: nextDraftId ? null : s.currentSessionId,
+        newSessionDraft: nextDraftId ? toNewSessionDraftState(nextDraft) : { ...DEFAULT_DRAFT },
+      }
+    })
+  },
+
+  // ---------------------------------------------------------------------------
+  // closeNewSessionDraft
+  // ---------------------------------------------------------------------------
+  closeNewSessionDraft: () => {
+    const draftId = get().currentDraftId
+    if (draftId) {
+      get().deleteNewSessionDraft(draftId)
+      return
+    }
+    set({
+      currentDraftId: null,
+      newSessionDraft: {
+        open: false,
+        selectedProjectId: null,
+        directoryOverride: null,
+        pendingWorktreeRequestId: null,
+        bootstrapPendingDirectory: null,
+        preserveDirectoryOverride: false,
+        parentID: null,
+        title: undefined,
+        initialPrompt: undefined,
+        syntheticParts: undefined,
+        sendConfig: undefined,
+        targetFolderId: undefined,
+      },
+    })
+  },
+
+  promoteDraftToSession: ({ draftId, sessionId, directoryHint, submittedText }) => {
+    const previousSessionId = get().currentSessionId
+    set((s) => {
+      let draftsById = s.draftsById
+      let draftOrder = s.draftOrder
+      const removedDraftIds = new Set<string>()
+      const promotedDraft = draftId ? s.draftsById[draftId] : null
+      const promotedText = getDraftPromotionText(promotedDraft?.text ?? submittedText ?? null)
+      const promotedDirectory = getDraftPromotionDirectory(promotedDraft, directoryHint ?? null)
+
+      if (draftId) {
+        removedDraftIds.add(draftId)
+      }
+
+      if (promotedText.length > 0) {
+        for (const [id, draft] of Object.entries(s.draftsById)) {
+          if (id === draftId) continue
+          if (getDraftPromotionText(draft.text) !== promotedText) continue
+          if (getDraftPromotionDirectory(draft) !== promotedDirectory) continue
+          removedDraftIds.add(id)
+        }
+      }
+
+      if (removedDraftIds.size > 0) {
+        draftsById = { ...s.draftsById }
+        for (const removedDraftId of removedDraftIds) {
+          delete draftsById[removedDraftId]
+          removePersistedDraftInput(safeStorage, removedDraftId)
+        }
+        draftOrder = s.draftOrder.filter((id) => !removedDraftIds.has(id))
+      }
+
+      clearLegacyNewDraftInput(safeStorage)
+      persistDrafts(safeStorage, draftsById, draftOrder)
+
+      return {
+        draftsById,
+        draftOrder,
+        currentSessionId: sessionId,
+        currentDraftId: null,
+        newSessionDraft: { ...DEFAULT_DRAFT },
+        error: null,
+      }
+    })
+    applyCurrentSessionSideEffects(sessionId, directoryHint, previousSessionId, get)
+  },
+
+  setNewSessionDraftTarget: (target) => {
+    let nextDirectory: string | null = null
+    set((s) => {
+      nextDirectory = normalizePath(target.directoryOverride ?? s.newSessionDraft.directoryOverride)
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const updatedDraft = currentDraft
+        ? {
+            ...currentDraft,
+            selectedProjectId: target.projectId ?? target.selectedProjectId ?? currentDraft.selectedProjectId,
+            directoryOverride: target.directoryOverride ?? currentDraft.directoryOverride,
+            updatedAt: Date.now(),
+          }
+        : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return {
+        draftsById,
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          id: updatedDraft?.id ?? s.newSessionDraft.id,
+          selectedProjectId: target.projectId ?? target.selectedProjectId ?? s.newSessionDraft.selectedProjectId,
+          directoryOverride: target.directoryOverride ?? s.newSessionDraft.directoryOverride,
+        },
+      }
+    })
+    void activateConfigForDirectory(nextDirectory)
+  },
+
+  updateNewSessionDraftSendConfig: (patch) => {
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const nextSendConfig = mergeDraftSendConfig(currentDraft?.sendConfig ?? s.newSessionDraft.sendConfig, patch)
+      const updatedDraft = currentDraft ? { ...currentDraft, sendConfig: nextSendConfig, updatedAt: Date.now() } : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return {
+        draftsById,
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          sendConfig: nextSendConfig,
+        },
+      }
+    })
+  },
+
+  setDraftPreserveDirectoryOverride: (value) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const updatedDraft = currentDraft ? { ...currentDraft, preserveDirectoryOverride: value, updatedAt: Date.now() } : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return { draftsById, newSessionDraft: { ...s.newSessionDraft, preserveDirectoryOverride: value } }
+    }),
+
+  acknowledgeSessionAbort: (sessionId) =>
+    set((s) => {
+      const flags = new Map(s.sessionAbortFlags)
+      const existing = flags.get(sessionId)
+      if (existing) flags.set(sessionId, { ...existing, acknowledged: true })
+      return { sessionAbortFlags: flags }
+    }),
+
+  clearAbortPrompt: () => set({ abortPromptSessionId: null, abortPromptExpiresAt: null }),
+
+  armAbortPrompt: (durationMs = 5000) => {
+    const { currentSessionId } = get()
+    if (!currentSessionId) return null
+    const expiresAt = Date.now() + durationMs
+    set({ abortPromptSessionId: currentSessionId, abortPromptExpiresAt: expiresAt })
+    return expiresAt
+  },
+
+  clearError: () => set({ error: null }),
+
+  markSessionAsOpenChamberCreated: (sessionId) =>
+    set((s) => {
+      const next = new Set(s.webUICreatedSessions)
+      next.add(sessionId)
+      return { webUICreatedSessions: next }
+    }),
+
+  isOpenChamberCreatedSession: (sessionId) => get().webUICreatedSessions.has(sessionId),
+
+  getContextUsage: (contextLimit: number, outputLimit: number) => {
+    if (get().newSessionDraft?.open) return null
+    const sessionId = get().currentSessionId
+    if (!sessionId) return null
+
+    const state = getDirectoryState()
+    const messages = state?.message[sessionId] ?? getSyncMessages(sessionId)
+    if (messages.length === 0) return null
+    const usage = getContextUsageFromMessages(messages, contextLimit, outputLimit)
+    if (!usage || !state) return usage
+
+    const relatedSubagents = getSubagentContextUsageForSession(
+      sessionId,
+      state.session,
+      (childSessionId) => state.message[childSessionId] ?? [],
+      (_session, childMessages) => resolveContextLimitsFromMessages(childMessages),
+    )
+
+    return attachRelatedSubagentContextUsage(usage, relatedSubagents)
+  },
+
+  initializeNewOpenChamberSession: () => {
+    // Stub — was a no-op in old store
+  },
+
+  setWorktreeMetadata: (sessionId, metadata) => {
+    // Write to authoritative session-worktree-store
+    if (metadata) {
+      useSessionWorktreeStore.getState().setAttachment(sessionId, {
+        worktreeRoot: metadata.worktreeRoot ?? metadata.path ?? null,
+        cwd: metadata.path ?? null,
+        branch: metadata.branch ?? null,
+        headState: metadata.headState ?? (metadata.branch ? 'branch' : 'detached'),
+        worktreeStatus: metadata.worktreeStatus ?? 'ready',
+        worktreeSource: metadata.worktreeSource ?? null,
+        legacy: false,
+        degraded: false,
+      })
+    } else {
+      useSessionWorktreeStore.getState().clearAttachment(sessionId)
+    }
+    // Also keep local map for backward compatibility
+    set((s) => {
+      const map = new Map(s.worktreeMetadata)
+      if (metadata) map.set(sessionId, metadata)
+      else map.delete(sessionId)
+      return { worktreeMetadata: map }
+    })
+  },
+
+  overrideNewSessionDraftTarget: (options) => {
+    let nextDirectory: string | null = null
+    set((s) => {
+      const nextDraft = { ...s.newSessionDraft, ...options }
+      nextDirectory = normalizePath(
+        typeof nextDraft.directoryOverride === "string" ? nextDraft.directoryOverride : null,
+      )
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const draftOptions = options as Partial<ChatDraft>
+      const updatedDraft = currentDraft
+        ? {
+            ...currentDraft,
+            ...draftOptions,
+            directoryOverride: normalizePath(draftOptions.directoryOverride ?? currentDraft.directoryOverride),
+            bootstrapPendingDirectory: normalizePath(draftOptions.bootstrapPendingDirectory ?? currentDraft.bootstrapPendingDirectory),
+            updatedAt: Date.now(),
+          }
+        : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return { draftsById, newSessionDraft: nextDraft }
+    })
+    void activateConfigForDirectory(nextDirectory)
+  },
+
+  resolvePendingDraftWorktreeTarget: (requestId, directory, options) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open || s.newSessionDraft.pendingWorktreeRequestId !== requestId) return s
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const updatedDraft = currentDraft
+        ? {
+            ...currentDraft,
+            selectedProjectId: (options as Record<string, unknown> | undefined)?.projectId as string ?? currentDraft.selectedProjectId ?? null,
+            directoryOverride: normalizePath(directory),
+            pendingWorktreeRequestId: null,
+            bootstrapPendingDirectory: normalizePath((options as Record<string, unknown> | undefined)?.bootstrapPendingDirectory as string ?? currentDraft.bootstrapPendingDirectory ?? null),
+            preserveDirectoryOverride: ((options as Record<string, unknown> | undefined)?.preserveDirectoryOverride ?? true) as boolean,
+            updatedAt: Date.now(),
+          }
+        : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return {
+        draftsById,
+        newSessionDraft: {
+          ...s.newSessionDraft,
+          selectedProjectId: (options as Record<string, unknown> | undefined)?.projectId as string ?? s.newSessionDraft.selectedProjectId ?? null,
+          directoryOverride: normalizePath(directory),
+          pendingWorktreeRequestId: null,
+          bootstrapPendingDirectory: normalizePath((options as Record<string, unknown> | undefined)?.bootstrapPendingDirectory as string ?? s.newSessionDraft.bootstrapPendingDirectory ?? null),
+          preserveDirectoryOverride: ((options as Record<string, unknown> | undefined)?.preserveDirectoryOverride ?? true) as boolean,
+        },
+      }
+    }),
+
+  setDraftBootstrapPendingDirectory: (directory) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const updatedDraft = currentDraft ? { ...currentDraft, bootstrapPendingDirectory: normalizePath(directory), updatedAt: Date.now() } : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return { draftsById, newSessionDraft: { ...s.newSessionDraft, bootstrapPendingDirectory: normalizePath(directory) } }
+    }),
+
+  setPendingDraftWorktreeRequest: (requestId) =>
+    set((s) => {
+      if (!s.newSessionDraft?.open) return s
+      const currentDraft = s.currentDraftId ? s.draftsById[s.currentDraftId] : null
+      const updatedDraft = currentDraft ? { ...currentDraft, pendingWorktreeRequestId: requestId, updatedAt: Date.now() } : null
+      const draftsById = updatedDraft ? { ...s.draftsById, [updatedDraft.id]: updatedDraft } : s.draftsById
+      if (updatedDraft) persistDrafts(safeStorage, draftsById, s.draftOrder)
+      return { draftsById, newSessionDraft: { ...s.newSessionDraft, pendingWorktreeRequestId: requestId } }
+    }),
+
+  getWorktreeMetadata: (sessionId) => get().worktreeMetadata.get(sessionId),
+
+  dismissPendingChangesBar: (sessionId, signature) => {
+    const map = new Map(get().pendingChangesBarDismissed);
+    if (signature === null) {
+      map.delete(sessionId);
+    } else {
+      map.set(sessionId, signature);
+    }
+    set({ pendingChangesBarDismissed: map });
+  },
+
+  // ---------------------------------------------------------------------------
+  // sendMessage — calls SDK, reads domain data from sync
+  // ---------------------------------------------------------------------------
+  sendMessage: async (
+    content: string,
+    providerID: string,
+    modelID: string,
+    agent?: string,
+    attachments?: AttachedFile[],
+    _agentMentionName?: string,
+    additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
+    variant?: string,
+    inputMode?: "normal" | "shell",
+    planMode?: boolean,
+  ) => {
+    void _agentMentionName
+    streamDebugMark("first-reply-send-start", {
+      hasCurrentSession: Boolean(get().currentSessionId),
+      inputMode: inputMode ?? "normal",
+    })
+    // Clear non-Git changed-files bar on new user message for current session
+    const sid = get().currentSessionId;
+    if (sid) {
+      const map = new Map(get().pendingChangesBarDismissed);
+      map.delete(sid);
+      set({ pendingChangesBarDismissed: map });
+    }
+
+    const draft = get().newSessionDraft
+    const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
+
+    // ---- New session from draft ----
+    if (draft?.open) {
+      const draftTargetFolderId = draft.targetFolderId
+      const capturedDraftId = get().currentDraftId ?? draft.id ?? null
+      const capturedDraft = capturedDraftId ? get().draftsById[capturedDraftId] : null
+      const draftSendConfig = normalizeDraftSendConfig(capturedDraft?.sendConfig ?? draft.sendConfig)
+      const resolvedPlanMode = typeof draftSendConfig?.planMode === "boolean"
+        ? draftSendConfig.planMode
+        : (planMode ?? draft.planMode ?? useSelectionStore.getState().getPlanModeSelection(null))
+      const submittedDraftText = capturedDraft?.text ?? content
+      let draftDirectoryOverride = resolveDirectoryForDraftSend(draft)
+      const draftProjectId = draft.selectedProjectId ?? null
+      const selectionState = useSelectionStore.getState()
+      const draftAgentSelection = capturedDraftId ? selectionState.getDraftAgentSelection(capturedDraftId) : null
+      const draftModelSelection = capturedDraftId ? selectionState.getDraftModelSelection(capturedDraftId) : null
+      const draftAgentForModel = draftAgentSelection ?? trimmedAgent
+      const draftAgentModelSelection = capturedDraftId && draftAgentForModel
+        ? selectionState.getDraftAgentModelForSelection(capturedDraftId, draftAgentForModel)
+        : null
+      const draftVariantProviderID = draftAgentModelSelection?.providerId ?? draftModelSelection?.providerId ?? providerID
+      const draftVariantModelID = draftAgentModelSelection?.modelId ?? draftModelSelection?.modelId ?? modelID
+      const draftAgentModelVariant = capturedDraftId && draftAgentForModel && draftVariantProviderID && draftVariantModelID
+        ? selectionState.getDraftAgentModelVariantForSelection(capturedDraftId, draftAgentForModel, draftVariantProviderID, draftVariantModelID)
+        : undefined
+
+      if (draft.pendingWorktreeRequestId) {
+        draftDirectoryOverride = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
+        get().resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
+      }
+
+      const created = await createSessionRecordAction(draft.title, draftDirectoryOverride, draft.parentID ?? null)
+      if (!created?.id) {
+        const createError = consumeLastCreateSessionError()
+        if (createError instanceof Error) {
+          throw createError
+        }
+        throw new Error("Failed to create session")
+      }
+      streamDebugMark("first-reply-session-created", {
+        sessionId: created.id,
+        directory: normalizePath(draftDirectoryOverride ?? created.directory ?? null),
+      })
+
+      persistDraftTarget({
+        projectId: draftProjectId,
+        directory: normalizePath(draftDirectoryOverride ?? created.directory ?? null),
+      })
+
+      const draftSyntheticParts = draft.syntheticParts
+      await activateConfigForDirectory(draftDirectoryOverride ?? created.directory ?? null)
+
+      const configState = useConfigStore.getState()
+      const draftSelection = resolveDraftSendSelection({
+        requestedAgent: draftAgentSelection ? undefined : trimmedAgent,
+        currentAgent: configState.currentAgentName,
+        settingsDefaultAgent: configState.settingsDefaultAgent,
+        agents: (configState.agents ?? []) as SendConfigAgent[],
+        providers: (configState.providers ?? []) as SendConfigProvider[],
+        inputProviderID: providerID,
+        inputModelID: modelID,
+        inputVariant: variant,
+        currentProviderID: configState.currentProviderId,
+        currentModelID: configState.currentModelId,
+        currentVariant: configState.currentVariant,
+        draftAgentSelection,
+        draftModelSelection,
+        draftAgentModelSelection,
+        draftAgentModelVariant,
+        draftSendConfig,
+      })
+      const effectiveDraftAgent = draftSelection.agent
+      const effectiveProviderID = draftSelection.providerID
+      const effectiveModelID = draftSelection.modelID
+      const effectiveVariant = draftSelection.variant
+
+      if (!effectiveProviderID || !effectiveModelID) {
+        throw new Error("Cannot send message: provider or model not selected")
+      }
+
+      if (capturedDraftId) {
+        useSelectionStore.getState().promoteDraftSelectionToSession(capturedDraftId, created.id)
+      }
+
+      if (effectiveProviderID && effectiveModelID) {
+        useSelectionStore.getState().saveSessionModelSelection(created.id, effectiveProviderID, effectiveModelID)
+      }
+
+      if (effectiveDraftAgent) {
+        useSelectionStore.getState().saveSessionAgentSelection(created.id, effectiveDraftAgent)
+        if (effectiveProviderID && effectiveModelID) {
+          useSelectionStore.getState().saveAgentModelForSession(created.id, effectiveDraftAgent, effectiveProviderID, effectiveModelID)
+          useSelectionStore.getState().saveAgentModelVariantForSession(created.id, effectiveDraftAgent, effectiveProviderID, effectiveModelID, effectiveVariant)
+        }
+      }
+
+      if (resolvedPlanMode) {
+        useSelectionStore.getState().setSessionPlanMode(created.id, true)
+      }
+      useSelectionStore.getState().clearDraftPlanMode()
+
+      get().initializeNewOpenChamberSession(created.id, configState.agents ?? [])
+
+      const createdDirectory = normalizePath(draftDirectoryOverride ?? created.directory ?? null)
+
+      get().promoteDraftToSession({
+        draftId: capturedDraftId,
+        sessionId: created.id,
+        directoryHint: createdDirectory,
+        submittedText: submittedDraftText,
+      })
+
+      if (draftTargetFolderId) {
+        const scopeKey = draftDirectoryOverride || created.directory || null
+        if (scopeKey) {
+          useSessionFoldersStore.getState().addSessionToFolder(scopeKey, draftTargetFolderId, created.id)
+        }
+      }
+
+      const mergedAdditionalParts = draftSyntheticParts?.length
+        ? [...(additionalParts || []), ...draftSyntheticParts]
+        : additionalParts
+
+      if (createdDirectory) {
+        getSyncChildStores().ensureChild(createdDirectory)
+      }
+
+      notifyMessageSent(created.id)
+
+      markPendingUserSendAnimation(created.id)
+
+      const files = attachments?.map((a) => ({
+        type: "file" as const,
+        mime: a.mimeType,
+        url: a.dataUrl,
+        filename: a.filename,
+      }))
+
+      await routeMessage({
+        sessionId: created.id,
+        content,
+        providerID: effectiveProviderID,
+        modelID: effectiveModelID,
+        agent: effectiveDraftAgent,
+        variant: effectiveVariant,
+        inputMode,
+        directory: createdDirectory,
+        files,
+        planMode: resolvedPlanMode,
+        additionalParts: mergedAdditionalParts?.map((p) => ({
+          text: p.text,
+          synthetic: p.synthetic,
+          files: p.attachments?.map((a: AttachedFile) => ({
+            type: "file" as const,
+            mime: a.mimeType,
+            url: a.dataUrl,
+            filename: a.filename,
+          })),
+        })),
+      })
+      return
+    }
+
+    // ---- Existing session ----
+    const currentSessionId = get().currentSessionId
+    const resolvedPlanMode = planMode ?? useSelectionStore.getState().getPlanModeSelection(currentSessionId)
+    const existingSelection = currentSessionId
+      ? resolveSessionSendConfig(currentSessionId, {
+          providerID,
+          modelID,
+          agent: trimmedAgent,
+          variant,
+          planMode: resolvedPlanMode,
+        })
+      : { providerID, modelID, agent: trimmedAgent, variant, planMode: resolvedPlanMode }
+    const effectiveProviderID = existingSelection.providerID ?? providerID
+    const effectiveModelID = existingSelection.modelID ?? modelID
+    const effectiveAgent = existingSelection.agent
+    const effectiveVariant = existingSelection.variant
+
+    if (currentSessionId && effectiveAgent) {
+      useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, effectiveAgent)
+      useSelectionStore.getState().saveAgentModelVariantForSession(currentSessionId, effectiveAgent, effectiveProviderID, effectiveModelID, effectiveVariant)
+    }
+
+    if (currentSessionId) {
+      const viewportState = useViewportStore.getState()
+      const memState = viewportState.sessionMemoryState.get(currentSessionId)
+      if (!memState || !memState.lastUserMessageAt) {
+        const newMemState = new Map(viewportState.sessionMemoryState)
+        newMemState.set(currentSessionId, {
+          viewportAnchor: 0,
+          isStreaming: false,
+          lastAccessedAt: Date.now(),
+          backgroundMessageCount: 0,
+          ...memState,
+          lastUserMessageAt: Date.now(),
+        })
+        useViewportStore.setState({ sessionMemoryState: newMemState })
+      }
+    }
+
+    const currentSessionDirectory = currentSessionId
+      ? normalizePath(get().getDirectoryForSession(currentSessionId))
+      : null
+
+    if (currentSessionId) {
+      notifyMessageSent(currentSessionId)
+    }
+
+    if (currentSessionId) {
+      markPendingUserSendAnimation(currentSessionId)
+    }
+
+    const files = attachments?.map((a) => ({
+      type: "file" as const,
+      mime: a.mimeType,
+      url: a.dataUrl,
+      filename: a.filename,
+    }))
+
+    const starterContext = consumeStarterAssistantContext(get, set, currentSessionId)
+    const sendAdditionalParts = withStarterAssistantContext(additionalParts, starterContext)
+
+    try {
+      const contextConsumed = await routeMessage({
+        sessionId: currentSessionId || "",
+        content,
+        providerID: effectiveProviderID,
+        modelID: effectiveModelID,
+        agent: effectiveAgent,
+        variant: effectiveVariant,
+        inputMode,
+        directory: currentSessionDirectory,
+        files,
+        planMode: resolvedPlanMode,
+        additionalParts: sendAdditionalParts?.map((p) => ({
+          text: p.text,
+          synthetic: p.synthetic,
+          files: p.attachments?.map((a) => ({
+            type: "file" as const,
+            mime: a.mimeType,
+            url: a.dataUrl,
+            filename: a.filename,
+          })),
+        })),
+      })
+      if (!contextConsumed) {
+        restoreStarterAssistantContext(set, starterContext)
+      }
+    } catch (error) {
+      restoreStarterAssistantContext(set, starterContext)
+      throw error
+    }
+  },
+
+  sendMessageToSession: async (
+    sessionId,
+    content,
+    providerID,
+    modelID,
+    agent,
+    attachments,
+    _agentMentionName,
+    additionalParts,
+    variant,
+    inputMode,
+    planMode,
+    lifecycleCallbacks,
+  ) => {
+    void _agentMentionName
+    streamDebugMark("first-reply-send-start", {
+      sessionId,
+      inputMode: inputMode ?? "normal",
+    })
+    const map = new Map(get().pendingChangesBarDismissed)
+    map.delete(sessionId)
+    set({ pendingChangesBarDismissed: map })
+
+    const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
+    const sendSelection = resolveSessionSendConfig(sessionId, {
+      providerID,
+      modelID,
+      agent: trimmedAgent,
+      variant,
+      planMode,
+    })
+    const effectiveProviderID = sendSelection.providerID ?? providerID
+    const effectiveModelID = sendSelection.modelID ?? modelID
+    const effectiveAgent = sendSelection.agent
+    const effectiveVariant = sendSelection.variant
+
+    if (effectiveAgent) {
+      useSelectionStore.getState().saveSessionAgentSelection(sessionId, effectiveAgent)
+      useSelectionStore.getState().saveAgentModelVariantForSession(sessionId, effectiveAgent, effectiveProviderID, effectiveModelID, effectiveVariant)
+    }
+
+    const viewportState = useViewportStore.getState()
+    const memState = viewportState.sessionMemoryState.get(sessionId)
+    if (!memState || !memState.lastUserMessageAt) {
+      const newMemState = new Map(viewportState.sessionMemoryState)
+      newMemState.set(sessionId, {
+        viewportAnchor: 0,
+        isStreaming: false,
+        lastAccessedAt: Date.now(),
+        backgroundMessageCount: 0,
+        ...memState,
+        lastUserMessageAt: Date.now(),
+      })
+      useViewportStore.setState({ sessionMemoryState: newMemState })
+    }
+
+    const sessionDirectory = normalizePath(get().getDirectoryForSession(sessionId))
+
+    notifyMessageSent(sessionId)
+    markPendingUserSendAnimation(sessionId)
+
+    const files = attachments?.map((a) => ({
+      type: "file" as const,
+      mime: a.mimeType,
+      url: a.dataUrl,
+      filename: a.filename,
+    }))
+
+    const starterContext = consumeStarterAssistantContext(get, set, sessionId)
+    const sendAdditionalParts = withStarterAssistantContext(additionalParts, starterContext)
+
+    try {
+      const contextConsumed = await routeMessage({
+        sessionId,
+        content,
+        providerID: effectiveProviderID,
+        modelID: effectiveModelID,
+        agent: effectiveAgent,
+        variant: effectiveVariant,
+        inputMode,
+        directory: sessionDirectory,
+        files,
+        planMode: sendSelection.planMode ?? useSelectionStore.getState().getPlanModeSelection(sessionId),
+        additionalParts: sendAdditionalParts?.map((p) => ({
+          text: p.text,
+          synthetic: p.synthetic,
+          files: p.attachments?.map((a) => ({
+            type: "file" as const,
+            mime: a.mimeType,
+            url: a.dataUrl,
+            filename: a.filename,
+          })),
+        })),
+        lifecycleCallbacks,
+      })
+      if (!contextConsumed) {
+        restoreStarterAssistantContext(set, starterContext)
+      }
+    } catch (error) {
+      restoreStarterAssistantContext(set, starterContext)
+      throw error
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // createSession
+  // ---------------------------------------------------------------------------
+  createSession: async (title, directoryOverride, parentID) => {
+    try {
+      const dir = directoryOverride ?? opencodeClient.getDirectory()
+      const session = await createSessionAction(title, dir, parentID ?? null)
+      if (!session) return null
+
+      return session
+    } catch (e) {
+      console.error("[session-ui-store] createSession failed", e)
+      return null
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // deleteSession — calls SDK, SSE event updates child store
+  // ---------------------------------------------------------------------------
+  deleteSession: (id) => deleteSessionAction(id),
+
+  deleteSessions: (ids) => deleteSessionsAction(ids),
+
+  archiveSession: (id) => archiveSessionAction(id),
+
+  archiveSessions: (ids) => archiveSessionsAction(ids),
+
+  unarchiveSession: (id) => unarchiveSessionAction(id),
+
+  unarchiveSessions: (ids) => unarchiveSessionsAction(ids),
+
+  // ---------------------------------------------------------------------------
+  // updateSessionTitle — calls SDK, SSE event updates child store
+  // ---------------------------------------------------------------------------
+  updateSessionTitle: async (sessionId, title) => {
+    await updateSessionTitleAction(sessionId, title)
+  },
+
+  shareSession: async (sessionId) => {
+    return shareSessionAction(sessionId)
+  },
+
+  unshareSession: async (sessionId) => {
+    return unshareSessionAction(sessionId)
+  },
+
+  // ---------------------------------------------------------------------------
+  // revertToMessage — delegates to session-actions (single implementation)
+  // ---------------------------------------------------------------------------
+  revertToMessage: async (sessionId, messageId) => {
+    const { revertToMessage: revert } = await import("./session-actions")
+    await revert(sessionId, messageId)
+  },
+
+  // ---------------------------------------------------------------------------
+  // handleSlashUndo — reads from sync
+  // ---------------------------------------------------------------------------
+  handleSlashUndo: async (sessionId) => {
+    const messages = getSyncMessages(sessionId)
+    const sessions = getSyncSessions()
+    const currentSession = sessions.find((s) => s.id === sessionId)
+
+    const userMessages = messages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+
+    const revertToId = currentSession?.revert?.messageID
+    let targetMessage: typeof messages[number] | undefined
+    if (revertToId) {
+      targetMessage = [...userMessages].reverse().find((m) => m.id < revertToId)
+    } else {
+      targetMessage = userMessages[userMessages.length - 1]
+    }
+
+    if (!targetMessage) return
+
+    const targetParts = getSyncParts(targetMessage.id)
+    const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
+    const preview = textPart?.text
+      ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
+      : "[No text]"
+
+    await get().revertToMessage(sessionId, targetMessage.id)
+
+    const { toast } = await import("sonner")
+    toast.success(`Undid to: ${preview}`)
+  },
+
+  // ---------------------------------------------------------------------------
+  // handleSlashRedo — reads from sync
+  // ---------------------------------------------------------------------------
+  handleSlashRedo: async (sessionId) => {
+    const sessions = getSyncSessions()
+    const currentSession = sessions.find((s) => s.id === sessionId)
+    const revertToId = currentSession?.revert?.messageID
+    if (!revertToId) return
+
+    await refetchSessionMessages(sessionId)
+
+    const messages = getSyncMessages(sessionId)
+    const userMessages = messages.filter((m) => m.role === "user")
+    const targetMessage = userMessages.find((m) => m.id > revertToId)
+
+    if (targetMessage) {
+      const targetParts = getSyncParts(targetMessage.id)
+      const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
+      const preview = textPart?.text
+        ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
+        : "[No text]"
+
+      await get().revertToMessage(sessionId, targetMessage.id)
+
+      const { toast } = await import("sonner")
+      toast.success(`Redid to: ${preview}`)
+    } else {
+      // Full unrevert
+      const { unrevertSession } = await import("./session-actions")
+      await unrevertSession(sessionId)
+
+      const { toast } = await import("sonner")
+      toast.success("Restored all messages")
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // forkFromMessage — delegates to session-actions (handles text + sidebar)
+  // ---------------------------------------------------------------------------
+  forkFromMessage: async (sessionId, messageId) => {
+    const sessions = getSyncSessions()
+    const existingSession = sessions.find((s) => s.id === sessionId)
+    if (!existingSession) return
+
+    try {
+      const { forkFromMessage: fork } = await import("./session-actions")
+      await fork(sessionId, messageId)
+
+      const { toast } = await import("sonner")
+      toast.success(`Forked from ${existingSession.title}`)
+    } catch (error) {
+      console.error("Failed to fork session:", error)
+      const { toast } = await import("sonner")
+      toast.error("Failed to fork session")
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // createSessionFromAssistantMessage — reads from sync
+  // ---------------------------------------------------------------------------
+  createSessionFromAssistantMessage: async (sourceMessageId) => {
+    if (!sourceMessageId) return
+
+    // Find which session this message belongs to by scanning sync state
+    const state = getDirectoryState()
+    if (!state) return
+
+    let sourceSessionId: string | undefined
+    let sourceMessage: Message | undefined
+
+    for (const [sid, msgs] of Object.entries(state.message ?? {})) {
+      const found = msgs.find((m) => m.id === sourceMessageId)
+      if (found) {
+        sourceSessionId = sid
+        sourceMessage = found
+        break
+      }
+    }
+
+    if (!sourceMessage || sourceMessage.role !== "assistant") return
+
+    const sourceParts = getSyncParts(sourceMessageId)
+    const assistantPlanText = flattenAssistantTextParts(sourceParts)
+    if (!assistantPlanText.trim()) return
+
+    const directory = resolveSessionDirectory(
+      sourceSessionId ?? null,
+      (sid) => get().worktreeMetadata.get(sid),
+    )
+
+    const session = await get().createSession(undefined, directory ?? null, null)
+    if (!session) return
+
+    const createdAt = Date.now()
+    const starter: StarterAssistantMessage = {
+      sessionId: session.id,
+      sourceMessageId,
+      messageId: createLocalStarterId("msg"),
+      partId: createLocalStarterId("prt"),
+      text: assistantPlanText,
+      createdAt,
+      pendingContext: true,
+    }
+
+    set((state) => {
+      const starterAssistantMessages = new Map(state.starterAssistantMessages)
+      starterAssistantMessages.set(session.id, starter)
+      return { starterAssistantMessages }
+    })
+
+    // Decision: OpenCode has no assistant-message seed API. Keep this starter
+    // response client-side and send it once later as synthetic context with the
+    // user's first real prompt instead of submitting it as a user message now.
+    injectStarterAssistantMessage({
+      sessionId: session.id,
+      directory: directory ?? (session as { directory?: string | null }).directory ?? null,
+      sourceMessage,
+      messageId: starter.messageId,
+      partId: starter.partId,
+      text: assistantPlanText,
+      createdAt,
+    })
+
+    get().setCurrentSession(session.id, directory ?? (session as { directory?: string | null }).directory ?? null)
+  },
+
+  // ---------------------------------------------------------------------------
+  // Data access helpers — read from sync
+  // ---------------------------------------------------------------------------
+  getSessionsByDirectory: (directory) => {
+    const nd = normalizePath(directory)
+    if (!nd) return []
+    const sessions = getAllSyncSessions()
+    return sessions.filter((s) => resolveDirectoryKey(s) === nd && !isGitGenerationSessionRecord(s))
+  },
+
+  getDirectoryForSession: (sessionId) => {
+    const attachmentDirectory = getAttachedSessionDirectory(getAttachmentForSession(sessionId))
+    if (attachmentDirectory) return attachmentDirectory
+    const liveDirectory = normalizePath(getSyncSessionDirectoryAnyDirectory(sessionId))
+    if (liveDirectory) return liveDirectory
+    const sessions = getAllSyncSessions()
+    const session = sessions.find((s) => s.id === sessionId)
+    const sessionDirectory = session ? resolveDirectoryKey(session) : null
+    if (sessionDirectory) return sessionDirectory
+    return get().sessionDirectoryHints.get(sessionId) ?? null
+  },
+
+  getLastUserChoice: (sessionId) => {
+    const directory = get().getDirectoryForSession(sessionId) ?? undefined
+    const messages = getSyncMessages(sessionId, directory)
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i] as Message & {
+        model?: { providerID?: string; modelID?: string; variant?: string }
+        variant?: string
+        mode?: string
+      }
+      if (message.role !== "user") {
+        continue
+      }
+
+      const providerID = typeof message.model?.providerID === "string" && message.model.providerID.trim().length > 0
+        ? message.model.providerID
+        : undefined
+      const modelID = typeof message.model?.modelID === "string" && message.model.modelID.trim().length > 0
+        ? message.model.modelID
+        : undefined
+      const agent = typeof message.agent === "string" && message.agent.trim().length > 0
+        ? message.agent
+        : (typeof message.mode === "string" && message.mode.trim().length > 0 ? message.mode : undefined)
+      const variantCandidate = message.model?.variant ?? message.variant
+      const variant = typeof variantCandidate === "string" && variantCandidate.trim().length > 0
+        ? variantCandidate
+        : undefined
+
+      return { agent, providerID, modelID, variant }
+    }
+    return null
+  },
+
+  getCurrentAgent: (sessionId) => {
+    return useSelectionStore.getState().sessionAgentSelections.get(sessionId) ?? undefined
+  },
+
+  debugSessionMessages: async (sessionId) => {
+    const msgs = getSyncMessages(sessionId)
+    const sessions = getSyncSessions()
+    const session = sessions.find((s) => s.id === sessionId)
+    console.log(`Debug session ${sessionId}:`, {
+      session,
+      messageCount: msgs.length,
+      messages: msgs.map((m) => ({
+        id: m.id,
+        role: m.role,
+        tokens: m.role === "assistant" ? m.tokens : undefined,
+      })),
+    })
+  },
+
+  pollForTokenUpdates: () => {
+    // Handled by sync system's SSE stream
+  },
+
+  setSessionDirectory: (sessionId, directory) => {
+    const normalized = normalizePath(directory)
+    set((state) => {
+      const next = new Map(state.sessionDirectoryHints)
+      if (normalized) {
+        next.set(sessionId, normalized)
+      } else {
+        next.delete(sessionId)
+      }
+      return { sessionDirectoryHints: next }
+    })
+  },
+
+  // ---------------------------------------------------------------------------
+  // Plan mode availability tracking
+  // ---------------------------------------------------------------------------
+  recordUserMessagePlanMode: (sessionId, messageId, enabled) => {
+    set((state) => {
+      const hasExisting = state.planModeUserMessages.has(messageId)
+      const currentSessionMessageId = state.planModeUserMessagesBySession.get(sessionId)
+      if (enabled === hasExisting && (!enabled || currentSessionMessageId === messageId)) return state
+
+      const next = new Set(state.planModeUserMessages)
+      const nextBySession = new Map(state.planModeUserMessagesBySession)
+      if (enabled) next.add(messageId)
+      else next.delete(messageId)
+      if (enabled) {
+        // Decision: keep only the latest plan-mode user message per session.
+        // The sidebar indicator is session-scoped, and older pending entries
+        // should not revive a completed/implemented plan after a newer turn.
+        nextBySession.delete(sessionId)
+        nextBySession.set(sessionId, messageId)
+      } else if (currentSessionMessageId === messageId) {
+        nextBySession.delete(sessionId)
+      }
+      persistPlanMessageState(next, state.implementedPlanRequests, nextBySession)
+      return { planModeUserMessages: next, planModeUserMessagesBySession: nextBySession }
+    })
+  },
+
+  isUserMessagePlanMode: (messageId) => {
+    return get().planModeUserMessages.has(messageId)
+  },
+
+  isPlanSourceImplemented: (sessionId, sourceMessageId) => {
+    const prefix = `${sessionId}:${sourceMessageId}:plan:`
+    const legacyPrefix = `${sessionId}:${sourceMessageId}-plan-`
+    for (const key of get().implementedPlanRequests) {
+      if (key.startsWith(prefix) || key.startsWith(legacyPrefix)) return true
+    }
+    return false
+  },
+
+  markSessionPlanAvailable: (sessionId) => {
+    get().markPlanProposed(sessionId)
+  },
+
+  isSessionPlanAvailable: (sessionId) => {
+    return get().sessionPlanAvailable.get(sessionId) ?? get().sessionPlanIndicator.has(sessionId)
+  },
+
+  markPlanProposed: (sessionId, sourceMessageId) => {
+    set((state) => {
+      const current = state.sessionPlanIndicator.get(sessionId)
+      const nextEntry = nextPlanIndicatorEntry(current, "proposed", sourceMessageId)
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true) return state
+
+      const nextIndicator = new Map(state.sessionPlanIndicator)
+      if (nextEntry) nextIndicator.set(sessionId, nextEntry)
+      const nextAvailable = new Map(state.sessionPlanAvailable)
+      nextAvailable.set(sessionId, true)
+      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable }
+    })
+  },
+
+  markPlanImplementing: (sessionId, sourceMessageId, implementationMessageId) => {
+    set((state) => {
+      const current = state.sessionPlanIndicator.get(sessionId)
+      const nextEntry = nextPlanIndicatorEntry(current, "implementing", sourceMessageId, implementationMessageId)
+      const nextBySession = new Map(state.planModeUserMessagesBySession)
+      const removedPendingPlanMessage = nextBySession.delete(sessionId)
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !removedPendingPlanMessage) return state
+
+      const nextIndicator = new Map(state.sessionPlanIndicator)
+      if (nextEntry) nextIndicator.set(sessionId, nextEntry)
+      const nextAvailable = new Map(state.sessionPlanAvailable)
+      nextAvailable.set(sessionId, true)
+      if (removedPendingPlanMessage) persistPlanMessageState(state.planModeUserMessages, state.implementedPlanRequests, nextBySession)
+      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable, planModeUserMessagesBySession: nextBySession }
+    })
+  },
+
+  markPlanCompleted: (sessionId, sourceMessageId) => {
+    set((state) => {
+      const current = state.sessionPlanIndicator.get(sessionId)
+      const nextEntry = nextPlanIndicatorEntry(current, "completed", sourceMessageId)
+      const nextBySession = new Map(state.planModeUserMessagesBySession)
+      const removedPendingPlanMessage = nextBySession.delete(sessionId)
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !removedPendingPlanMessage) return state
+
+      const nextIndicator = new Map(state.sessionPlanIndicator)
+      if (nextEntry) nextIndicator.set(sessionId, nextEntry)
+      const nextAvailable = new Map(state.sessionPlanAvailable)
+      nextAvailable.set(sessionId, true)
+      if (removedPendingPlanMessage) persistPlanMessageState(state.planModeUserMessages, state.implementedPlanRequests, nextBySession)
+      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable, planModeUserMessagesBySession: nextBySession }
+    })
+  },
+
+  markPlanImplementationRequested: (planKey) => {
+    set((state) => {
+      if (state.implementedPlanRequests.has(planKey)) return state
+      const next = new Set(state.implementedPlanRequests)
+      next.add(planKey)
+      persistPlanMessageState(state.planModeUserMessages, next, state.planModeUserMessagesBySession)
+      return { implementedPlanRequests: next }
+    })
+  },
+
+  rollbackPlanImplementation: (sessionId, sourceMessageId, implementationKey, implementationMessageId) => {
+    set((state) => {
+      const current = state.sessionPlanIndicator.get(sessionId)
+      const nextRequests = new Set(state.implementedPlanRequests)
+      const removedRequest = nextRequests.delete(implementationKey)
+      const shouldRestoreProposed = (
+        !current
+        || (
+          current.state === "implementing"
+          && (!sourceMessageId || current.sourceMessageId === sourceMessageId)
+          && (!implementationMessageId || !current.implementationMessageId || current.implementationMessageId === implementationMessageId)
+        )
+      )
+
+      if (!removedRequest && !shouldRestoreProposed) return state
+
+      const nextIndicator = new Map(state.sessionPlanIndicator)
+      if (shouldRestoreProposed) {
+        nextIndicator.set(sessionId, { state: "proposed", sourceMessageId })
+      }
+      const nextAvailable = new Map(state.sessionPlanAvailable)
+      nextAvailable.set(sessionId, true)
+      persistPlanMessageState(state.planModeUserMessages, nextRequests, state.planModeUserMessagesBySession)
+      return {
+        implementedPlanRequests: nextRequests,
+        sessionPlanIndicator: nextIndicator,
+        sessionPlanAvailable: nextAvailable,
+      }
+    })
+  },
+}))
