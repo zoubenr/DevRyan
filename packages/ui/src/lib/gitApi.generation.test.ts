@@ -189,6 +189,7 @@ mock.module("./opencode/client", () => ({
 }))
 
 const {
+  buildCommitGenerationChatPromptPayload,
   generateCommitMessageDraft,
   generateCommitPlanPreview,
   generatePullRequestDescription,
@@ -396,6 +397,53 @@ describe("generateCommitMessage session routing", () => {
     expect(text).toContain("visible commit prompt")
     expect(text).toContain("hidden commit prompt")
     expect(text).toContain("single commit message draft")
+  })
+
+  test("builds visible chat prompt payload for commit generation without creating hidden sessions", async () => {
+    gitStatusResponse = {
+      ...gitStatusResponse,
+      files: [{ path: "src/app.ts", index: "M", working_dir: " " }],
+      diffStats: { "src/app.ts": { insertions: 2, deletions: 0 } },
+    }
+
+    const result = await buildCommitGenerationChatPromptPayload("/repo", ["src/app.ts"], { stagedOnly: true })
+
+    expect(result.status).toBe("ready")
+    if (result.status !== "ready") return
+    expect(result.visiblePrompt).toBe("visible commit prompt")
+    expect(result.syntheticParts).toHaveLength(1)
+    expect(result.syntheticParts[0]?.synthetic).toBe(true)
+    expect(result.syntheticParts[0]?.text).toContain("hidden commit prompt")
+    expect(result.syntheticParts[0]?.text).toContain("draft")
+    expect(result.syntheticParts[0]?.text).toContain("single commit message draft")
+    expect(result.syntheticParts[0]?.text).toContain("- src/app.ts")
+    expect(result.syntheticParts[0]?.text).toContain("recentCommitSubjects")
+    expect(result.syntheticParts[0]?.text).toContain("staged-only")
+    expect(renderMagicPromptCalls.map((call) => call.key)).toEqual([
+      "git.commit.generate.visible",
+      "git.commit.generate.instructions",
+    ])
+    expect(createSessionCalls).toEqual([])
+    expect(deleteSessionCalls).toEqual([])
+    expect(promptCalls).toEqual([])
+    expect(gitDiffCalls).toEqual([{ path: "src/app.ts", staged: true }])
+  })
+
+  test("returns blocked chat prompt payload before creating a chat when git context is unsafe", async () => {
+    gitStatusResponse = {
+      ...gitStatusResponse,
+      files: [{ path: "src/conflict.ts", index: "UU", working_dir: "UU" }],
+      diffStats: { "src/conflict.ts": { insertions: 1, deletions: 1 } },
+    }
+
+    const result = await buildCommitGenerationChatPromptPayload("/repo", ["src/conflict.ts"])
+
+    expect(result.status).toBe("blocked")
+    if (result.status !== "blocked") return
+    expect(result.message).toContain("conflict")
+    expect(createSessionCalls).toEqual([])
+    expect(deleteSessionCalls).toEqual([])
+    expect(promptCalls).toEqual([])
   })
 
   test("plan preview renders shared commit generation prompts with plan safety rules", async () => {

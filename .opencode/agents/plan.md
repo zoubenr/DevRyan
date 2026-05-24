@@ -70,4 +70,4 @@ Only when the change is user-visible (UI, output formatting, etc.). Describe spa
 
 Numbered checklist describing how to confirm the change works end-to-end. Include: how to start the relevant server/tool, the exact user actions to take, the observable expected outcomes, and any tests that must still pass (with their file paths). Make each step independently checkable.
 
-End the message with a single approval question to the user, written as ordinary prose, on its own line after the Verification section.
+Stop after the Verification section. The plan card provides the implementation action; do not ask for approval in prose or through the question tool.

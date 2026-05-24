@@ -83,6 +83,7 @@ import {
 } from "./session-children"
 import { getCursorAcpTitleRepair } from "./cursor-title-repair"
 import {
+  normalizeChatOwnedDiffSummary,
   stripUntrustedSessionDiffSummary,
   type SessionSummaryDiffStats,
 } from "@/lib/sessionDiffStats"
@@ -1373,11 +1374,14 @@ export async function resyncDirectoryAfterReconnect(
     const records = messageResponse
     if (!session || !records) return
 
-    const nextSession = stripSessionDiffSnapshots(session)
     const materializedRecords = records.filter(hasMessageRecordInfo)
     const nextMessages = materializedRecords
       .map((record) => stripMessageDiffSnapshots(record.info))
       .sort((a, b) => cmp(a.id, b.id))
+    const nextSession = normalizeChatOwnedDiffSummary(
+      stripSessionDiffSnapshots(session) as Session & { summary?: SessionSummaryDiffStats | null },
+      nextMessages as Array<Message & { summary?: SessionSummaryDiffStats | null }>,
+    ) as Session
 
     store.setState((state: DirectoryStore) => {
       const sessionIndex = state.session.findIndex((item) => item.id === nextSession.id)

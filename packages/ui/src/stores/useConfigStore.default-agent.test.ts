@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import type { Agent, Model, Provider } from "@opencode-ai/sdk/v2"
 import { useSessionUIStore } from "@/sync/session-ui-store"
+import { useSelectionStore } from "@/sync/selection-store"
 import { mergeRuntimeAgentsWithConfigOverrides, useConfigStore } from "./useConfigStore"
 
 type TestProvider = Omit<Provider, "models"> & { models: Model[] }
@@ -71,6 +72,18 @@ const agents: Agent[] = [
 describe("useConfigStore default agent selection", () => {
   beforeEach(() => {
     useSessionUIStore.setState({ currentSessionId: null })
+    useSelectionStore.setState((state) => ({
+      ...state,
+      sessionModelSelections: new Map(),
+      sessionAgentSelections: new Map(),
+      sessionPlanModeSelections: new Map(),
+      sessionAgentModelSelections: new Map(),
+      draftModelSelections: new Map(),
+      draftAgentSelections: new Map(),
+      draftAgentModelSelections: new Map(),
+      draftAgentModelVariantSelections: new Map(),
+      lastUsedProvider: null,
+    }))
     useConfigStore.setState({
       activeDirectoryKey: "__global__",
       providers,
@@ -154,6 +167,35 @@ describe("useConfigStore default agent selection", () => {
     expect(useConfigStore.getState().currentProviderId).toBe("anthropic")
     expect(useConfigStore.getState().currentModelId).toBe("claude")
     expect(useConfigStore.getState().currentVariant).toBe(undefined)
+  })
+
+  test("applyDefaultsToCurrent does not overwrite saved session agent selection", () => {
+    useSessionUIStore.setState({ currentSessionId: "session-1" })
+    useSelectionStore.getState().saveSessionAgentSelection("session-1", "Builder")
+    useConfigStore.setState({
+      settingsDefaultAgent: "Orchestrator",
+      currentAgentName: "Builder",
+      currentProviderId: "opencode",
+      currentModelId: "builder-model",
+      currentVariant: "high",
+      selectedProviderId: "opencode",
+    })
+
+    useConfigStore.getState().applyDefaultsToCurrent()
+
+    expect(useConfigStore.getState().currentAgentName).toBe("Orchestrator")
+    expect(useSelectionStore.getState().getSessionAgentSelection("session-1")).toBe("Builder")
+  })
+
+  test("setAgent records explicit active-session selection and applies the agent model", () => {
+    useSessionUIStore.setState({ currentSessionId: "session-1" })
+
+    useConfigStore.getState().setAgent("Builder")
+
+    expect(useSelectionStore.getState().getSessionAgentSelection("session-1")).toBe("Builder")
+    expect(useConfigStore.getState().currentProviderId).toBe("opencode")
+    expect(useConfigStore.getState().currentModelId).toBe("builder-model")
+    expect(useConfigStore.getState().currentVariant).toBe("high")
   })
 })
 

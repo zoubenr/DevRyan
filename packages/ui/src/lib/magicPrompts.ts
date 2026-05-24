@@ -439,7 +439,7 @@ Alignment:
 
 Final plan:
 7. Once aligned, deliver the concrete implementation plan grounded in the repo context. Make remaining assumptions and missing context explicit.
-8. Write the plan as ordinary markdown — no code fences, no plan.md wrapper. Use the actual plan name as the top heading, without an "Implementation Plan:" prefix. Use headings, lists, and bold for structure so the chat UI can render it as typeset prose. Organize phases so each phase contains multiple related implementation tasks; merge any phase that would contain only one task. Keep verification, acceptance criteria, files, and risks separate from actionable implementation tasks so task counts stay accurate. End with a single approval question written as ordinary prose.`,
+8. Write the plan as ordinary markdown — no code fences, no plan.md wrapper. Use the actual plan name as the top heading, without an "Implementation Plan:" prefix. Use headings, lists, and bold for structure so the chat UI can render it as typeset prose. Organize phases so each phase contains multiple related implementation tasks; merge any phase that would contain only one task. Keep verification, acceptance criteria, files, and risks separate from actionable implementation tasks so task counts stay accurate. Emit the final plan and stop; the plan card provides the implementation action.`,
   },
   {
     id: 'plan.improve.visible',

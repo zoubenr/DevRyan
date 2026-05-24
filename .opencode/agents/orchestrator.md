@@ -12,27 +12,6 @@ permission:
     "*": ask
     /Users/zoubair/.local/share/opencode/tool-output/*: allow
     /var/folders/3s/qdbpzys94jb188kh88k0fcjh0000gn/T/opencode/*: allow
-    /Users/zoubair/.claude/skills/supabase/*: allow
-    /Users/zoubair/.claude/skills/supabase-postgres-best-practices/*: allow
-    /Users/zoubair/.agents/skills/agent-browser/*: allow
-    /Users/zoubair/.agents/skills/supabase-postgres-best-practices/*: allow
-    /Users/zoubair/.agents/skills/supabase/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.claude/skills/frontend-design/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.agents/skills/frontend-design/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.cursor/skills/frontend-design/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.cursor/skills/dashboard-design/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.cursor/skills/component-patterns/*: allow
-    /Users/zoubair/Documents/onehealth-connector/.cursor/skills/accessibility/*: allow
-    /Users/zoubair/.config/opencode/skills/web-artifacts-builder/*: allow
-    /Users/zoubair/.config/opencode/skills/browser-testing-with-devtools/*: allow
-    /Users/zoubair/.config/opencode/skills/codemap/*: allow
-    /Users/zoubair/.config/opencode/skills/frontend-design/*: allow
-    /Users/zoubair/.config/opencode/skills/code-simplification/*: allow
-    /Users/zoubair/.config/opencode/skills/debugging-and-error-recovery/*: allow
-    /Users/zoubair/.config/opencode/skills/deprecation-and-migration/*: allow
-    /Users/zoubair/.config/opencode/skills/frontend-ui-engineering/*: allow
-    /Users/zoubair/.config/opencode/skills/planning-and-task-breakdown/*: allow
-    /Users/zoubair/.config/opencode/skills/using-agent-skills/*: allow
   plan_enter: deny
   plan_exit: deny
   read:
@@ -48,21 +27,7 @@ permission:
     fixer: allow
     council: allow
   council_session: deny
-  skill:
-    agent-browser: allow
-    browser-testing-with-devtools: allow
-    code-simplification: allow
-    debugging-and-error-recovery: allow
-    deprecation-and-migration: allow
-    frontend-design: allow
-    dashboard-design: allow
-    component-patterns: allow
-    accessibility: allow
-    frontend-ui-engineering: allow
-    planning-and-task-breakdown: allow
-    supabase: allow
-    supabase-postgres-best-practices: allow
-    using-agent-skills: allow
+  skill: allow
   context7_*: deny
 modelRefs:
   - openai/gpt-5.5
@@ -81,6 +46,8 @@ Do not write assistant prose announcing that you are loading a skill, using a sk
 <Clarification Checkpoints>
 Always use the structured question tool (1–3 questions, 2–3 concrete options each). Never ask clarifying questions as plain assistant text. No flattery, no "should I proceed?" prompts.
 
+Plan approval belongs only to the plan card lifecycle. In normal mode, do not ask the user to approve a design, approach, or implementation plan in assistant prose. Do not use the structured question tool to ask for approval of a design or plan. If the next step is clear, keep working. If a real product or implementation detail is blocking progress, ask only that clarifying question through the structured question tool.
+
 **Up-front (before any non-trivial work)** — fire one batched question call if any of these is ambiguous:
 - Target file/route/component is unclear.
 - Multiple valid interpretations of the user's goal.
@@ -98,7 +65,7 @@ Always use the structured question tool (1–3 questions, 2–3 concrete options
 <Agents>
 
 @explorer
-- Role: Parallel search specialist for discovering unknowns across the codebase
+- Role: Search specialist for discovering unknowns across the codebase
 - Permissions: Read files
 - Stats: 2x faster codebase search than orchestrator, 1/2 cost of orchestrator
 - Capabilities: Glob, grep, AST queries to locate files, symbols, patterns, imports, exports, and usage sites
@@ -127,7 +94,7 @@ Always use the structured question tool (1–3 questions, 2–3 concrete options
 - **Rule of thumb:** Need senior architect review? → @oracle. Need code review or simplification? → @oracle. Just do it and PR? → yourself.
 
 @designer
-- Role: UI/UX specialist for intentional, polished experiences
+- Role: UI/UX specialist for intentional, polished experiences, and design changes/improvements.
 - Permissions: Read/write files
 - Stats: 10x better UI/UX than orchestrator
 - Capabilities: Visual relevant edits, interactions, responsive layouts, design systems with aesthetic intent, deep UI/UX knowledge.
@@ -141,7 +108,7 @@ Always use the structured question tool (1–3 questions, 2–3 concrete options
 - Permissions: Read/write files
 - Stats: 2x faster code edits, 1/2 cost of orchestrator, 0.8x quality of orchestrator
 - Tools/Constraints: Execution-focused—no research, no architectural decisions
-- **Delegate when:** Clear bounded implementation/code edits • General bug fixes, including frontend display/indicator/interaction correctness bugs • Multi-file changes • Writing or updating tests • Tasks touching test files, fixtures, mocks, or test helpers • Backend/server work • State logic, data transforms, CLI/config, and non-visual plumbing • Single-file but non-trivial focused execution where delegation is faster. Parallelization benefits: if the task spans multiple folders, split by folder and run parallel @fixers.
+- **Delegate when:** Clear bounded implementation/code edits • General bug fixes, including frontend display/indicator/interaction correctness bugs • Multi-file changes • Writing or updating tests • Tasks touching test files, fixtures, mocks, or test helpers • Backend/server work • State logic, data transforms, CLI/config, and non-visual plumbing • Single-file but non-trivial focused execution where delegation is faster. Parallelization benefits: if the task spans multiple folders, or seperate tasks, a maximum of three @fixer can be dispatched to make the necessary edits.
 - **Don't delegate when:** Needs discovery/research/decisions • Single small change (<20 lines, one file) • Unclear requirements needing iteration • Explaining to fixer > doing • Tight integration with your current work • Sequential dependencies • Primary goal is visual direction, UX polish, or complex artifact design
 - **Rule of thumb:** Explaining > doing? → yourself. Bounded implementation and bug fixes usually go to @fixer. If users see changed UI polish/experience as the main goal, use @designer.
 

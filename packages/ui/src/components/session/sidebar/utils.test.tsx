@@ -135,15 +135,14 @@ describe('compareSessionsByPinnedAndTime', () => {
 });
 
 describe('resolveSessionDiffStats', () => {
-  test('uses direct additions and deletions from session summary', () => {
-    expect(resolveSessionDiffStats({ additions: '118', deletions: 22864 })).toEqual({
-      additions: 118,
-      deletions: 22864,
-    });
+  test('ignores direct additions and deletions from session summary', () => {
+    expect(resolveSessionDiffStats({ additions: '118', deletions: 22864 })).toBeNull();
   });
 
-  test('aggregates additions and deletions from summary diffs when direct totals are missing', () => {
+  test('aggregates additions and deletions from trusted summary diffs', () => {
     expect(resolveSessionDiffStats({
+      additions: 999,
+      deletions: 999,
       diffs: [
         { additions: 10, deletions: '2' },
         { additions: '5', deletions: 3 },
@@ -158,7 +157,7 @@ describe('resolveSessionDiffStats', () => {
   });
 
   test('clamps invalid and negative counts while preserving valid counts', () => {
-    expect(resolveSessionDiffStats({ additions: -4, deletions: '6' })).toEqual({ additions: 0, deletions: 6 });
+    expect(resolveSessionDiffStats({ additions: -4, deletions: '6' })).toBeNull();
     expect(resolveSessionDiffStats({ diffs: [{ additions: 'nope', deletions: -2 }, { additions: '3', deletions: 1 }] })).toEqual({ additions: 3, deletions: 1 });
   });
 });

@@ -646,7 +646,10 @@ interface ConfigStore {
     setCurrentVariant: (variant: string | undefined) => void;
     cycleCurrentVariant: () => void;
     getCurrentModelVariants: () => string[];
-    setAgent: (agentName: string | undefined, options?: { agents?: Agent[]; preserveCurrentModel?: boolean }) => void;
+    setAgent: (
+        agentName: string | undefined,
+        options?: { agents?: Agent[]; preserveCurrentModel?: boolean; recordSessionSelection?: boolean },
+    ) => void;
     applyDefaultsToCurrent: (options?: { preserveCurrentModel?: boolean }) => void;
     setSelectedProvider: (providerId: string) => void;
     setSettingsDefaultModel: (model: string | undefined) => void;
@@ -1369,6 +1372,7 @@ export const useConfigStore = create<ConfigStore>()(
 
                     get().setAgent(target.name, {
                         preserveCurrentModel: options?.preserveCurrentModel === true || hasExplicitDraftModel,
+                        recordSessionSelection: false,
                     });
                 },
 
@@ -1606,7 +1610,10 @@ export const useConfigStore = create<ConfigStore>()(
                     set({ modelsMetadata: new Map<string, ModelMetadata>() });
                 },
 
-                setAgent: (agentName: string | undefined, options?: { agents?: Agent[]; preserveCurrentModel?: boolean }) => {
+                setAgent: (
+                    agentName: string | undefined,
+                    options?: { agents?: Agent[]; preserveCurrentModel?: boolean; recordSessionSelection?: boolean },
+                ) => {
                     const {
                         agents,
                         providers,
@@ -1642,7 +1649,7 @@ export const useConfigStore = create<ConfigStore>()(
                         };
                     });
 
-                    if (agentName) {
+                    if (agentName && options?.recordSessionSelection !== false) {
                         const { currentSessionId } = useSessionUIStore.getState();
                         const selState = useSelectionStore.getState();
 

@@ -16,6 +16,12 @@ describe('GitView revert actions', () => {
 });
 
 describe('GitView staged changes workflow', () => {
+  test('does not show a success toast after starting commit generation chat', () => {
+    const code = source();
+
+    expect(code).not.toContain("toast.success(t('gitView.toast.generateCommitChatStarted')");
+  });
+
   test('renders staged changes above unstaged changes and derives staged-only commit scope first', () => {
     const code = source();
 

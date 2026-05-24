@@ -3,6 +3,7 @@ import {
   RiCheckLine,
   RiLoader4Line,
   RiEmotionHappyLine,
+  RiSparklingLine,
 } from '@remixicon/react';
 import { Button } from '@/components/ui/button';
 import {
@@ -11,6 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { CommitInput } from './CommitInput';
 import type { SyncAction } from './SyncActions';
 import { useDeviceInfo } from '@/lib/device';
@@ -27,7 +29,10 @@ interface CommitSectionProps {
   onCommitAmend: () => void;
   onCommitAndPush: () => void;
   onCommitAndSync: () => void;
+  onStartCommitGenerationChat: () => void;
   commitAction: CommitAction;
+  isStartingCommitGenerationChat: boolean;
+  commitGenerationChatDisabled: boolean;
   gitmojiEnabled: boolean;
   onOpenGitmojiPicker: () => void;
   syncAction: SyncAction;
@@ -48,7 +53,10 @@ export const CommitSection: React.FC<CommitSectionProps> = ({
   onCommitAmend,
   onCommitAndPush,
   onCommitAndSync,
+  onStartCommitGenerationChat,
   commitAction,
+  isStartingCommitGenerationChat,
+  commitGenerationChatDisabled,
   gitmojiEnabled,
   onOpenGitmojiPicker,
 }) => {
@@ -70,6 +78,32 @@ export const CommitSection: React.FC<CommitSectionProps> = ({
           disabled={commitAction !== null}
           hasTouchInput={hasTouchInput}
           isMobile={isMobile}
+          trailingAction={
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={onStartCommitGenerationChat}
+                  disabled={commitGenerationChatDisabled}
+                  className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
+                  aria-label={t('gitView.commit.generateChatAria')}
+                >
+                  {isStartingCommitGenerationChat ? (
+                    <RiLoader4Line className="size-4 animate-spin" />
+                  ) : (
+                    <RiSparklingLine className="size-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent sideOffset={8}>
+                {isStartingCommitGenerationChat
+                  ? t('gitView.commit.generateChatLoading')
+                  : t('gitView.commit.generateChatTooltip')}
+              </TooltipContent>
+            </Tooltip>
+          }
         />
 
         {gitmojiEnabled && (

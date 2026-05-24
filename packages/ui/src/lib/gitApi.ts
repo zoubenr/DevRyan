@@ -251,6 +251,17 @@ type CommitGenerationOptions = {
   stagedOnly?: boolean;
 };
 
+export type CommitGenerationChatPromptPayload =
+  | {
+    status: 'ready';
+    visiblePrompt: string;
+    syntheticParts: Array<{ text: string; synthetic: true }>;
+  }
+  | {
+    status: 'blocked';
+    message: string;
+  };
+
 const COMMIT_PLAN_PREVIEW_DISABLED_TOOLS: Record<string, boolean> = {
   bash: false,
   read: false,
@@ -435,6 +446,47 @@ const runCommitPlanStyleGeneration = async ({
     void cleanupCommitGenerationSession(directory, generationSession.sessionId);
   }
 };
+
+export async function buildCommitGenerationChatPromptPayload(
+  directory: string,
+  files: string[],
+  options?: Pick<CommitGenerationOptions, 'stagedOnly'>,
+): Promise<CommitGenerationChatPromptPayload> {
+  const selectedFilesText = files.map((file) => `- ${file}`).join('\n');
+  const contextResult = await buildCommitPlanContext(directory, files, {
+    stagedOnly: options?.stagedOnly === true,
+    limits: COMMIT_DRAFT_CONTEXT_LIMITS,
+  });
+
+  if (contextResult.status === 'blocked') {
+    return {
+      status: 'blocked',
+      message: contextResult.message,
+    };
+  }
+
+  const [visiblePrompt, instructionsTemplate] = await Promise.all([
+    renderMagicPrompt(COMMIT_GENERATION_PROMPTS.visible),
+    renderMagicPrompt(
+      COMMIT_GENERATION_PROMPTS.instructions,
+      buildCommitGenerationPromptVariables('draft', selectedFilesText),
+    ),
+  ]);
+
+  return {
+    status: 'ready',
+    visiblePrompt,
+    syntheticParts: [
+      {
+        synthetic: true,
+        text: instructionsTemplate.replace(
+          '__GIT_CONTEXT_PLACEHOLDER__',
+          serializeCommitPlanContext(contextResult.context),
+        ),
+      },
+    ],
+  };
+}
 
 export async function generateCommitMessageDraft(
   directory: string,

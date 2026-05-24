@@ -1025,6 +1025,17 @@ describe('Cursor SDK runtime', () => {
           yield {
             type: 'message',
             message: {
+              type: 'tool_call',
+              call_id: 'edit_1',
+              name: 'edit',
+              status: 'completed',
+              args: { path: 'src/a.ts' },
+              result: 'edited',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
               type: 'assistant',
               message: {
                 content: [{ type: 'text', text: 'working' }],
@@ -1161,6 +1172,17 @@ describe('Cursor SDK runtime', () => {
           yield {
             type: 'message',
             message: {
+              type: 'tool_call',
+              call_id: 'edit_1',
+              name: 'edit',
+              status: 'completed',
+              args: { path: 'src/a.ts' },
+              result: 'edited',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
               type: 'assistant',
               message: {
                 content: [{ type: 'text', text: 'edited' }],
@@ -1231,6 +1253,17 @@ describe('Cursor SDK runtime', () => {
           yield {
             type: 'message',
             message: {
+              type: 'tool_call',
+              call_id: 'edit_1',
+              name: 'edit',
+              status: 'completed',
+              args: { path: 'src/a.ts' },
+              result: 'edited',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
               type: 'assistant',
               message: {
                 content: [{ type: 'text', text: 'edited' }],
@@ -1266,6 +1299,90 @@ describe('Cursor SDK runtime', () => {
       && event.properties?.info?.id === 'msg_e999_user'
       && event.properties.info.summary?.diffs?.[0]?.file === 'src/a.ts'
     ))).toBe(true);
+  });
+
+  it('does not synthesize diff metadata for search-only Cursor SDK turns', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const patch = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1,2 @@',
+      '-old',
+      '+new',
+      '+line',
+    ].join('\n');
+    const diffs = ['', patch];
+    const emitted = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (payload) => emitted.push(payload),
+      getWorkspaceDiff: async () => diffs.shift() ?? patch,
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'grep_1',
+              name: 'grep',
+              status: 'completed',
+              args: { pattern: 'old' },
+              result: 'src/a.ts:1:old',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'read_1',
+              name: 'read',
+              status: 'completed',
+              args: { path: 'src/a.ts' },
+              result: 'old',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'searched only' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_search_only',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_search_only_user',
+        parts: [{ type: 'text', text: 'search for old' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_search_only');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(records?.[0]?.info.summary).toBe(undefined);
+    expect(records?.[1]?.parts?.some((part) => part.type === 'tool' && part.tool === 'apply_patch')).toBe(false);
+    expect(emitted.some((event) => (
+      event?.type === 'message.updated'
+      && event.properties?.info?.id === 'msg_search_only_user'
+      && Array.isArray(event.properties.info.summary?.diffs)
+    ))).toBe(false);
   });
 
   it('emits the synthesized apply_patch tool before finalizing the assistant turn', async () => {

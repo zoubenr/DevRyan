@@ -56,7 +56,7 @@ export const getSessionSummaryDiffTotals = (summary?: SessionSummaryDiffStats | 
 }
 
 export const resolveSessionDiffStats = (summary?: SessionSummaryDiffStats | null): SessionDiffStats | null => {
-  const stats = getSessionSummaryDiffTotals(summary)
+  const stats = getScopedMessageDiffTotals(summary)
   return stats.additions === 0 && stats.deletions === 0 ? null : stats
 }
 
@@ -97,13 +97,16 @@ export const applyChatOwnedDiffTotalsToSummary = (
 
   delete nextSummary.diffs
   delete nextSummary.files
+  delete nextSummary.additions
+  delete nextSummary.deletions
 
   if (totals.additions === 0 && totals.deletions === 0) {
-    delete nextSummary.additions
-    delete nextSummary.deletions
+    // No trusted scoped edits for this chat.
   } else {
-    nextSummary.additions = totals.additions
-    nextSummary.deletions = totals.deletions
+    nextSummary.diffs = [{
+      additions: totals.additions,
+      deletions: totals.deletions,
+    }]
   }
 
   return Object.keys(nextSummary).length > 0 ? nextSummary : undefined
@@ -135,6 +138,26 @@ export const stripUntrustedSessionDiffSummary = <T extends SessionDiffSummaryTar
   return withoutSummary as T
 }
 
+const areDiffEntriesEqual = (
+  left: SessionSummaryDiffEntry[] | null | undefined,
+  right: SessionSummaryDiffEntry[] | null | undefined,
+): boolean => {
+  if (left === right) return true
+  const leftEntries = left ?? []
+  const rightEntries = right ?? []
+  if (leftEntries.length !== rightEntries.length) return false
+
+  for (let index = 0; index < leftEntries.length; index += 1) {
+    const leftEntry = leftEntries[index]
+    const rightEntry = rightEntries[index]
+    if (!leftEntry || !rightEntry) return leftEntry === rightEntry
+    if (parseSessionDiffCount(leftEntry.additions) !== parseSessionDiffCount(rightEntry.additions)) return false
+    if (parseSessionDiffCount(leftEntry.deletions) !== parseSessionDiffCount(rightEntry.deletions)) return false
+  }
+
+  return true
+}
+
 const areSummaryValuesEqual = (
   left: SessionSummaryDiffStats | null | undefined,
   right: SessionSummaryDiffStats | null | undefined,
@@ -148,6 +171,10 @@ const areSummaryValuesEqual = (
 
   for (const key of leftKeys) {
     if (!Object.prototype.hasOwnProperty.call(right, key)) return false
+    if (key === 'diffs') {
+      if (!areDiffEntriesEqual(left.diffs, right.diffs)) return false
+      continue
+    }
     if (left[key] !== right[key]) return false
   }
 

@@ -435,6 +435,45 @@ describe('Packaged OpenChamber agents', () => {
     expect(orchestrator?.prompt).not.toContain("Once finished asked if it's okay to implement");
   });
 
+  it('keeps plan approval out of normal-mode Orchestrator questions', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+    const plan = listPackagedAgents().find((agent) => agent.name === 'plan');
+
+    expect(orchestrator?.prompt).toContain('Plan approval belongs only to the plan card lifecycle');
+    expect(orchestrator?.prompt).toContain('Do not use the structured question tool to ask for approval of a design or plan');
+    expect(plan?.prompt).toContain('The plan card provides the implementation action');
+    expect(plan?.prompt).not.toContain('End the message with a single approval question');
+  });
+
+  it('keeps routine git checks out of Orchestrator finalization unless requested', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(orchestrator?.prompt).toContain('Git Command Boundary');
+    expect(orchestrator?.prompt).toContain('Do not run git commands as a default finalization or safety routine.');
+    expect(orchestrator?.prompt).toContain('Only run git commands when the user explicitly asks for git work');
+    expect(orchestrator?.prompt).toContain('git status');
+    expect(orchestrator?.prompt).toContain('git diff');
+  });
+
+  it('keeps routine git checks out of packaged subagent completion unless requested', () => {
+    const subagents = listPackagedAgents().filter((agent) => agent.frontmatter.mode === 'subagent');
+
+    expect(subagents.map((agent) => agent.name)).toEqual(expect.arrayContaining([
+      'explorer',
+      'fixer',
+      'designer',
+      'oracle',
+      'librarian',
+    ]));
+
+    for (const agent of subagents) {
+      expect(agent.prompt).toContain('Git Command Boundary');
+      expect(agent.prompt).toContain('Do not run git commands as a default finalization or safety routine.');
+      expect(agent.prompt).toContain('Do not use `git status`, `git diff`, `git diff --stat`, or `git diff --check` to determine whether you made edits.');
+      expect(agent.prompt).toContain('If you did not use an edit, write, or patch tool in this turn, report that no code changes were made without checking git.');
+    }
+  });
+
   it('preserves packaged Orchestrator/Fixer routing and question/status guardrails', () => {
     const agents = listPackagedAgents();
     const orchestrator = agents.find((agent) => agent.name === 'orchestrator');
@@ -455,6 +494,7 @@ describe('Packaged OpenChamber agents', () => {
     expect(orchestrator?.prompt).toContain('structured question tool');
     expect(orchestrator?.prompt).toContain('Do not write assistant prose announcing that you are loading a skill');
     expect(orchestrator?.prompt).toContain('the tool activity already shows that work');
+    expect(orchestrator?.frontmatter.permission.skill['dispatching-parallel-agents']).toBe('allow');
 
     for (const agent of [orchestrator, builder, fixer, designer, explorer, oracle, librarian, plan]) {
       expect(agent?.prompt).toContain('structured question tool');

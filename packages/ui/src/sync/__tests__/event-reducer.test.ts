@@ -282,6 +282,23 @@ describe("applyDirectoryEvent", () => {
     })
   })
 
+  test("strips untrusted diff totals from raw session created snapshots without cached messages", () => {
+    const draft = state()
+
+    const result = applyDirectoryEvent(draft, {
+      type: "session.created",
+      properties: {
+        info: {
+          ...testSession("ses_1"),
+          summary: { additions: 200, deletions: 40, files: 8 },
+        },
+      },
+    } as unknown as Event)
+
+    expect(result).toBe(true)
+    expect((draft.session[0] as Session & { summary?: { additions?: number; deletions?: number; files?: number } }).summary).toBe(undefined)
+  })
+
   test("normalizes raw session updated snapshots from cached scoped user message diffs", () => {
     const draft = state({
       session: [testSession("ses_1")],
@@ -310,15 +327,14 @@ describe("applyDirectoryEvent", () => {
     } as unknown as Event)
 
     expect(result).toBe(true)
-    expect((draft.session[0] as Session & { summary?: { additions?: number; deletions?: number; files?: number } }).summary).toEqual({
-      additions: 3,
-      deletions: 1,
+    expect((draft.session[0] as Session & { summary?: { diffs?: Array<{ additions?: number; deletions?: number }> } }).summary).toEqual({
+      diffs: [{ additions: 3, deletions: 1 }],
     })
   })
 
   test("updates only the owning session summary from scoped user message summaries", () => {
-    const firstSummary = { additions: 1, deletions: 2 }
-    const secondSummary = { additions: 10, deletions: 20 }
+    const firstSummary = { diffs: [{ additions: 1, deletions: 2 }] }
+    const secondSummary = { diffs: [{ additions: 10, deletions: 20 }] }
     const draft = state({
       session: [
         { ...testSession("ses_1"), summary: firstSummary } as unknown as Session,
@@ -340,11 +356,29 @@ describe("applyDirectoryEvent", () => {
     } as unknown as Message))
 
     expect(result).toBe(true)
-    expect((draft.session[0] as Session & { summary?: { additions?: number; deletions?: number } }).summary).toEqual({
-      additions: 12,
-      deletions: 13,
+    expect((draft.session[0] as Session & { summary?: { diffs?: Array<{ additions?: number; deletions?: number }> } }).summary).toEqual({
+      diffs: [{ additions: 12, deletions: 13 }],
     })
     expect((draft.session[1] as Session & { summary?: typeof secondSummary }).summary).toBe(secondSummary)
+  })
+
+  test("ignores bare user message summary totals when recomputing session totals", () => {
+    const draft = state({
+      session: [
+        {
+          ...testSession("ses_1"),
+          summary: { diffs: [{ additions: 5, deletions: 1 }] },
+        } as unknown as Session,
+      ],
+    })
+
+    const result = applyDirectoryEvent(draft, messageUpdatedEvent({
+      ...testMessage("msg_1", "ses_1", "user", 1),
+      summary: { additions: 500, deletions: 400 },
+    } as unknown as Message))
+
+    expect(result).toBe(true)
+    expect((draft.session[0] as Session & { summary?: { diffs?: unknown } }).summary).toBe(undefined)
   })
 
   test("clears stale session summary diff totals when loaded user messages have no scoped diffs", () => {
@@ -393,9 +427,8 @@ describe("applyDirectoryEvent", () => {
     } as Event)
 
     expect(result).toBe(true)
-    expect((draft.session[0] as Session & { summary?: { additions?: number; deletions?: number } }).summary).toEqual({
-      additions: 5,
-      deletions: 5,
+    expect((draft.session[0] as Session & { summary?: { diffs?: Array<{ additions?: number; deletions?: number }> } }).summary).toEqual({
+      diffs: [{ additions: 5, deletions: 5 }],
     })
   })
 

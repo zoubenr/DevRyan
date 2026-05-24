@@ -170,7 +170,7 @@ export const buildPlanModeSyntheticInstruction = (): string => [
   "Produce an implementation plan only; do not edit files, run modifying commands, or make changes yet.",
   "Write the plan as ordinary markdown — no code fences, no plan.md wrapper. Use headings, lists, and bold for structure so the chat UI can render it as typeset prose.",
   "Use the actual plan name as the top heading; do not prefix it with 'Implementation Plan:'.",
-  "End the message with a single approval question to the user, written as ordinary prose.",
+  "When the final plan is complete, stop after the Verification section. The plan card provides the implementation action; do not ask for approval in prose or through the question tool.",
   "",
   "CHAT UI MARKER (REQUIRED, no exceptions): the chat UI renders the final plan in a dedicated card and needs a sentinel to know where the plan starts. Any reasoning, tool-use commentary, exploration notes, or preamble MUST come BEFORE the final plan. When you are ready to emit the final plan, output the literal HTML comment <!--plan--> on its own line as a sentinel, then on the next line begin the plan body (top heading, sections, etc.). Emit <!--plan--> exactly once per message, immediately before the plan body. Do not wrap it in a code fence. Do not put any other text on the same line as the marker. Do not emit it anywhere else in the message. If you do not emit this marker, the plan card will not render and the user will not be able to click \"Implement Plan\".",
   "",
@@ -208,7 +208,7 @@ export const buildPlanModeSyntheticInstruction = (): string => [
   "",
   "Numbered checklist describing how to confirm the change works end-to-end. Include: how to start the relevant server/tool, the exact user actions to take, the observable expected outcomes, and any tests that must still pass (with their file paths). Make each step independently checkable.",
   "",
-  "End the message with a single approval question to the user, written as ordinary prose, on its own line after the Verification section.",
+  "Stop after the Verification section. The plan card provides the implementation action; do not ask for approval in prose or through the question tool.",
 ].join("\n")
 
 // ---------------------------------------------------------------------------

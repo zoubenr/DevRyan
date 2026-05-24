@@ -12,7 +12,9 @@ describe('initial loading splash', () => {
 
     expect(html).toContain('--splash-logo-stroke');
     expect(html).toContain('stroke="var(--splash-logo-stroke)"');
+    expect(html).toContain('--splash-logo-stroke: #000;');
     expect(html).not.toContain('stroke="#1e2a38"');
+    expect(html).not.toContain('--splash-logo-stroke: #1e2a38;');
   });
 
   it('prevents document scrollbars while the initial loading splash is visible', () => {

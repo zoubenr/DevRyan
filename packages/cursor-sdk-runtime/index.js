@@ -979,6 +979,7 @@ export function createCursorSdkRuntime(options = {}) {
     const created = now();
     let partSequence = 0;
     let syntheticPatchPartID = null;
+    let sawMutationCandidateTool = false;
     const toolPartIdsByCallId = new Map();
     const nextPartID = (kind, suffix = '') => {
       partSequence += 1;
@@ -1305,7 +1306,7 @@ export function createCursorSdkRuntime(options = {}) {
 
     const finalizeAssistantRun = async (finalStatus, completed = now()) => {
       const finish = normalizeFinish(finalStatus);
-      if (finish === 'stop') {
+      if (finish === 'stop' && sawMutationCandidateTool) {
         await syncWorkspacePatchPart(completed);
       }
 
@@ -1541,6 +1542,7 @@ export function createCursorSdkRuntime(options = {}) {
               await emitRecordDelta(assistantRecord);
             }
             if (isTerminalToolStatus && isWorkspaceMutationCandidateTool(message.name)) {
+              sawMutationCandidateTool = true;
               await syncWorkspacePatchPart();
             }
           } else if (message.type === 'status') {

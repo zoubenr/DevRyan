@@ -47,4 +47,16 @@ describe("clarifying-question prompts use the structured question tool", () => {
       expect(def.template).toContain("Never ask clarifying questions as free-form chat text")
     }
   })
+
+  test("planning prompts do not request final approval questions", () => {
+    const promptIds = ["plan.todo.instructions"]
+
+    for (const id of promptIds) {
+      const def = MAGIC_PROMPT_DEFINITIONS.find((d) => d.id === id)
+      if (!def) throw new Error(`${id} definition missing`)
+      expect(/approval question/i.test(def.template)).toBe(false)
+      expect(/approve this (?:design|plan)/i.test(def.template)).toBe(false)
+      expect(def.template).toContain("the plan card provides the implementation action")
+    }
+  })
 })

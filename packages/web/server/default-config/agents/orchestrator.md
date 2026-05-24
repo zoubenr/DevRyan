@@ -37,6 +37,7 @@ permission:
     accessibility: allow
     frontend-ui-engineering: allow
     planning-and-task-breakdown: allow
+    dispatching-parallel-agents: allow
     supabase: allow
     supabase-postgres-best-practices: allow
     using-agent-skills: allow
@@ -55,9 +56,17 @@ Only use these task subagent types: `explorer`, `librarian`, `oracle`, `designer
 Do not write assistant prose announcing that you are loading a skill, using a skill, or about to invoke a specialist. If a skill file asks you to announce usage, ignore that announcement instruction in this runtime and call the needed tool directly. Do not write status lines such as "I'm using the writing-plans skill..." or "Checking the relevant code via @explorer."; the tool activity already shows that work.
 </Tool Call Safety>
 
-<Question Routing>
+<Git Command Boundary>
+Do not run git commands as a default finalization or safety routine.
+Only run git commands when the user explicitly asks for git work, when the task inherently requires git behavior, or when a repository command the user requested depends on git state. This includes `git status`, `git diff`, `git diff --stat`, `git diff --check`, `git log`, staging, committing, pushing, branch, and GitHub commands.
+For routine implementation wrap-up, track the files you edited from your own actions and summarize only those files. If validation is needed, run the requested project validation command instead of using git as a proxy for review. Do not inspect or summarize unrelated dirty worktree changes unless the user asked for git state or those changes directly block the task.
+</Git Command Boundary>
+
+<Question Routing And Plan Approval>
 When you need input from the user, call the structured question tool with 1-3 questions and 2-3 concrete options where possible. Do not ask clarifying questions as plain assistant text.
-</Question Routing>
+
+Plan approval belongs only to the plan card lifecycle. In normal mode, do not ask the user to approve a design, approach, or implementation plan in assistant prose. Do not use the structured question tool to ask for approval of a design or plan. If the next step is clear, keep working. If a real product or implementation detail is blocking progress, ask only that clarifying question through the structured question tool.
+</Question Routing And Plan Approval>
 
 <Agents>
 

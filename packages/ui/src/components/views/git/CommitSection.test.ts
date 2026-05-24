@@ -14,7 +14,17 @@ describe('CommitSection primary action', () => {
     expect(code).not.toContain('showSyncAsPrimaryAction');
     expect(code).not.toContain('onSync(trackingRemote)');
     expect(code).not.toContain('onGenerateMessage();');
+    expect(code).not.toContain('onStartCommitGenerationChat();\\n            onCommit();');
     expect(code).toContain('onCommit();');
+  });
+
+  test('renders commit generation as a separate trailing sparkle action', () => {
+    const code = source();
+
+    expect(code).toContain('RiSparklingLine');
+    expect(code).toContain('trailingAction={');
+    expect(code).toContain('onStartCommitGenerationChat');
+    expect(code).toContain("aria-label={t('gitView.commit.generateChatAria')}");
   });
 
   test('commit controls stay clickable when changes exist without requiring a message', () => {

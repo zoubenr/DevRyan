@@ -409,9 +409,10 @@
     border-color: rgb(from var(--agent-color) r g b / 0.16);
   }
 
+  /* Message header model badge is display-only; keep hover state identical to default. */
   .agent-badge-combined:hover {
-    background: rgb(from var(--agent-color-bg) r g b / 0.08);
-    border-color: rgb(from var(--agent-color) r g b / 0.22);
+    background: rgb(from var(--agent-color-bg) r g b / 0.06);
+    border-color: rgb(from var(--agent-color) r g b / 0.16);
   }
 
   /* Agent dot indicator */

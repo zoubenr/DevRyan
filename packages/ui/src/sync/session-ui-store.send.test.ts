@@ -333,7 +333,8 @@ const expectPlanModeInstructionContract = (text: string) => {
   expect(text).toContain("## Implementation")
   expect(text).toContain("Count only actionable implementation tasks as tasks")
   expect(text).toContain("## Verification")
-  expect(text).toContain("End the message with a single approval question")
+  expect(text).toContain("The plan card provides the implementation action")
+  expect(text).not.toContain("End the message with a single approval question")
   expect(text).toContain("Do not wrap it in a code fence")
 }
 

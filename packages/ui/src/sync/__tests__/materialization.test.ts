@@ -87,7 +87,25 @@ describe("materializeSessionSnapshots", () => {
     )
 
     expect(result.sessionsChanged).toBe(true)
-    expect(result.session?.[0]?.summary).toEqual({ additions: 7, deletions: 4 })
+    expect(result.session?.[0]?.summary).toEqual({ diffs: [{ additions: 7, deletions: 4 }] })
+  })
+
+  test("clears stale session diff totals when materialized messages have no scoped diffs", () => {
+    const existingSession = {
+      id: "ses_1",
+      title: "Fix services",
+      time: { created: 1, updated: 1 },
+      summary: { additions: 95, deletions: 3, title: "stale workspace total" },
+    } as unknown as Session
+
+    const result = materializeSessionSnapshots(
+      { session: [existingSession], message: {}, part: {} },
+      "ses_1",
+      [{ info: userMessage("msg_user"), parts: [part("prt_user", "msg_user")] }],
+    )
+
+    expect(result.sessionsChanged).toBe(true)
+    expect(result.session?.[0]?.summary).toEqual({ title: "stale workspace total" })
   })
 
   test("skips non-rendered part types", () => {

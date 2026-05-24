@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   getChatOwnedDiffTotalsFromMessages,
   normalizeChatOwnedDiffSummary,
+  resolveSessionDiffStats,
   stripUntrustedSessionDiffSummary,
 } from './sessionDiffStats'
 
@@ -27,6 +28,18 @@ describe('sessionDiffStats', () => {
     expect(getChatOwnedDiffTotalsFromMessages([
       { role: 'user', summary: { diffs: [{ additions: 1, deletions: 0 }, { additions: 2, deletions: 3 }] } },
     ])).toEqual({ additions: 3, deletions: 3 })
+  })
+
+  test('sidebar stats ignore bare session-level totals', () => {
+    expect(resolveSessionDiffStats({ additions: 118, deletions: 22864 })).toBeNull()
+  })
+
+  test('sidebar stats trust scoped summary diff entries', () => {
+    expect(resolveSessionDiffStats({
+      additions: 999,
+      deletions: 999,
+      diffs: [{ additions: 2, deletions: 1 }, { additions: '3', deletions: '4' }],
+    })).toEqual({ additions: 5, deletions: 5 })
   })
 
   test('removes stale session-level diff fields when chat messages have no scoped diffs', () => {
@@ -82,11 +95,25 @@ describe('sessionDiffStats', () => {
   test('preserves object identity when chat-owned totals are already normalized', () => {
     const session = {
       id: 'ses_1',
-      summary: { title: 'Preserved title', additions: 2, deletions: 1 },
+      summary: { title: 'Preserved title', diffs: [{ additions: 2, deletions: 1 }] },
     }
 
     expect(normalizeChatOwnedDiffSummary(session, [
       { role: 'user', summary: { diffs: [{ additions: 2, deletions: 1 }] } },
     ])).toBe(session)
+  })
+
+  test('normalizes chat-owned totals as trusted scoped diff entries', () => {
+    const session = {
+      id: 'ses_1',
+      summary: { title: 'Preserved title', additions: 95, deletions: 3 },
+    }
+
+    expect(normalizeChatOwnedDiffSummary(session, [
+      { role: 'user', summary: { diffs: [{ additions: 2, deletions: 1 }] } },
+    ])).toEqual({
+      id: 'ses_1',
+      summary: { title: 'Preserved title', diffs: [{ additions: 2, deletions: 1 }] },
+    })
   })
 })

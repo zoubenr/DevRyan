@@ -66,7 +66,7 @@ import { BranchIntegrationSection, type OperationLogEntry } from './git/BranchIn
 import type { GitRemote } from '@/lib/gitApi';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import { cn } from '@/lib/utils';
-import { getGitWorktreeBootstrapStatus } from '@/lib/gitApi';
+import { buildCommitGenerationChatPromptPayload, getGitWorktreeBootstrapStatus } from '@/lib/gitApi';
 import { validateCommitMessage } from '@/lib/commitTemplate';
 import { shouldAutoSelectGitChange } from '@/lib/git/commitWorkflowSafety';
 import { sessionEvents } from '@/lib/sessionEvents';
@@ -195,6 +195,10 @@ export const GitView: React.FC = () => {
   const [isWaitingForGitRefreshAfterBootstrap, setIsWaitingForGitRefreshAfterBootstrap] = React.useState(false);
   const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
   const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
+  const createSession = useSessionUIStore((s) => s.createSession);
+  const initializeNewOpenChamberSession = useSessionUIStore((s) => s.initializeNewOpenChamberSession);
+  const sendMessage = useSessionUIStore((s) => s.sendMessage);
+  const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
   const setDraftBootstrapPendingDirectory = useSessionUIStore((s) => s.setDraftBootstrapPendingDirectory);
   const worktreeMap = useSessionUIStore((s) => s.worktreeMetadata);
   const availableWorktrees = useSessionUIStore((s) => s.availableWorktrees);
@@ -274,7 +278,9 @@ export const GitView: React.FC = () => {
   const isMobile = useUIStore((state) => state.isMobile);
   const openContextDiff = useUIStore((state) => state.openContextDiff);
   const navigateToDiff = useUIStore((state) => state.navigateToDiff);
+  const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const setRightSidebarOpen = useUIStore((state) => state.setRightSidebarOpen);
+  const setSessionSwitcherOpen = useUIStore((state) => state.setSessionSwitcherOpen);
   const previousBootstrapStatusRef = React.useRef<'pending' | 'ready' | 'failed' | null>(null);
 
   React.useEffect(() => {
@@ -390,6 +396,7 @@ export const GitView: React.FC = () => {
   const [syncAction, setSyncAction] = React.useState<SyncAction>(null);
   const [isStashesDialogOpen, setIsStashesDialogOpen] = React.useState(false);
   const [commitAction, setCommitAction] = React.useState<CommitAction>(null);
+  const [isStartingCommitGenerationChat, setIsStartingCommitGenerationChat] = React.useState(false);
   const [logMaxCountLocal, setLogMaxCountLocal] = React.useState<number>(25);
   const [isSettingIdentity, setIsSettingIdentity] = React.useState(false);
   const { triggerFireworks } = useFireworksCelebration();
@@ -1044,6 +1051,84 @@ export const GitView: React.FC = () => {
     }
   };
 
+  const handleStartCommitGenerationChat = React.useCallback(async () => {
+    if (!currentDirectory || isStartingCommitGenerationChat || commitAction !== null) {
+      return;
+    }
+    if (commitScope.files.length === 0) {
+      toast.error(t('gitView.toast.selectFileToCommit'));
+      return;
+    }
+
+    const configState = useConfigStore.getState();
+    const providerID = configState.currentProviderId;
+    const modelID = configState.currentModelId;
+    if (!providerID || !modelID) {
+      toast.error(t('gitView.toast.generateCommitChatNoModel'));
+      return;
+    }
+    const agent = typeof configState.currentAgentName === 'string' && configState.currentAgentName.trim().length > 0
+      ? configState.currentAgentName.trim()
+      : undefined;
+    const variant = configState.currentVariant;
+
+    setIsStartingCommitGenerationChat(true);
+    try {
+      const payload = await buildCommitGenerationChatPromptPayload(currentDirectory, commitScope.files, {
+        stagedOnly: commitScope.stagedOnly,
+      });
+
+      if (payload.status === 'blocked') {
+        toast.error(t('gitView.toast.generateCommitWorkflowBlocked'), { description: payload.message });
+        return;
+      }
+
+      const session = await createSession(undefined, currentDirectory, null);
+      if (!session?.id) {
+        toast.error(t('gitView.toast.generateCommitChatCreateFailed'));
+        return;
+      }
+
+      const directoryHint = session.directory ?? currentDirectory;
+      initializeNewOpenChamberSession(session.id, useConfigStore.getState().agents ?? []);
+      setCurrentSession(session.id, directoryHint);
+      setActiveMainTab('chat');
+      setSessionSwitcherOpen(false);
+
+      await sendMessage(
+        payload.visiblePrompt,
+        providerID,
+        modelID,
+        agent,
+        undefined,
+        undefined,
+        payload.syntheticParts,
+        variant,
+      );
+    } catch (error) {
+      const description = error instanceof Error ? error.message : undefined;
+      toast.error(
+        t('gitView.toast.generateCommitChatFailed'),
+        description ? { description } : undefined,
+      );
+    } finally {
+      setIsStartingCommitGenerationChat(false);
+    }
+  }, [
+    commitAction,
+    commitScope.files,
+    commitScope.stagedOnly,
+    createSession,
+    currentDirectory,
+    initializeNewOpenChamberSession,
+    isStartingCommitGenerationChat,
+    sendMessage,
+    setActiveMainTab,
+    setCurrentSession,
+    setSessionSwitcherOpen,
+    t,
+  ]);
+
   const handleRefreshHistoryControls = async () => {
     if (currentDirectory) {
       const trackingRemoteName = status?.tracking?.split('/')[0];
@@ -1541,6 +1626,12 @@ export const GitView: React.FC = () => {
 
   const selectedCount = commitScope.files.length;
   const isBusy = isLoading || syncAction !== null || commitAction !== null;
+  const canStartCommitGenerationChat = Boolean(
+    currentDirectory &&
+    commitScope.files.length > 0 &&
+    commitAction === null &&
+    !isStartingCommitGenerationChat
+  );
   const currentBranch = status?.current ?? null;
   const canShowIntegrateCommitsSection = Boolean(
     worktreeMetadata && repoRootForIntegrate && sourceBranchForIntegrate && shouldShowIntegrateCommits
@@ -2329,7 +2420,10 @@ export const GitView: React.FC = () => {
                         onCommitAmend={() => handleCommit({ amend: true })}
                         onCommitAndPush={() => handleCommit({ pushAfter: true })}
                         onCommitAndSync={() => handleCommit({ syncAfter: true })}
+                        onStartCommitGenerationChat={handleStartCommitGenerationChat}
                         commitAction={commitAction}
+                        isStartingCommitGenerationChat={isStartingCommitGenerationChat}
+                        commitGenerationChatDisabled={!canStartCommitGenerationChat}
                         gitmojiEnabled={settingsGitmojiEnabled}
                         onOpenGitmojiPicker={() => setIsGitmojiPickerOpen(true)}
                         syncAction={syncAction}
