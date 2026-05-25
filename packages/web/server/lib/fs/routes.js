@@ -1,3 +1,5 @@
+import { createDeterministicGitReadCache } from './git-read-cache.js';
+
 const EXEC_JOB_TTL_MS = 30 * 60 * 1000;
 
 const createCommandTimeoutMs = () => {
@@ -455,6 +457,7 @@ export const registerFsRoutes = (app, dependencies) => {
 
   const execJobs = new Map();
   const commandTimeoutMs = createCommandTimeoutMs();
+  const deterministicGitReadCache = createDeterministicGitReadCache({ path });
 
   const pruneExecJobs = () => {
     const now = Date.now();
@@ -482,7 +485,7 @@ export const registerFsRoutes = (app, dependencies) => {
       }
 
       try {
-        const result = await runCommandInDirectory({
+        const execute = () => runCommandInDirectory({
           shell: job.shell,
           shellFlag: job.shellFlag,
           command,
@@ -491,6 +494,13 @@ export const registerFsRoutes = (app, dependencies) => {
           buildAugmentedPath,
           commandTimeoutMs,
         });
+        const result = job.enableDeterministicGitReadCache
+          ? await deterministicGitReadCache.run({
+            command,
+            resolvedCwd: job.resolvedCwd,
+            execute,
+          })
+          : await execute();
         results.push(result);
       } catch (error) {
         results.push({
@@ -1077,6 +1087,7 @@ export const registerFsRoutes = (app, dependencies) => {
         startedAt: Date.now(),
         finishedAt: null,
         updatedAt: Date.now(),
+        enableDeterministicGitReadCache: background !== true && commands.length === 1,
       };
 
       execJobs.set(jobId, job);

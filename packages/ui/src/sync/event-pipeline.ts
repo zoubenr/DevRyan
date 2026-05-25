@@ -92,6 +92,69 @@ const normalizeEventType = (payload: Event): Event => {
   } as unknown as Event
 }
 
+const normalizeSyntheticSessionStatus = (payload: Event): Event => {
+  const type = (payload as { type?: unknown }).type
+  if (type !== "openchamber:session-status") {
+    return payload
+  }
+
+  const properties =
+    typeof payload.properties === "object" && payload.properties !== null
+      ? payload.properties as Record<string, unknown>
+      : {}
+  const sessionID = typeof properties.sessionID === "string" && properties.sessionID.length > 0
+    ? properties.sessionID
+    : typeof properties.sessionId === "string"
+      ? properties.sessionId
+      : ""
+  if (!sessionID) {
+    return payload
+  }
+
+  const rawStatus = properties.status
+  const statusType = typeof rawStatus === "string"
+    ? rawStatus
+    : rawStatus && typeof rawStatus === "object" && typeof (rawStatus as { type?: unknown }).type === "string"
+      ? String((rawStatus as { type: string }).type)
+      : ""
+  if (statusType !== "idle" && statusType !== "busy" && statusType !== "retry") {
+    return payload
+  }
+
+  const metadata = properties.metadata && typeof properties.metadata === "object"
+    ? properties.metadata as Record<string, unknown>
+    : {}
+  const statusRecord = rawStatus && typeof rawStatus === "object"
+    ? rawStatus as Record<string, unknown>
+    : {}
+
+  const status: Record<string, unknown> = { type: statusType }
+  if (statusType === "retry") {
+    const attempt = typeof statusRecord.attempt === "number" ? statusRecord.attempt : metadata.attempt
+    const message = typeof statusRecord.message === "string" ? statusRecord.message : metadata.message
+    const next = typeof statusRecord.next === "number" ? statusRecord.next : metadata.next
+    if (typeof attempt === "number" && typeof message === "string" && typeof next === "number") {
+      status.attempt = attempt
+      status.message = message
+      status.next = next
+    }
+  }
+
+  return {
+    ...payload,
+    type: "session.status",
+    properties: {
+      ...properties,
+      sessionID,
+      status,
+    },
+  } as unknown as Event
+}
+
+const normalizeIncomingEvent = (payload: Event): Event => {
+  return normalizeSyntheticSessionStatus(normalizeEventType(payload))
+}
+
 function resolveEventDirectory(event: unknown, payload: Event): string {
   const directDirectory =
     typeof event === "object" && event !== null && typeof (event as { directory?: unknown }).directory === "string"
@@ -423,7 +486,7 @@ export function createEventPipeline(input: EventPipelineInput) {
 
   const enqueueEvent = (directory: string, payload: Event) => {
     responsivenessPerfCount("event_pipeline.enqueue_count")
-    const normalizedPayload = normalizeEventType(payload)
+    const normalizedPayload = normalizeIncomingEvent(payload)
     const routedDirectory = routeDirectory?.(directory, normalizedPayload) || directory
     const d = getOrCreateDir(routedDirectory)
     invalidatePartUpdatedCoalescingAfterDelta(d, normalizedPayload)

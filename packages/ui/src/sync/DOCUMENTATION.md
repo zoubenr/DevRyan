@@ -177,6 +177,14 @@ Keep this in sync with `handleDirectoryEvent` in `sync-context.tsx`:
 2. Add a corresponding case to the switch in `handleDirectoryEvent` (`sync-context.tsx`) that clones **only** the fields your reducer writes to
 3. If your event fires frequently (more than a few times per second), verify that unrelated components don't re-render — check with the stream perf counters
 
+## Synthetic status events
+
+Server compatibility events named `openchamber:session-status` are normalized in `event-pipeline.ts` before routing and coalescing. The normalized event uses the canonical `session.status` type with `properties.sessionID` and a `properties.status` object. This keeps reducers, routing keys, and coalescing on the same path as OpenCode-native status events.
+
+## Active-session recovery watchdog
+
+`sync-context.tsx` tracks the last observed `session.status` event per `directory + sessionID`. A 5-second watchdog checks only the active viewed session; when that session remains `busy` or `retry` without a fresh status event for 20 seconds, it runs a targeted reconnect resync for that session only. A 15-second per-session cooldown prevents repeated recovery calls.
+
 ## Selector hygiene
 
 Select leaf values, not containers:

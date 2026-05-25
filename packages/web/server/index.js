@@ -870,6 +870,7 @@ const processForwardedEventPayload = (payload, emitSyntheticEvent) => {
     type: 'openchamber:session-status',
     properties: {
       sessionId,
+      sessionID: sessionId,
       status,
       timestamp: Date.now(),
       metadata: {
@@ -891,6 +892,7 @@ const processForwardedEventPayload = (payload, emitSyntheticEvent) => {
     type: 'openchamber:session-activity',
     properties: {
       sessionId,
+      sessionID: sessionId,
       phase: status === 'busy' || status === 'retry' ? 'busy' : 'idle',
     },
   });

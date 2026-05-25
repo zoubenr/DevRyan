@@ -273,16 +273,16 @@ const StartupReadinessScreen: React.FC<{
   return (
     <div className="flex h-full items-center justify-center bg-background px-6 text-foreground">
       <div className="flex max-w-md flex-col items-center gap-4 text-center">
-        <div className="flex size-12 items-center justify-center rounded-full border border-border">
+        <div className="flex size-[4.5rem] items-center justify-center rounded-full border border-border">
           {isError ? (
             <div className="size-2 rounded-full bg-destructive" />
           ) : (
             <img
               src={logoUrl}
               alt=""
-              width={32}
-              height={32}
-              className="size-8 animate-pulse pointer-events-none"
+              width={48}
+              height={48}
+              className="size-12 animate-pulse pointer-events-none"
               draggable={false}
             />
           )}

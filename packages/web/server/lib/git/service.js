@@ -1339,8 +1339,19 @@ export async function getStatus(directory, options = {}) {
       };
     }
 
-    const selectBaseRefForUnpublished = async () => {
+    const selectBaseRefForUnpublished = async (currentBranch) => {
       const candidates = [];
+      const normalizedCurrentBranch = String(currentBranch || '').trim();
+      const addCandidate = (ref, countsPullableBehind = false) => {
+        if (!ref || candidates.some((candidate) => candidate.ref === ref)) {
+          return;
+        }
+        candidates.push({ ref, countsPullableBehind });
+      };
+
+      if (normalizedCurrentBranch && normalizedCurrentBranch !== 'HEAD') {
+        addCandidate(`origin/${normalizedCurrentBranch}`, true);
+      }
 
       const originHead = await git
         .raw(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
@@ -1349,17 +1360,24 @@ export async function getStatus(directory, options = {}) {
 
       if (originHead) {
         // "refs/remotes/origin/main" -> "origin/main"
-        candidates.push(originHead.replace(/^refs\/remotes\//, ''));
+        const originHeadRef = originHead.replace(/^refs\/remotes\//, '');
+        const originHeadBranch = originHeadRef.startsWith('origin/')
+          ? originHeadRef.slice('origin/'.length)
+          : originHeadRef;
+        addCandidate(originHeadRef, Boolean(normalizedCurrentBranch && originHeadBranch === normalizedCurrentBranch));
       }
 
-      candidates.push('origin/main', 'origin/master', 'main', 'master');
+      addCandidate('origin/main', normalizedCurrentBranch === 'main');
+      addCandidate('origin/master', normalizedCurrentBranch === 'master');
+      addCandidate('main');
+      addCandidate('master');
 
-      for (const ref of candidates) {
+      for (const candidate of candidates) {
         const exists = await git
-          .raw(['rev-parse', '--verify', ref])
+          .raw(['rev-parse', '--verify', candidate.ref])
           .then((value) => String(value || '').trim())
           .catch(() => '');
-        if (exists) return ref;
+        if (exists) return candidate;
       }
 
       return null;
@@ -1373,16 +1391,18 @@ export async function getStatus(directory, options = {}) {
     // We still want to show the number of unpublished commits to the user.
     // Light mode skips this — the basic ahead/behind from git status is sufficient for polling.
     if (!lightMode && !tracking && status.current) {
-      const baseRef = await selectBaseRefForUnpublished();
+      const baseRef = await selectBaseRefForUnpublished(status.current);
       if (baseRef) {
-        const countRaw = await git
-          .raw(['rev-list', '--count', `${baseRef}..HEAD`])
+        const divergenceRaw = await git
+          .raw(['rev-list', '--left-right', '--count', `${baseRef.ref}...HEAD`])
           .then((value) => String(value || '').trim())
           .catch(() => '');
-        const count = parseInt(countRaw, 10);
-        if (Number.isFinite(count)) {
-          ahead = count;
-          behind = 0;
+        const [behindRaw, aheadRaw] = divergenceRaw.split(/\s+/);
+        const aheadCount = parseInt(aheadRaw, 10);
+        const behindCount = parseInt(behindRaw, 10);
+        if (Number.isFinite(aheadCount)) {
+          ahead = aheadCount;
+          behind = baseRef.countsPullableBehind && Number.isFinite(behindCount) ? behindCount : 0;
         }
       }
     }

@@ -42,6 +42,7 @@ let mockChildStoreState: Record<string, unknown> = { message: {}, part: {} }
 let mockArchivedSessions: Array<Record<string, unknown>> = []
 let rejectNextSendMessage = false
 let selectCreatedSessionDuringCreate = false
+let deferredActivateDirectoryResolve: (() => void) | null = null
 
 const createMockSessionRecord = (
   title?: string,
@@ -380,6 +381,7 @@ describe("session-ui-store send routing", () => {
     mockArchivedSessions = []
     rejectNextSendMessage = false
     selectCreatedSessionDuringCreate = false
+    deferredActivateDirectoryResolve = null
     const storage = getSafeStorage()
     storage.removeItem(CHAT_DRAFTS_STORAGE_KEY)
     storage.removeItem(LEGACY_NEW_INPUT_DRAFT_KEY)
@@ -1259,6 +1261,115 @@ describe("session-ui-store send routing", () => {
     expect(state.newSessionDraft.open).toBe(false)
   })
 
+  test("draft sends promote and send before directory activation settles", async () => {
+    mockCreatedSession = { id: "session-new", directory: "/repo" }
+    mockConfigState = {
+      activateDirectory: mock(() => new Promise<void>((resolve) => {
+        deferredActivateDirectoryResolve = resolve
+      })),
+    }
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentDraftId: "draft-send",
+      draftsById: {
+        "draft-send": {
+          id: "draft-send",
+          text: "message from draft",
+          createdAt: 1,
+          updatedAt: 1,
+          selectedProjectId: null,
+          directoryOverride: "/repo",
+          parentID: null,
+        },
+      },
+      draftOrder: ["draft-send"],
+      newSessionDraft: {
+        open: true,
+        id: "draft-send",
+        directoryOverride: "/repo",
+        parentID: null,
+      },
+    })
+
+    const sendPromise = useSessionUIStore.getState().sendMessage(
+      "message from draft",
+      "provider-current",
+      "model-current",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "normal",
+    )
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBe("session-new")
+    expect(state.currentDraftId).toBe(null)
+    expect(state.newSessionDraft.open).toBe(false)
+    expect(sendMessageCalls).toHaveLength(1)
+    expect(sendMessageCalls[0]?.id).toBe("session-new")
+
+    deferredActivateDirectoryResolve?.()
+    await sendPromise
+  })
+
+  test("background activation failure after draft send does not roll back promoted session", async () => {
+    mockCreatedSession = { id: "session-new", directory: "/repo" }
+    mockConfigState = {
+      activateDirectory: mock(() => Promise.reject(new Error("activation failed"))),
+    }
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentDraftId: "draft-send",
+      draftsById: {
+        "draft-send": {
+          id: "draft-send",
+          text: "message from draft",
+          createdAt: 1,
+          updatedAt: 1,
+          selectedProjectId: null,
+          directoryOverride: "/repo",
+          parentID: null,
+        },
+      },
+      draftOrder: ["draft-send"],
+      newSessionDraft: {
+        open: true,
+        id: "draft-send",
+        directoryOverride: "/repo",
+        parentID: null,
+      },
+    })
+
+    const originalWarn = console.warn
+    console.warn = mock(() => {}) as unknown as typeof console.warn
+    try {
+      await useSessionUIStore.getState().sendMessage(
+        "message from draft",
+        "provider-current",
+        "model-current",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "normal",
+      )
+    } finally {
+      console.warn = originalWarn
+    }
+
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBe("session-new")
+    expect(state.currentDraftId).toBe(null)
+    expect(state.newSessionDraft.open).toBe(false)
+    expect(sendMessageCalls).toHaveLength(1)
+  })
+
   test("draft sends retire the promoted draft even if session creation selects the new session first", async () => {
     mockCreatedSession = { id: "session-new", directory: "/repo" }
     selectCreatedSessionDuringCreate = true
@@ -1662,7 +1773,7 @@ describe("session-ui-store send routing", () => {
     expect(state.draftOrder).not.toContain("draft-send")
   })
 
-  test("draft sends preserve the selected agent and scalar model over initialized defaults", async () => {
+  test("draft sends preserve the selected agent and scalar model without inheriting stale thinking", async () => {
     mockCreatedSession = { id: "session-new", directory: "/repo" }
     mockConfigState = {
       currentAgentName: "builder",
@@ -1704,7 +1815,7 @@ describe("session-ui-store send routing", () => {
     expect(sendMessageCalls[0]?.agent).toBe("builder")
     expect(sendMessageCalls[0]?.providerID).toBe("provider-selected")
     expect(sendMessageCalls[0]?.modelID).toBe("model-selected")
-    expect(sendMessageCalls[0]?.variant).toBe("fast")
+    expect(sendMessageCalls[0]?.variant).toBe(undefined)
     expect(savedSessionAgents.some((entry) =>
       entry.sessionId === "session-new"
       && entry.agent === "builder"
@@ -1725,11 +1836,11 @@ describe("session-ui-store send routing", () => {
       && entry.agent === "builder"
       && entry.providerID === "provider-selected"
       && entry.modelID === "model-selected"
-      && entry.variant === "fast"
+      && entry.variant === undefined
     )).toBe(true)
   })
 
-  test("draft sends preserve captured selection when directory activation restores defaults", async () => {
+  test("draft sends preserve captured agent and model when directory activation restores defaults", async () => {
     mockCreatedSession = { id: "session-new", directory: "/repo" }
     mockConfigState = {
       currentAgentName: "builder",
@@ -1781,7 +1892,7 @@ describe("session-ui-store send routing", () => {
     expect(sendMessageCalls[0]?.agent).toBe("builder")
     expect(sendMessageCalls[0]?.providerID).toBe("provider-selected")
     expect(sendMessageCalls[0]?.modelID).toBe("model-selected")
-    expect(sendMessageCalls[0]?.variant).toBe("fast")
+    expect(sendMessageCalls[0]?.variant).toBe(undefined)
     expect(savedSessionModels.some((entry) =>
       entry.sessionId === "session-new"
       && entry.providerID === "provider-selected"

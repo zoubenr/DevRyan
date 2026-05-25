@@ -987,6 +987,12 @@ const activateConfigForDirectory = async (directory: string | null | undefined):
   await useConfigStore.getState().activateDirectory(normalizePath(directory))
 }
 
+const activateConfigForDirectoryInBackground = (directory: string | null | undefined): void => {
+  void activateConfigForDirectory(directory).catch((error) => {
+    console.warn("[session-ui-store] Background directory activation failed after draft send", error)
+  })
+}
+
 const applyCurrentSessionSideEffects = (
   id: string | null,
   directoryHint: string | null | undefined,
@@ -1680,8 +1686,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       })
 
       const draftSyntheticParts = draft.syntheticParts
-      await activateConfigForDirectory(draftDirectoryOverride ?? created.directory ?? null)
-
       const configState = useConfigStore.getState()
       const draftSelection = resolveDraftSendSelection({
         requestedAgent: draftAgentSelection ? undefined : trimmedAgent,
@@ -1709,6 +1713,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (!effectiveProviderID || !effectiveModelID) {
         throw new Error("Cannot send message: provider or model not selected")
       }
+
+      activateConfigForDirectoryInBackground(draftDirectoryOverride ?? created.directory ?? null)
 
       if (capturedDraftId) {
         useSelectionStore.getState().promoteDraftSelectionToSession(capturedDraftId, created.id)

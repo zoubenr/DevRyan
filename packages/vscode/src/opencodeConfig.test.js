@@ -12,6 +12,13 @@ const writeJson = (filePath, data) => {
 
 const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, 'utf8'));
 
+const readAgentFrontmatter = (filePath) => {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  expect(match).toBeTruthy();
+  return match[1];
+};
+
 describe('VS Code skill discovery', () => {
   it('does not treat non-file discovered skill paths as editable markdown sources', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-runtime-skill-'));
@@ -111,6 +118,32 @@ describe('VS Code Cursor SDK config handling', () => {
     expect(fs.existsSync(overlayConfigPath)).toBe(false);
     expect(JSON.stringify(readJson(configPath))).toContain('@rama_nigg/open-cursor@latest');
     fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('adds active project external-directory allows to VS Code runtime agent overlays', async () => {
+    const { syncRuntimeAgentOverlays } = await loadRuntime();
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-overlay-repo-'));
+    const projectDir = path.join(repoDir, 'packages', 'app');
+    fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    writeJson(path.join(tempHome, '.config', 'opencode', 'opencode.json'), {
+      openchamber: {
+        agentOverrides: {
+          explorer: {
+            model: 'openai/gpt-5.5',
+          },
+        },
+      },
+    });
+
+    const result = syncRuntimeAgentOverlays(projectDir);
+    const frontmatter = readAgentFrontmatter(path.join(result.targetConfigDirectory, 'agents', 'explorer.md'));
+
+    expect(frontmatter).toContain(`${repoDir}/*: allow`);
+    expect(frontmatter).toContain(`${projectDir}/*: allow`);
+    expect(frontmatter).toContain('"*": ask');
+    expect(frontmatter).toContain('"*.env": ask');
+    fs.rmSync(repoDir, { recursive: true, force: true });
   });
 });
 

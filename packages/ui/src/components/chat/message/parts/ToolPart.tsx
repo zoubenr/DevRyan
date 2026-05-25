@@ -38,6 +38,7 @@ import { MinDurationShineText } from './MinDurationShineText';
 import { TaskToolSummary } from './TaskToolSummary';
 import { ToolScrollableSection } from './ToolScrollableSection';
 import { getToolIcon } from './toolPresentation';
+import { isToolHeaderInteractive } from './toolHeaderInteractions';
 import { normalizeToolName } from './toolRenderUtils';
 import { useDurationTickerNow } from './useDurationTicker';
 import { buildTaskInvocationKey } from '../../lib/taskSessionLinking';
@@ -1954,6 +1955,7 @@ const ToolPart: React.FC<ToolPartProps> = ({
 
     const iconStyle = !isTaskTool && isError ? TOOL_ERROR_ICON_STYLE : TOOL_NORMAL_ICON_STYLE;
     const titleStyle = !isTaskTool && isError ? TOOL_ERROR_TITLE_STYLE : TOOL_NORMAL_TITLE_STYLE;
+    const toolHeaderInteractive = isToolHeaderInteractive(normalizedPartTool || part.tool);
 
     if (!shouldTreatAsFinalized && !isActive && !isTaskTool) {
         return null;
@@ -1964,26 +1966,27 @@ const ToolPart: React.FC<ToolPartProps> = ({
             {}
             <div
                 className={cn(
-                'group/tool flex gap-1.5 pr-2 pl-px py-2 rounded-xl cursor-pointer',
+                'group/tool flex gap-1.5 pr-2 pl-px py-2 rounded-xl',
+                toolHeaderInteractive && 'cursor-pointer',
                 isMultiFileApplyPatch ? 'flex-wrap items-start' : 'items-center'
             )}
-                onClick={handleMainClick}
-                onKeyDown={handleMainKeyDown}
-                role="button"
-                tabIndex={0}
+                onClick={toolHeaderInteractive ? handleMainClick : undefined}
+                onKeyDown={toolHeaderInteractive ? handleMainKeyDown : undefined}
+                role={toolHeaderInteractive ? 'button' : undefined}
+                tabIndex={toolHeaderInteractive ? 0 : undefined}
             >
                 <div className={cn('flex gap-1.5', isMultiFileApplyPatch ? 'w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5' : 'items-center flex-shrink-0')}>
                     {}
                     <div
-                        className="relative h-3.5 w-3.5 flex-shrink-0 cursor-pointer"
-                        onClick={(event) => { event.stopPropagation(); onToggle(part.id); }}
+                        className={cn('relative h-3.5 w-3.5 flex-shrink-0', toolHeaderInteractive && 'cursor-pointer')}
+                        onClick={toolHeaderInteractive ? (event) => { event.stopPropagation(); onToggle(part.id); } : undefined}
                     >
                         {}
                         <div
                             className={cn(
                                 'absolute inset-0 transition-opacity',
-                                isExpanded && 'opacity-0',
-                                !isExpanded && (alwaysShowActions ? 'opacity-0' : 'group-hover/tool:opacity-0')
+                                toolHeaderInteractive && isExpanded && 'opacity-0',
+                                !isExpanded && toolHeaderInteractive && (alwaysShowActions ? 'opacity-0' : 'group-hover/tool:opacity-0')
                             )}
                             style={iconStyle}
                         >
@@ -1993,8 +1996,9 @@ const ToolPart: React.FC<ToolPartProps> = ({
                         <div
                             className={cn(
                                 'absolute inset-0 transition-opacity flex items-center justify-center',
-                                isExpanded && 'opacity-100',
-                                !isExpanded && (alwaysShowActions ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100')
+                                toolHeaderInteractive && isExpanded && 'opacity-100',
+                                !isExpanded && toolHeaderInteractive && (alwaysShowActions ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100'),
+                                !toolHeaderInteractive && 'opacity-0'
                             )}
                         >
                             {isExpanded ? <RiArrowDownSLine className="h-3.5 w-3.5" /> : <RiArrowRightSLine className="h-3.5 w-3.5" />}

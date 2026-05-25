@@ -74,6 +74,21 @@ function hasOwn(object: object | null | undefined, key: keyof SendConfig): boole
   return !!object && Object.prototype.hasOwnProperty.call(object, key)
 }
 
+function resolveAgentVariantForModel(
+  agent: SendConfigAgent | undefined,
+  model: SendConfigProviderModel | null | undefined,
+  providerID?: string,
+  modelID?: string,
+): string | undefined {
+  if (!agent || !model || !providerID || !modelID) return undefined
+  if (agent.model?.providerID !== providerID || agent.model?.modelID !== modelID) return undefined
+  const agentVariant = clean(agent.variant)
+  if (!agentVariant) return undefined
+  return model.variants && Object.prototype.hasOwnProperty.call(model.variants, agentVariant)
+    ? agentVariant
+    : undefined
+}
+
 export function resolveDraftSendSelection(params: {
   requestedAgent?: string
   currentAgent?: string | null
@@ -121,11 +136,11 @@ export function resolveDraftSendSelection(params: {
     : (draftAgentModel
       ? params.draftAgentModelSelection?.modelId
       : (draftModel ? params.draftModelSelection?.modelId : (inputModel ? params.inputModelID : (currentModel ? params.currentModelID : params.inputModelID))))
-  let variant = explicitModel
-    ? (hasOwn(params.draftSendConfig, "variant") ? clean(params.draftSendConfig?.variant) : undefined)
-    : (draftAgentModel
+  let variant = explicitModel && hasOwn(params.draftSendConfig, "variant")
+    ? clean(params.draftSendConfig?.variant)
+    : draftAgentModel
       ? params.draftAgentModelVariant
-      : (draftModel ? params.inputVariant : (inputModel ? params.inputVariant : (currentModel ? params.currentVariant : params.inputVariant))))
+      : undefined
 
   const agentProviderID = agent?.model?.providerID
   const agentModelID = agent?.model?.modelID
@@ -133,10 +148,12 @@ export function resolveDraftSendSelection(params: {
   if (agentModel && agentProviderID && agentModelID && !explicitModel && !draftAgentModel && !draftModel && !inputModel && !currentModel) {
     providerID = agentProviderID
     modelID = agentModelID
-    const agentVariant = typeof agent?.variant === "string" ? agent.variant : undefined
-    variant = agentVariant && agentModel.model.variants && Object.prototype.hasOwnProperty.call(agentModel.model.variants, agentVariant)
-      ? agentVariant
-      : undefined
+    variant = resolveAgentVariantForModel(agent, agentModel.model, agentProviderID, agentModelID)
+  }
+
+  if (!variant && !explicitModel) {
+    const selectedModel = draftAgentModel?.model ?? draftModel?.model ?? inputModel?.model ?? currentModel?.model ?? null
+    variant = resolveAgentVariantForModel(agent, selectedModel, providerID, modelID)
   }
 
   return {

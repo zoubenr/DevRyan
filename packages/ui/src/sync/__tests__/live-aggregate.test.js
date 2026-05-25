@@ -8,7 +8,6 @@ import {
   findLiveSession,
   findLiveSessionStatus,
 } from '../live-aggregate.ts'
-import { deriveLiveActiveNowSessions } from '../../components/session/sidebar/activitySections.ts'
 
 const session = (id, directory, updated, extra = {}) => ({
   id,
@@ -107,23 +106,5 @@ describe('live aggregate', () => {
       [base],
       [{ ...base, summary: { additions: 1, deletions: 2 } }],
     )).toBe(true)
-  })
-
-  it('derives active-now sessions from live statuses instead of persisted history', () => {
-    const sessions = [
-      session('ses-1', '/a', 20),
-      session('ses-2', '/b', 30),
-      session('ses-3', '/c', 10, { time: { created: 9, updated: 10, archived: 50 } }),
-      session('ses-4', '/d', 40, { parentID: 'ses-parent' }),
-    ]
-
-    const activeNow = deriveLiveActiveNowSessions(sessions, {
-      'ses-1': { type: 'busy' },
-      'ses-2': { type: 'retry', message: 'retrying' },
-      'ses-3': { type: 'busy' },
-      'ses-4': { type: 'busy' },
-    })
-
-    expect(activeNow.map((item) => item.id)).toEqual(['ses-2', 'ses-1'])
   })
 })

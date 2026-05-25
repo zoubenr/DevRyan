@@ -105,7 +105,7 @@ describe("send config resolution", () => {
     })
   })
 
-  test("uses the current model before the default agent model for a new draft", () => {
+  test("uses the current model before the default agent model for a new draft without inheriting global thinking", () => {
     const result = resolveDraftSendSelection({
       requestedAgent: undefined,
       currentAgent: "builder",
@@ -124,7 +124,7 @@ describe("send config resolution", () => {
       agent: "builder",
       providerID: "openai",
       modelID: "gpt-5.5",
-      variant: "medium",
+      variant: undefined,
     })
   })
 
@@ -188,6 +188,82 @@ describe("send config resolution", () => {
       providerID: "openai",
       modelID: "gpt-5.2",
       variant: "low",
+    })
+  })
+
+  test("new draft ignores stale global thinking and uses the selected agent default variant", () => {
+    const result = resolveDraftSendSelection({
+      requestedAgent: undefined,
+      currentAgent: "builder",
+      settingsDefaultAgent: "builder",
+      agents: snapshot().agents,
+      providers: snapshot().providers,
+      inputProviderID: "anthropic",
+      inputModelID: "claude-sonnet-4-5",
+      inputVariant: "medium",
+      currentProviderID: "anthropic",
+      currentModelID: "claude-sonnet-4-5",
+      currentVariant: "medium",
+    })
+
+    expect(result).toEqual({
+      agent: "builder",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      variant: "high",
+    })
+  })
+
+  test("new draft ignores stale global thinking when the selected agent has no matching default variant", () => {
+    const result = resolveDraftSendSelection({
+      requestedAgent: undefined,
+      currentAgent: "builder",
+      settingsDefaultAgent: "builder",
+      agents: [{
+        name: "builder",
+        mode: "primary",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+      }],
+      providers: snapshot().providers,
+      inputProviderID: "anthropic",
+      inputModelID: "claude-sonnet-4-5",
+      inputVariant: "medium",
+      currentProviderID: "anthropic",
+      currentModelID: "claude-sonnet-4-5",
+      currentVariant: "medium",
+    })
+
+    expect(result).toEqual({
+      agent: "builder",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      variant: undefined,
+    })
+  })
+
+  test("new draft keeps an explicit draft thinking selection", () => {
+    const result = resolveDraftSendSelection({
+      requestedAgent: undefined,
+      currentAgent: "builder",
+      settingsDefaultAgent: "builder",
+      agents: snapshot().agents,
+      providers: snapshot().providers,
+      inputProviderID: "anthropic",
+      inputModelID: "claude-sonnet-4-5",
+      inputVariant: "medium",
+      currentProviderID: "anthropic",
+      currentModelID: "claude-sonnet-4-5",
+      currentVariant: "medium",
+      draftAgentSelection: "builder",
+      draftAgentModelSelection: { providerId: "anthropic", modelId: "claude-sonnet-4-5" },
+      draftAgentModelVariant: "medium",
+    })
+
+    expect(result).toEqual({
+      agent: "builder",
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      variant: "medium",
     })
   })
 

@@ -112,14 +112,12 @@ export const SyncActions: React.FC<SyncActionsProps> = ({
   aheadCount = 0,
   behindCount = 0,
   trackingRemoteName,
-  hasUncommittedChanges = false,
 }) => {
   const { t } = useI18n();
   const trackingRemote = remotes.find((remote) => remote.name === trackingRemoteName) ?? remotes[0];
   const isBusy = syncAction !== null;
   const isRemoteActionDisabled = disabled || isBusy || !trackingRemote;
-  const blocksRebaseSync = behindCount > 0 && hasUncommittedChanges;
-  const isPullDisabled = isRemoteActionDisabled || behindCount <= 0 || blocksRebaseSync;
+  const isPullDisabled = isRemoteActionDisabled;
   const isPushDisabled = disabled || isBusy || aheadCount <= 0;
   const isRefreshDisabled = disabled || isBusy || isRefreshing;
 

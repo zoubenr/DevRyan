@@ -2,7 +2,7 @@ import React from 'react';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useFireworksCelebration } from '@/contexts/FireworksContext';
-import type { GitIdentityProfile, CommitFileEntry } from '@/lib/api/types';
+import type { GitIdentityProfile, CommitFileEntry, GitStatus } from '@/lib/api/types';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
@@ -93,6 +93,7 @@ const GIT_COMMIT_SPLIT_MIN_RATIO = 0.2;
 const GIT_COMMIT_SPLIT_MAX_RATIO = 0.8;
 const GIT_COMMIT_SPLIT_KEYBOARD_STEP = 0.05;
 const GIT_REMOTE_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+const GIT_REMOTE_REFRESH_STALE_MS = 5 * 60 * 1000;
 
 const isActionTab = (value: unknown): value is ActionTab =>
   value === 'commit' || value === 'branch' || value === 'pr';
@@ -175,6 +176,11 @@ const gitViewSnapshots = new Map<string, GitViewSnapshot>();
 
 const normalizePath = (value?: string | null): string =>
   (value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
+const resolveTrackingRemote = (tracking: string | null | undefined, remotes: GitRemote[]): GitRemote | null => {
+  const trackingRemoteName = tracking?.split('/')[0];
+  return remotes.find((remote) => remote.name === trackingRemoteName) ?? remotes[0] ?? null;
+};
 
 const hasStagedGitChange = (file: { index?: string }) => {
   const index = file.index?.trim();
@@ -282,6 +288,7 @@ export const GitView: React.FC = () => {
   const setRightSidebarOpen = useUIStore((state) => state.setRightSidebarOpen);
   const setSessionSwitcherOpen = useUIStore((state) => state.setSessionSwitcherOpen);
   const previousBootstrapStatusRef = React.useRef<'pending' | 'ready' | 'failed' | null>(null);
+  const remoteRefreshTimestampsRef = React.useRef<Map<string, number>>(new Map());
 
   React.useEffect(() => {
     if (!currentDirectory) {
@@ -397,6 +404,7 @@ export const GitView: React.FC = () => {
   const [isStashesDialogOpen, setIsStashesDialogOpen] = React.useState(false);
   const [commitAction, setCommitAction] = React.useState<CommitAction>(null);
   const [isStartingCommitGenerationChat, setIsStartingCommitGenerationChat] = React.useState(false);
+  const [isRefreshingHistoryControls, setIsRefreshingHistoryControls] = React.useState(false);
   const [logMaxCountLocal, setLogMaxCountLocal] = React.useState<number>(25);
   const [isSettingIdentity, setIsSettingIdentity] = React.useState(false);
   const { triggerFireworks } = useFireworksCelebration();
@@ -965,15 +973,19 @@ export const GitView: React.FC = () => {
     setSyncAction(action);
 
     try {
-      const getPullOptions = (pullRemote: GitRemote) => {
+      const getPullOptions = (pullRemote: GitRemote, pullStatus: GitStatus | null | undefined = status) => {
         const trackingPrefix = `${pullRemote.name}/`;
-        const trackedBranch = status?.tracking?.startsWith(trackingPrefix)
-          ? status.tracking.slice(trackingPrefix.length)
+        const trackedBranch = pullStatus?.tracking?.startsWith(trackingPrefix)
+          ? pullStatus.tracking.slice(trackingPrefix.length)
           : undefined;
+        const currentBranchName = pullStatus?.current && pullStatus.current !== 'HEAD'
+          ? pullStatus.current
+          : undefined;
+        const shouldRebasePull = (pullStatus?.ahead ?? 0) > 0;
         return {
           remote: pullRemote.name,
-          branch: trackedBranch,
-          rebase: true,
+          branch: trackedBranch || currentBranchName,
+          rebase: shouldRebasePull || undefined,
         };
       };
 
@@ -1010,7 +1022,7 @@ export const GitView: React.FC = () => {
             toast.error(t('gitView.toast.commitOrStashBeforeSync'));
             return;
           }
-          const pullResult = await git.gitPull(currentDirectory, getPullOptions(remote));
+          const pullResult = await git.gitPull(currentDirectory, getPullOptions(remote, afterFetch));
           pulledFileCount = pullResult.files.length;
         }
 
@@ -1130,16 +1142,21 @@ export const GitView: React.FC = () => {
   ]);
 
   const handleRefreshHistoryControls = async () => {
-    if (currentDirectory) {
-      const trackingRemoteName = status?.tracking?.split('/')[0];
-      const trackingRemote = effectiveRemotes.find((remote) => remote.name === trackingRemoteName) ?? effectiveRemotes[0];
-      if (trackingRemote) {
-        await git.gitFetch(currentDirectory, { remote: trackingRemote.name });
+    setIsRefreshingHistoryControls(true);
+    try {
+      if (currentDirectory) {
+        const trackingRemoteName = status?.tracking?.split('/')[0];
+        const trackingRemote = effectiveRemotes.find((remote) => remote.name === trackingRemoteName) ?? effectiveRemotes[0];
+        if (trackingRemote) {
+          await git.gitFetch(currentDirectory, { remote: trackingRemote.name });
+        }
       }
+      await refreshStatusAndBranches(false);
+      await refreshLog();
+      await refreshRemotes();
+    } finally {
+      setIsRefreshingHistoryControls(false);
     }
-    await refreshStatusAndBranches(false);
-    await refreshLog();
-    await refreshRemotes();
   };
 
   const handleCommit = async (options: { amend?: boolean; pushAfter?: boolean; syncAfter?: boolean } = {}) => {
@@ -1444,6 +1461,49 @@ export const GitView: React.FC = () => {
       return;
     }
 
+    const trackingRemote = resolveTrackingRemote(status?.tracking, effectiveRemotes);
+    if (!trackingRemote) {
+      return;
+    }
+
+    const refreshKey = `${normalizePath(currentDirectory)}::${trackingRemote.name}`;
+    const now = Date.now();
+    const lastRefreshAt = remoteRefreshTimestampsRef.current.get(refreshKey) ?? 0;
+    if (now - lastRefreshAt < GIT_REMOTE_REFRESH_STALE_MS) {
+      return;
+    }
+
+    let cancelled = false;
+    remoteRefreshTimestampsRef.current.set(refreshKey, now);
+
+    const refreshFromRemote = async () => {
+      try {
+        await git.gitFetch(currentDirectory, { remote: trackingRemote.name });
+        if (cancelled) {
+          return;
+        }
+        await Promise.all([
+          fetchStatus(currentDirectory, git, { silent: true }),
+          fetchBranches(currentDirectory, git),
+          fetchLog(currentDirectory, git, logMaxCountLocal),
+        ]);
+      } catch (error) {
+        console.debug('Git view remote refresh failed:', error);
+      }
+    };
+
+    void refreshFromRemote();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentDirectory, effectiveRemotes, fetchBranches, fetchLog, fetchStatus, git, isGitRepo, logMaxCountLocal, status?.tracking]);
+
+  React.useEffect(() => {
+    if (!currentDirectory || !git || isGitRepo !== true) {
+      return;
+    }
+
     let cancelled = false;
     let isRefreshing = false;
 
@@ -1453,8 +1513,7 @@ export const GitView: React.FC = () => {
       }
       isRefreshing = true;
       try {
-        const trackingRemoteName = status?.tracking?.split('/')[0];
-        const trackingRemote = effectiveRemotes.find((remote) => remote.name === trackingRemoteName) ?? effectiveRemotes[0];
+        const trackingRemote = resolveTrackingRemote(status?.tracking, effectiveRemotes);
         if (trackingRemote) {
           await git.gitFetch(currentDirectory, { remote: trackingRemote.name });
         }
@@ -2349,7 +2408,7 @@ export const GitView: React.FC = () => {
           onPush={() => handleSyncAction('push')}
           onRefresh={handleRefreshHistoryControls}
           disabled={!status}
-          isRefreshing={isLoading || isLogLoading}
+          isRefreshing={isRefreshingHistoryControls || isLoading || isLogLoading}
           iconOnly={true}
           aheadCount={status.ahead}
           behindCount={status.behind}

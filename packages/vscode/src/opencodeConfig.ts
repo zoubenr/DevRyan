@@ -1312,6 +1312,85 @@ const formatAgentMarkdown = (frontmatter: Record<string, unknown>, body: string)
   return `---\n${yamlContent}\n---\n\n${body.trim()}\n`;
 };
 
+const normalizeRuntimeExternalDirectoryVariants = (directory?: string | null): string[] => {
+  if (typeof directory !== 'string' || !directory.trim()) {
+    return [];
+  }
+  const resolved = path.resolve(directory.trim());
+  const candidates = [resolved];
+  try {
+    const real = fs.realpathSync(resolved);
+    if (real && real !== resolved) {
+      candidates.push(real);
+    }
+  } catch {
+    // Missing directories still need their normalized path pattern.
+  }
+  return candidates;
+};
+
+const buildRuntimeExternalDirectories = (workingDirectory?: string): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const addDirectory = (directory?: string | null) => {
+    for (const normalized of normalizeRuntimeExternalDirectoryVariants(directory)) {
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  };
+
+  addDirectory(workingDirectory);
+  addDirectory(findWorktreeRoot(workingDirectory));
+  return result.sort((a, b) => a.localeCompare(b));
+};
+
+const toDirectoryAllowPattern = (directory: string): string => `${directory.replace(/\/+$/, '')}/*`;
+
+const applyRuntimeExternalDirectoryPolicy = (
+  frontmatter: Record<string, unknown>,
+  runtimeExternalDirectories: string[],
+): Record<string, unknown> => {
+  if (runtimeExternalDirectories.length === 0) {
+    return frontmatter;
+  }
+  const permission = isPlainObject(frontmatter.permission)
+    ? frontmatter.permission
+    : null;
+  if (!permission) {
+    return frontmatter;
+  }
+
+  const externalDirectory = isPlainObject(permission.external_directory)
+    ? { ...permission.external_directory }
+    : {};
+  let changed = !isPlainObject(permission.external_directory);
+  for (const directory of runtimeExternalDirectories) {
+    const pattern = toDirectoryAllowPattern(directory);
+    if (externalDirectory[pattern] === 'allow') {
+      continue;
+    }
+    externalDirectory[pattern] = 'allow';
+    changed = true;
+  }
+
+  if (!changed) {
+    return frontmatter;
+  }
+
+  return {
+    ...frontmatter,
+    permission: {
+      ...permission,
+      external_directory: Object.fromEntries(
+        Object.entries(externalDirectory).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    },
+  };
+};
+
 const readRuntimeOverlayManifest = (): Record<string, unknown> => {
   try {
     const content = fs.readFileSync(RUNTIME_AGENT_OVERLAY_MANIFEST_PATH, 'utf8').trim();
@@ -1334,7 +1413,8 @@ const writeRuntimeOverlayManifest = (manifest: Record<string, unknown>) => {
 
 const applyRuntimeAgentOverride = (
   agent: ConfigAgent,
-  override: AgentModelOverride,
+  override: AgentModelOverride | undefined,
+  runtimeExternalDirectories: string[] = [],
 ): string | null => {
   const sourcePath = typeof agent.__path === 'string' ? agent.__path : null;
   if (!sourcePath || !fs.existsSync(sourcePath)) {
@@ -1342,20 +1422,20 @@ const applyRuntimeAgentOverride = (
   }
 
   const { frontmatter, body } = parseMdFile(sourcePath);
-  const next = { ...frontmatter };
+  const next = applyRuntimeExternalDirectoryPolicy({ ...frontmatter }, runtimeExternalDirectories);
 
-  if (Object.prototype.hasOwnProperty.call(override, 'model')) {
+  if (override && Object.prototype.hasOwnProperty.call(override, 'model')) {
     next.model = override.model;
     next.modelRefs = [override.model];
   }
 
-  if (Object.prototype.hasOwnProperty.call(override, 'variant')) {
+  if (override && Object.prototype.hasOwnProperty.call(override, 'variant')) {
     next.variant = typeof override.variant === 'string'
       ? override.variant
       : CLEARED_VARIANT_SENTINEL;
   }
 
-  if (Array.isArray(override.councillors)) {
+  if (override && Array.isArray(override.councillors)) {
     next.councillors = override.councillors.map((entry) => ({ ...entry }));
     next.modelRefs = override.councillors.map((entry) => entry.model);
   }
@@ -1391,6 +1471,7 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
 
   const baseAgents = new Map(getBaseConfigAgents(workingDirectory).map((agent) => [agent.name, agent]));
   const overrides = listAgentModelOverrides();
+  const runtimeExternalDirectories = buildRuntimeExternalDirectories(workingDirectory);
   const manifest = readRuntimeOverlayManifest();
   const projects = isPlainObject(manifest.projects) ? manifest.projects : {};
   const projectManifest = isPlainObject(projects[projectKey]) ? projects[projectKey] as Record<string, unknown> : {};
@@ -1422,10 +1503,18 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
     }
   }
 
-  for (const [agentName, override] of Object.entries(overrides)) {
+  const desiredAgentNames = new Set([
+    ...Object.keys(overrides),
+    ...Array.from(baseAgents.values())
+      .filter((agent) => isPlainObject(agent.permission) && runtimeExternalDirectories.length > 0)
+      .map((agent) => agent.name),
+  ]);
+
+  for (const agentName of desiredAgentNames) {
+    const override = overrides[agentName];
     const baseAgent = baseAgents.get(agentName);
     if (!baseAgent) continue;
-    const content = applyRuntimeAgentOverride(baseAgent, override);
+    const content = applyRuntimeAgentOverride(baseAgent, override, runtimeExternalDirectories);
     if (!content) continue;
     desired.set(agentName, {
       content,

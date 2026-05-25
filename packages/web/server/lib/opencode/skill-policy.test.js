@@ -9,6 +9,19 @@ import {
   sanitizeAgentSkillPolicy,
 } from './skill-policy.js';
 
+const runtimeDirectoryAllows = (...directories) => Object.fromEntries(
+  directories.flatMap((directory) => {
+    const resolved = path.resolve(directory);
+    const candidates = [resolved];
+    try {
+      const real = fs.realpathSync(resolved);
+      if (real && real !== resolved) candidates.push(real);
+    } catch {
+    }
+    return candidates.map((candidate) => [`${candidate.replace(/\/+$/, '')}/*`, 'allow']);
+  }),
+);
+
 describe('skill policy', () => {
   it('filters hidden skills by normalized SKILL.md path', () => {
     const visiblePath = path.join('/tmp', 'skills', 'frontend-design', 'SKILL.md');
@@ -153,6 +166,68 @@ describe('skill policy', () => {
       '/tmp/skills/frontend-design/*': 'allow',
       '/tmp/project/.opencode/skills/project-audit/*': 'allow',
     });
+  });
+
+  it('adds runtime project directories while preserving external-directory fallback and read prompts', () => {
+    const policy = buildVisibleSkillPolicy({
+      skills: [{ name: 'frontend-design', path: '/tmp/project/.opencode/skills/frontend-design/SKILL.md' }],
+      hiddenSkills: [],
+      runtimeExternalDirectories: [
+        '/tmp/project/app',
+        '/tmp/project',
+      ],
+    });
+
+    const frontmatter = sanitizeAgentSkillPolicy({
+      permission: {
+        '*': 'allow',
+        external_directory: {
+          '*': 'ask',
+        },
+        read: {
+          '*.env': 'ask',
+        },
+        skill: {
+          'frontend-design': 'allow',
+        },
+      },
+    }, policy);
+
+    expect(frontmatter.permission.read).toEqual({ '*.env': 'ask' });
+    expect(frontmatter.permission.external_directory).toEqual({
+      '*': 'ask',
+      ...runtimeDirectoryAllows('/tmp/project', '/tmp/project/app'),
+      '/tmp/project/.opencode/skills/frontend-design/*': 'allow',
+    });
+  });
+
+  it('dedupes repeated runtime external directory variants', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-policy-runtime-dir-'));
+    const realDir = path.join(root, 'project');
+    const linkDir = path.join(root, 'linked-project');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.symlinkSync(realDir, linkDir, 'dir');
+
+    try {
+      const policy = buildVisibleSkillPolicy({
+        runtimeExternalDirectories: [realDir, linkDir, path.join(realDir, '.')],
+      });
+
+      const frontmatter = sanitizeAgentSkillPolicy({
+        permission: {
+          external_directory: {
+            '*': 'ask',
+          },
+        },
+      }, policy);
+
+      expect(frontmatter.permission.external_directory).toEqual({
+        '*': 'ask',
+        ...runtimeDirectoryAllows(realDir, linkDir),
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps explicit wildcard-deny agents restricted to their previous visible allows', () => {

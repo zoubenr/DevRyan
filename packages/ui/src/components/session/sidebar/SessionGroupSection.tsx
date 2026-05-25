@@ -21,7 +21,6 @@ import { collectArchivedActionSessions, compareArchivedSessionsByParentAssistant
 import type { SessionAssistantActivity } from '@/sync/session-assistant-activity';
 import type { SessionFolder } from '@/stores/useSessionFoldersStore';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
-import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { openExternalUrl } from '@/lib/url';
 import { useI18n } from '@/lib/i18n';
 
@@ -162,9 +161,7 @@ export function SessionGroupSection(props: Props): React.ReactNode {
   }, [archivedAssistantActivity, group.isArchivedBucket, pinnedSessionIds, sessionOrderIndex]);
 
   const searchData = hasSessionSearchQuery ? groupSearchDataByGroup.get(group) : null;
-  const displayMode = useSessionDisplayStore((state) => state.displayMode);
   const foldersMap = useSessionFoldersStore((state) => state.foldersMap);
-  const isMinimalMode = displayMode === 'minimal';
   const isExpanded = expandedSessionGroups.has(groupKey);
   const isCollapsed = hasSessionSearchQuery ? false : collapsedGroups.has(groupKey);
   const maxVisible = 10;
@@ -469,13 +466,9 @@ export function SessionGroupSection(props: Props): React.ReactNode {
   const hasWorktreeDeleteAction = Boolean(!group.isMain && group.worktree);
   const groupHeaderRightPadding = alwaysShowActions
     ? (hasWorktreeDeleteAction ? 'pr-14' : 'pr-7')
-    : isMinimalMode
-      ? (hasWorktreeDeleteAction
-          ? 'pr-2 group-hover/gh:pr-14 group-focus-within/gh:pr-14'
-          : 'pr-2')
-      : (hasWorktreeDeleteAction
-          ? 'pr-5 group-hover/gh:pr-14 group-focus-within/gh:pr-14'
-          : 'pr-5');
+    : (hasWorktreeDeleteAction
+        ? 'pr-2 group-hover/gh:pr-14 group-focus-within/gh:pr-14'
+        : 'pr-2');
 
   const body = (
     <SessionFolderDndScope

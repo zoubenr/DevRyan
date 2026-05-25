@@ -4,6 +4,7 @@ import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { EventEmitter } from 'events';
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, access } from 'fs/promises';
 
 import { registerFsRoutes } from './routes.js';
@@ -11,12 +12,13 @@ import { registerFsRoutes } from './routes.js';
 const createApp = ({ workspace, configRoot, spawn = vi.fn() }) => {
   const app = express();
   app.use(express.json());
+  let jobCounter = 0;
   registerFsRoutes(app, {
     os,
     path,
     fsPromises: fs.promises,
     spawn,
-    crypto: { randomUUID: () => 'test-job-id' },
+    crypto: { randomUUID: () => `test-job-id-${++jobCounter}` },
     normalizeDirectoryPath: (value) => value,
     resolveProjectDirectory: async () => ({ directory: workspace }),
     buildAugmentedPath: () => process.env.PATH || '',
@@ -26,13 +28,35 @@ const createApp = ({ workspace, configRoot, spawn = vi.fn() }) => {
   return app;
 };
 
+const createExecSpawn = ({ exitCode = 0, stdout = '', stderr = '', delayMs = 0 } = {}) => {
+  return vi.fn(() => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn(() => {
+      child.emit('close', null, 'SIGKILL');
+    });
+
+    setTimeout(() => {
+      if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+      if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+      child.emit('close', exitCode, null);
+    }, delayMs);
+
+    return child;
+  });
+};
+
 describe('fs mutation routes', () => {
   let workspace = '';
   let outsideDir = '';
   let configRoot = '';
   let cleanup = [];
+  let originalGitReadCacheTtl;
 
   beforeEach(async () => {
+    originalGitReadCacheTtl = process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS;
+    delete process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS;
     workspace = await mkdtemp(path.join(os.tmpdir(), 'devryan-fs-workspace-'));
     outsideDir = await mkdtemp(path.join(os.tmpdir(), 'devryan-fs-outside-'));
     configRoot = await mkdtemp(path.join(os.tmpdir(), 'devryan-fs-config-'));
@@ -40,6 +64,11 @@ describe('fs mutation routes', () => {
   });
 
   afterEach(async () => {
+    if (originalGitReadCacheTtl === undefined) {
+      delete process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS;
+    } else {
+      process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS = originalGitReadCacheTtl;
+    }
     await Promise.all(cleanup.map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -154,5 +183,102 @@ describe('fs mutation routes', () => {
 
     expect(response.status).toBe(200);
     expect(await readFile(configFile, 'utf8')).toBe(content);
+  });
+
+  it('caches repeated foreground allowlisted git read commands by cwd', async () => {
+    const spawn = createExecSpawn({ stdout: path.join(workspace, '.git') });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    const first = await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+    const second = await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.results[0].stdout).toBe(path.join(workspace, '.git'));
+    expect(second.body.results[0].stdout).toBe(path.join(workspace, '.git'));
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps separate git read cache entries per cwd', async () => {
+    const firstDir = path.join(workspace, 'one');
+    const secondDir = path.join(workspace, 'two');
+    await mkdir(firstDir);
+    await mkdir(secondDir);
+    const spawn = createExecSpawn({ stdout: path.join(workspace, '.git') });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: firstDir, commands: ['git rev-parse --absolute-git-dir'] });
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: secondDir, commands: ['git rev-parse --absolute-git-dir'] });
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache failed git read commands', async () => {
+    const spawn = createExecSpawn({ exitCode: 1, stderr: 'not a git repo' });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache non-allowlisted commands', async () => {
+    const spawn = createExecSpawn({ stdout: 'M package.json' });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git status --porcelain'] });
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git status --porcelain'] });
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('disables git read caching when the TTL is zero', async () => {
+    process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS = '0';
+    const spawn = createExecSpawn({ stdout: path.join(workspace, '.git') });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+    await request(app)
+      .post('/api/fs/exec')
+      .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] });
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedupes concurrent identical allowlisted git reads', async () => {
+    const spawn = createExecSpawn({ stdout: path.join(workspace, '.git'), delayMs: 20 });
+    const app = createApp({ workspace, configRoot, spawn });
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .post('/api/fs/exec')
+        .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] }),
+      request(app)
+        .post('/api/fs/exec')
+        .send({ cwd: workspace, commands: ['git rev-parse --absolute-git-dir'] }),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });

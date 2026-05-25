@@ -4,6 +4,7 @@ import type { Session } from "@opencode-ai/sdk/v2"
 import {
   getReconnectCandidateSessionIds,
   mergeAuthoritativeSessionStatuses,
+  shouldRecoverStaleActiveSession,
   unwrapSdkResult,
 } from "./reconnect-recovery"
 
@@ -124,5 +125,39 @@ describe("getReconnectCandidateSessionIds", () => {
     } catch (error) {
       expect((error as Error & { status?: number }).status).toBe(503)
     }
+  })
+
+  test("does not recover idle active sessions", () => {
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "idle" } as SessionStatus,
+      now: 30_000,
+      lastStatusEventAt: 0,
+      lastRecoveryAt: undefined,
+    })).toBe(false)
+  })
+
+  test("recovers stale busy active sessions after the threshold", () => {
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "busy" } as SessionStatus,
+      now: 21_000,
+      lastStatusEventAt: 0,
+      lastRecoveryAt: undefined,
+    })).toBe(true)
+  })
+
+  test("fresh status events and cooldown suppress active-session recovery", () => {
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "busy" } as SessionStatus,
+      now: 21_000,
+      lastStatusEventAt: 5_000,
+      lastRecoveryAt: undefined,
+    })).toBe(false)
+
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "retry", attempt: 1, message: "again", next: 30_000 } as SessionStatus,
+      now: 40_000,
+      lastStatusEventAt: 0,
+      lastRecoveryAt: 30_000,
+    })).toBe(false)
   })
 })

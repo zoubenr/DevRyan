@@ -13,6 +13,43 @@ type Args = {
   setProjectRootBranches: React.Dispatch<React.SetStateAction<Map<string, string>>>;
 };
 
+export type ProjectRootBranchRefreshSignature = {
+  path: string;
+  knownBranch: string | null;
+};
+
+type ProjectRootBranchRefreshTarget = Project & {
+  knownBranch: string | null;
+};
+
+export const selectProjectsNeedingRootBranchRefresh = (args: {
+  normalizedProjects: Project[];
+  gitRepoStatus: Map<string, { isGitRepo: boolean | null; branch: string | null }>;
+  previous: Map<string, ProjectRootBranchRefreshSignature>;
+}): {
+  changedProjects: ProjectRootBranchRefreshTarget[];
+  next: Map<string, ProjectRootBranchRefreshSignature>;
+} => {
+  const next = new Map<string, ProjectRootBranchRefreshSignature>();
+  const changedProjects: ProjectRootBranchRefreshTarget[] = [];
+
+  for (const project of args.normalizedProjects) {
+    const knownBranch = args.gitRepoStatus.get(project.normalizedPath)?.branch ?? null;
+    const signature = {
+      path: project.normalizedPath,
+      knownBranch,
+    };
+    next.set(project.id, signature);
+
+    const previous = args.previous.get(project.id);
+    if (!previous || previous.path !== signature.path || previous.knownBranch !== signature.knownBranch) {
+      changedProjects.push({ ...project, knownBranch });
+    }
+  }
+
+  return { changedProjects, next };
+};
+
 const areRepoStatusMapsEqual = (
   left: Map<string, boolean | null>,
   right: Map<string, boolean | null>,
@@ -36,6 +73,7 @@ export const useProjectRepoStatus = (args: Args): void => {
 
   const { git } = useRuntimeAPIs();
   const ensureStatus = useGitStore((state) => state.ensureStatus);
+  const rootBranchRefreshSignaturesRef = React.useRef<Map<string, ProjectRootBranchRefreshSignature>>(new Map());
 
   // Derive repo status from centralized Git store
   React.useEffect(() => {
@@ -70,29 +108,48 @@ export const useProjectRepoStatus = (args: Args): void => {
 
   React.useEffect(() => {
     let cancelled = false;
-    const run = async () => {
-      const entries = await mapWithConcurrency(normalizedProjects, 2, async (project) => {
-        const branch = await getRootBranch(project.normalizedPath).catch(() => null);
-        return { id: project.id, branch };
-      });
-      if (cancelled) {
-        return;
-      }
-      setProjectRootBranches((prev) => {
-        const next = new Map(prev);
-        let changed = false;
-        entries.forEach(({ id, branch }) => {
-          if (branch && next.get(id) !== branch) {
-            next.set(id, branch);
-            changed = true;
-          }
+    const { changedProjects, next } = selectProjectsNeedingRootBranchRefresh({
+      normalizedProjects,
+      gitRepoStatus,
+      previous: rootBranchRefreshSignaturesRef.current,
+    });
+    rootBranchRefreshSignaturesRef.current = next;
+
+    if (changedProjects.length === 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = setTimeout(() => {
+      const run = async () => {
+        const entries = await mapWithConcurrency(changedProjects, 2, async (project) => {
+          const branch = await getRootBranch(project.normalizedPath, {
+            knownBranch: project.knownBranch,
+          }).catch(() => null);
+          return { id: project.id, branch };
         });
-        return changed ? next : prev;
-      });
-    };
-    void run();
+        if (cancelled) {
+          return;
+        }
+        setProjectRootBranches((prev) => {
+          const nextBranches = new Map(prev);
+          let changed = false;
+          entries.forEach(({ id, branch }) => {
+            if (branch && nextBranches.get(id) !== branch) {
+              nextBranches.set(id, branch);
+              changed = true;
+            }
+          });
+          return changed ? nextBranches : prev;
+        });
+      };
+      void run();
+    }, 150);
+
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [normalizedProjects, projectGitBranchesKey, setProjectRootBranches]);
+  }, [normalizedProjects, projectGitBranchesKey, gitRepoStatus, setProjectRootBranches]);
 };

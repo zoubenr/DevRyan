@@ -4,6 +4,9 @@ import { getSessionMaterializationStatus } from "./materialization"
 
 export { unwrapSdkResult } from "./sdk-result"
 
+export const ACTIVE_SESSION_STATUS_STALE_MS = 20_000
+export const ACTIVE_SESSION_RECOVERY_COOLDOWN_MS = 15_000
+
 type ReconnectMaterializationState = {
   session: Session[]
   session_status?: Record<string, SessionStatus>
@@ -119,4 +122,33 @@ export function mergeAuthoritativeSessionStatuses(input: {
   }
 
   return next ?? input.current
+}
+
+export function shouldRecoverStaleActiveSession(input: {
+  status: SessionStatus | undefined
+  now?: number
+  lastStatusEventAt?: number
+  lastRecoveryAt?: number
+  staleMs?: number
+  cooldownMs?: number
+}): boolean {
+  const statusType = input.status?.type
+  if (statusType !== "busy" && statusType !== "retry") {
+    return false
+  }
+
+  const now = input.now ?? Date.now()
+  const staleMs = input.staleMs ?? ACTIVE_SESSION_STATUS_STALE_MS
+  const cooldownMs = input.cooldownMs ?? ACTIVE_SESSION_RECOVERY_COOLDOWN_MS
+  const lastStatusEventAt = input.lastStatusEventAt ?? now
+
+  if (now - lastStatusEventAt < staleMs) {
+    return false
+  }
+
+  if (typeof input.lastRecoveryAt === "number" && now - input.lastRecoveryAt < cooldownMs) {
+    return false
+  }
+
+  return true
 }

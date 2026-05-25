@@ -37,6 +37,19 @@ function deltaEvent(delta: string): OpencodeEvent {
   } as OpencodeEvent
 }
 
+function syntheticStatusEvent(sessionId: string, status: "idle" | "busy" | "retry", metadata: Record<string, unknown> = {}): OpencodeEvent {
+  return {
+    type: "openchamber:session-status",
+    properties: {
+      sessionId,
+      status,
+      timestamp: 100,
+      metadata,
+      needsAttention: false,
+    },
+  } as unknown as OpencodeEvent
+}
+
 function createSdk(events: OpencodeEvent[], streamFinished: () => void): OpencodeClient {
   return {
     global: {
@@ -177,6 +190,94 @@ describe("coalescePartDeltaValue", () => {
 })
 
 describe("createEventPipeline", () => {
+  test("normalizes synthetic session status events into canonical session.status events", async () => {
+    let resolveStreamFinished!: () => void
+    const streamFinished = new Promise<void>((resolve) => {
+      resolveStreamFinished = resolve
+    })
+    let resolveDelivered!: () => void
+    const deliveredAll = new Promise<void>((resolve) => {
+      resolveDelivered = resolve
+    })
+    const delivered: OpencodeEvent[] = []
+    const pipeline = createEventPipeline({
+      sdk: createSdk([
+        syntheticStatusEvent("ses_1", "retry", {
+          attempt: 2,
+          message: "Retrying",
+          next: 123,
+        }),
+      ], resolveStreamFinished),
+      onEvent: (_directory, payload) => {
+        delivered.push(payload)
+        resolveDelivered()
+      },
+      transport: "sse",
+      heartbeatTimeoutMs: 1_000,
+    })
+
+    try {
+      await streamFinished
+      await Promise.race([deliveredAll, failAfter(500)])
+    } finally {
+      pipeline.cleanup()
+    }
+
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].type).toBe("session.status")
+    const props = delivered[0].properties as {
+      sessionID?: string
+      status?: unknown
+    }
+    expect(props.sessionID).toBe("ses_1")
+    expect(props.status).toEqual({
+      type: "retry",
+      attempt: 2,
+      message: "Retrying",
+      next: 123,
+    })
+  })
+
+  test("coalesces normalized synthetic status events by session", async () => {
+    let resolveStreamFinished!: () => void
+    const streamFinished = new Promise<void>((resolve) => {
+      resolveStreamFinished = resolve
+    })
+    let resolveDelivered!: () => void
+    const deliveredAll = new Promise<void>((resolve) => {
+      resolveDelivered = resolve
+    })
+    const delivered: OpencodeEvent[] = []
+    const pipeline = createEventPipeline({
+      sdk: createSdk([
+        syntheticStatusEvent("ses_1", "busy"),
+        syntheticStatusEvent("ses_1", "idle"),
+      ], resolveStreamFinished),
+      onEvent: (_directory, payload) => {
+        delivered.push(payload)
+        resolveDelivered()
+      },
+      transport: "sse",
+      heartbeatTimeoutMs: 1_000,
+    })
+
+    try {
+      await streamFinished
+      await Promise.race([deliveredAll, failAfter(500)])
+    } finally {
+      pipeline.cleanup()
+    }
+
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].type).toBe("session.status")
+    const props = delivered[0].properties as {
+      sessionID?: string
+      status?: unknown
+    }
+    expect(props.sessionID).toBe("ses_1")
+    expect(props.status).toEqual({ type: "idle" })
+  })
+
   test("preserves part update order around text deltas", async () => {
     let resolveStreamFinished!: () => void
     const streamFinished = new Promise<void>((resolve) => {

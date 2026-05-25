@@ -5,6 +5,7 @@ Own filesystem API behavior for the web server runtime, including workspace-boun
 
 ## Entrypoints and structure
 - `packages/web/server/lib/fs/routes.js`: route registration and runtime-owned state for `/api/fs/*` endpoints.
+- `packages/web/server/lib/fs/git-read-cache.js`: deterministic in-memory cache for exact allowlisted Git read commands issued through foreground `/api/fs/exec`.
 - `packages/web/server/lib/fs/search.js`: fuzzy filesystem search runtime used by non-FS routes (for example project icon discovery).
 
 ## Public exports
@@ -22,7 +23,17 @@ Own filesystem API behavior for the web server runtime, including workspace-boun
     - `GET /api/fs/exec/:jobId`
     - `GET /api/fs/list`
   - Owns exec job queue state (`execJobs`) and lifecycle/TTL pruning.
+  - Applies a process-memory cache for successful foreground single-command Git reads:
+    - `git rev-parse --absolute-git-dir`
+    - `git rev-parse --git-common-dir`
+    - `git rev-parse --absolute-git-dir --git-common-dir`
+  - Cache TTL defaults to 30 seconds and can be disabled with `OPENCHAMBER_GIT_READ_CACHE_TTL_MS=0`.
+  - Failures, non-allowlisted commands, multi-command jobs, and background jobs bypass the cache.
   - Enforces workspace boundary checks with active project + worktree fallback support.
+- `createDeterministicGitReadCache(options)` from `git-read-cache.js`
+  - Caches by resolved cwd and normalized command.
+  - Dedupes in-flight identical reads.
+  - Bounds memory by entry count and result byte size.
 - `createFsSearchRuntime({ fsPromises, path, spawn, resolveGitBinaryForSpawn })` from `search.js`
   - Returns `{ searchFilesystemFiles(rootPath, options) }`.
   - Supports fuzzy matching, hidden-file handling, and optional `git check-ignore` filtering.

@@ -1,8 +1,6 @@
 import React from 'react';
 import {
   RiCheckLine,
-  RiContractUpDownLine,
-  RiExpandUpDownLine,
   RiFolderAddLine,
   RiGithubFill,
   RiMoonLine,
@@ -20,8 +18,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useI18n } from '@/lib/i18n';
 import type { GitHubAuthStatus } from '@/lib/api/types';
-import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
-import { TuneSlidersIcon } from '@/components/icons/ToolbarIcons';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 
 type Props = {
@@ -32,8 +28,6 @@ type Props = {
   showRuntimeButtons?: boolean;
   hideDirectoryControls: boolean;
   handleOpenDirectoryDialog: () => void;
-  collapseAllProjects: () => void;
-  expandAllProjects: () => void;
 };
 
 const footerButtonClassName = 'inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-interactive-hover/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50';
@@ -154,15 +148,9 @@ export function SidebarFooter({
   showRuntimeButtons = true,
   hideDirectoryControls,
   handleOpenDirectoryDialog,
-  collapseAllProjects,
-  expandAllProjects,
 }: Props): React.ReactNode {
   const { t } = useI18n();
   const { currentTheme, setThemeMode } = useThemeSystem();
-  const displayMode = useSessionDisplayStore((state) => state.displayMode);
-  const showRecentSection = useSessionDisplayStore((state) => state.showRecentSection);
-  const setDisplayMode = useSessionDisplayStore((state) => state.setDisplayMode);
-  const toggleRecentSection = useSessionDisplayStore((state) => state.toggleRecentSection);
   const isDarkMode = currentTheme.metadata.variant === 'dark';
   const themeToggleLabel = isDarkMode
     ? t('sessions.sidebar.footer.actions.switchToLightMode')
@@ -182,72 +170,20 @@ export function SidebarFooter({
             onGitHubAccountSwitch={onGitHubAccountSwitch}
           />
           {!hideDirectoryControls ? (
-            <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={handleOpenDirectoryDialog}
-                    className={footerButtonClassName}
-                    aria-label={t('sessions.sidebar.header.actions.addProject')}
-                  >
-                    {/* Use Remix line icons here so these profile-adjacent actions stay visibly outline-only. */}
-                    <RiFolderAddLine className="h-4.5 w-4.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={4}><p>{t('sessions.sidebar.header.actions.addProject')}</p></TooltipContent>
-              </Tooltip>
-
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className={footerButtonClassName}
-                        aria-label={t('sessions.sidebar.header.actions.sessionDisplayMode')}
-                      >
-                        <TuneSlidersIcon className="h-4.5 w-4.5" />
-                      </button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" sideOffset={4}><p>{t('sessions.sidebar.header.displayMode.label')}</p></TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="start" side="top" className="min-w-[160px]">
-                  <DropdownMenuItem
-                    onClick={() => setDisplayMode('default')}
-                    className="flex items-center justify-between"
-                  >
-                    <span>{t('sessions.sidebar.header.displayMode.default')}</span>
-                    {displayMode === 'default' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setDisplayMode('minimal')}
-                    className="flex items-center justify-between"
-                  >
-                    <span>{t('sessions.sidebar.header.displayMode.minimal')}</span>
-                    {displayMode === 'minimal' ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={toggleRecentSection}
-                    className="flex items-center justify-between"
-                  >
-                    <span>{t('sessions.sidebar.header.displayMode.showRecent')}</span>
-                    {showRecentSection ? <RiCheckLine className="h-4 w-4 text-primary" /> : null}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={collapseAllProjects} className="flex items-center gap-2">
-                    <RiContractUpDownLine className="h-4 w-4" />
-                    <span>{t('sessions.sidebar.header.displayMode.collapseAll')}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={expandAllProjects} className="flex items-center gap-2">
-                    <RiExpandUpDownLine className="h-4 w-4" />
-                    <span>{t('sessions.sidebar.header.displayMode.expandAll')}</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={handleOpenDirectoryDialog}
+                  className={footerButtonClassName}
+                  aria-label={t('sessions.sidebar.header.actions.addProject')}
+                >
+                  {/* Use Remix line icons here so these profile-adjacent actions stay visibly outline-only. */}
+                  <RiFolderAddLine className="h-4.5 w-4.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={4}><p>{t('sessions.sidebar.header.actions.addProject')}</p></TooltipContent>
+            </Tooltip>
           ) : null}
           <div className="min-w-0 flex-1" />
           <Tooltip>

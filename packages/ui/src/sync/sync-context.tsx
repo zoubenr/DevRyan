@@ -31,8 +31,11 @@ import { setSyncRefs } from "./sync-refs"
 import { stripMessageDiffSnapshots, stripSessionDiffSnapshots } from "./sanitize"
 import { syncDebug } from "./debug"
 import {
+  ACTIVE_SESSION_RECOVERY_COOLDOWN_MS,
+  ACTIVE_SESSION_STATUS_STALE_MS,
   getReconnectCandidateSessionIds,
   mergeAuthoritativeSessionStatuses,
+  shouldRecoverStaleActiveSession,
   unwrapSdkResult,
 } from "./reconnect-recovery"
 import { hasMessageRecordInfo, unwrapMessageRecordsResult } from "./message-fetch"
@@ -276,8 +279,9 @@ const GLOBAL_BOOTSTRAP_RETRY_BASE_MS = 500
 const GLOBAL_BOOTSTRAP_RETRY_MAX_MS = 5_000
 const RECONNECT_MESSAGE_LIMIT = 30
 const SESSION_MATERIALIZATION_MESSAGE_LIMIT = 30
-const SESSION_RECOVERY_SWEEP_MS = 30_000
+const ACTIVE_SESSION_RECOVERY_CHECK_MS = 5_000
 const RECONNECT_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
+const ACTIVE_SESSION_RECOVERY_TRACKING_LIMIT = 500
 
 const syncSnapshotSignature = (value: unknown): string => JSON.stringify(value)
 
@@ -533,10 +537,31 @@ async function materializeSessionFromServer(
 // Used to determine if user is currently viewing the session when a notification arrives.
 let _activeDirectory = ""
 let _activeSession = ""
+let _activeSessionTrackingKey = ""
 const externallyViewedSessions = new Map<string, number>()
+const lastStatusEventAtBySessionKey = new Map<string, number>()
+const lastRecoveryAtBySessionKey = new Map<string, number>()
 const EXTERNAL_VIEW_TTL_MS = 15_000
 
 const viewedSessionKey = (directory: string, sessionId: string) => `${directory}\n${sessionId}`
+const statusTrackingKey = (directory: string, sessionId: string) => `${directory}\n${sessionId}`
+
+function rememberBoundedTimestamp(map: Map<string, number>, key: string, timestamp: number) {
+  map.delete(key)
+  map.set(key, timestamp)
+  while (map.size > ACTIVE_SESSION_RECOVERY_TRACKING_LIMIT) {
+    const oldest = map.keys().next().value
+    if (typeof oldest !== "string") break
+    map.delete(oldest)
+  }
+}
+
+function markStatusEventObserved(directory: string, sessionId: string, timestamp = Date.now()) {
+  if (!directory || !sessionId || directory === "global") return
+  const key = statusTrackingKey(directory, sessionId)
+  rememberBoundedTimestamp(lastStatusEventAtBySessionKey, key, timestamp)
+  lastRecoveryAtBySessionKey.delete(key)
+}
 
 function pruneExternallyViewedSessions(now = Date.now()) {
   for (const [key, expiresAt] of externallyViewedSessions.entries()) {
@@ -698,6 +723,14 @@ async function detectAndMarkPlanLifecycle(
 export function setActiveSession(directory: string, sessionId: string) {
   _activeDirectory = directory
   _activeSession = sessionId
+  const nextKey = directory && sessionId ? statusTrackingKey(directory, sessionId) : ""
+  if (nextKey && nextKey !== _activeSessionTrackingKey) {
+    _activeSessionTrackingKey = nextKey
+    rememberBoundedTimestamp(lastStatusEventAtBySessionKey, nextKey, Date.now())
+    lastRecoveryAtBySessionKey.delete(nextKey)
+  } else if (!nextKey) {
+    _activeSessionTrackingKey = ""
+  }
 }
 
 export function setExternallyViewedSession(directory: string, sessionId: string, viewed: boolean) {
@@ -1522,6 +1555,13 @@ function handleEvent(
 
   childStores.mark(resolvedDirectory)
 
+  if (payload.type === "session.status") {
+    const sessionID = getSessionIdFromPayload(payload)
+    if (sessionID) {
+      markStatusEventObserved(resolvedDirectory, sessionID)
+    }
+  }
+
   if (payload.type === "permission.asked") {
     const permission = payload.properties as PermissionRequest
     const permissionStore = usePermissionStore.getState()
@@ -2029,6 +2069,36 @@ export function SyncProvider(props: {
           reconnectMaterializing.delete(directory)
         })
     }
+    const triggerActiveSessionRecovery = () => {
+      const directory = _activeDirectory
+      const sessionID = _activeSession
+      if (!directory || !sessionID) return
+
+      const store = childStores.children.get(directory)
+      if (!store) return
+      const state = store.getState()
+      const status = state.session_status?.[sessionID]
+      const key = statusTrackingKey(directory, sessionID)
+      const now = Date.now()
+
+      if (!shouldRecoverStaleActiveSession({
+        status,
+        now,
+        lastStatusEventAt: lastStatusEventAtBySessionKey.get(key),
+        lastRecoveryAt: lastRecoveryAtBySessionKey.get(key),
+        staleMs: ACTIVE_SESSION_STATUS_STALE_MS,
+        cooldownMs: ACTIVE_SESSION_RECOVERY_COOLDOWN_MS,
+      })) {
+        return
+      }
+
+      rememberBoundedTimestamp(lastRecoveryAtBySessionKey, key, now)
+      void resyncDirectoryAfterReconnect(directory, store, routingIndex, {
+        candidateSessionIds: [sessionID],
+      }).catch(() => {
+        // Transient failure during targeted stale recovery; cooldown keeps retries bounded.
+      })
+    }
     const triggerAllRecovery = () => {
       for (const dir of childStores.children.keys()) {
         triggerReconnectMaterialization(dir)
@@ -2039,8 +2109,8 @@ export function SyncProvider(props: {
       if (document.visibilityState !== "visible") return
       triggerAllRecovery()
     }
-    const recoverySweep = setInterval(triggerAllRecovery, SESSION_RECOVERY_SWEEP_MS)
-    ;(recoverySweep as { unref?: () => void }).unref?.()
+    const activeRecoveryWatchdog = setInterval(triggerActiveSessionRecovery, ACTIVE_SESSION_RECOVERY_CHECK_MS)
+    ;(activeRecoveryWatchdog as { unref?: () => void }).unref?.()
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisible)
     }
@@ -2091,7 +2161,7 @@ export function SyncProvider(props: {
       },
     })
     return () => {
-      clearInterval(recoverySweep)
+      clearInterval(activeRecoveryWatchdog)
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisible)
       }

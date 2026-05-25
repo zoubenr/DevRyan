@@ -59,13 +59,16 @@ const filterVisibleSkills = (skills = [], hiddenSkills = []) => {
   return changed ? visibleSkills : skills;
 };
 
-const buildVisibleSkillPolicy = ({ skills = [], hiddenSkills = [] } = {}) => {
+const buildVisibleSkillPolicy = (input = {}) => {
+  const { skills = [], hiddenSkills = [], runtimeExternalDirectories: rawRuntimeExternalDirectories = [] } = input;
   const visibleSkills = filterVisibleSkills(skills, hiddenSkills);
   const seenNames = new Set();
   const skillNames = [];
   const skillDirectoriesByName = {};
   const seenDirectories = new Set();
   const skillDirectories = [];
+  const seenRuntimeExternalDirectories = new Set();
+  const runtimeExternalDirectories = [];
 
   for (const skill of visibleSkills) {
     const name = typeof skill?.name === 'string' ? skill.name.trim() : '';
@@ -95,10 +98,40 @@ const buildVisibleSkillPolicy = ({ skills = [], hiddenSkills = [] } = {}) => {
     sortedDirectoriesByName[name] = [...dirs].sort((a, b) => a.localeCompare(b));
   }
 
+  const addRuntimeExternalDirectory = (dir) => {
+    if (typeof dir !== 'string' || !dir.trim()) {
+      return;
+    }
+    const resolved = path.resolve(dir.trim());
+    const candidates = [resolved];
+    try {
+      const real = fs.realpathSync(resolved);
+      if (real && real !== resolved) {
+        candidates.push(real);
+      }
+    } catch {
+    }
+
+    for (const candidate of candidates) {
+      if (!candidate || seenRuntimeExternalDirectories.has(candidate)) {
+        continue;
+      }
+      seenRuntimeExternalDirectories.add(candidate);
+      runtimeExternalDirectories.push(candidate);
+    }
+  };
+
+  if (Array.isArray(rawRuntimeExternalDirectories)) {
+    for (const dir of rawRuntimeExternalDirectories) {
+      addRuntimeExternalDirectory(dir);
+    }
+  }
+
   return {
     skillNames: [...skillNames].sort((a, b) => a.localeCompare(b)),
     skillDirectories: [...skillDirectories].sort((a, b) => a.localeCompare(b)),
     skillDirectoriesByName: sortedDirectoriesByName,
+    runtimeExternalDirectories: [...runtimeExternalDirectories].sort((a, b) => a.localeCompare(b)),
   };
 };
 
@@ -140,12 +173,15 @@ const isSkillDirectoryPattern = (pattern) => {
 const toDirectoryAllowPattern = (dir) => `${dir.replace(/\/+$/, '')}/*`;
 
 const sanitizeExternalDirectory = (externalDirectory, allowedSkillDirectories) => {
+  const allowedDirectories = Array.isArray(allowedSkillDirectories)
+    ? allowedSkillDirectories
+    : [];
   if (!isPlainObject(externalDirectory)) {
-    if (allowedSkillDirectories.length === 0) {
+    if (allowedDirectories.length === 0) {
       return externalDirectory;
     }
     const next = {};
-    for (const dir of allowedSkillDirectories) {
+    for (const dir of allowedDirectories) {
       next[toDirectoryAllowPattern(dir)] = 'allow';
     }
     return next;
@@ -159,7 +195,7 @@ const sanitizeExternalDirectory = (externalDirectory, allowedSkillDirectories) =
     next[pattern] = value;
   }
 
-  for (const dir of allowedSkillDirectories) {
+  for (const dir of allowedDirectories) {
     next[toDirectoryAllowPattern(dir)] = 'allow';
   }
 
@@ -174,9 +210,33 @@ const sanitizeAgentSkillPolicy = (frontmatter, policy = null) => {
   const permission = isPlainObject(frontmatter?.permission) ? frontmatter.permission : {};
   const skillNames = Array.isArray(policy.skillNames) ? policy.skillNames : [];
   const skillDirectoriesByName = isPlainObject(policy.skillDirectoriesByName) ? policy.skillDirectoriesByName : {};
+  const runtimeExternalDirectories = Array.isArray(policy.runtimeExternalDirectories)
+    ? policy.runtimeExternalDirectories
+    : [];
   const allowedSkillNames = getAllowedSkillNames(permission.skill, skillNames);
   const allowedDirectories = [];
   const seenAllowedDirectories = new Set();
+  for (const dir of runtimeExternalDirectories) {
+    if (typeof dir !== 'string' || !dir.trim()) {
+      continue;
+    }
+    const resolved = path.resolve(dir.trim());
+    const candidates = [resolved];
+    try {
+      const real = fs.realpathSync(resolved);
+      if (real && real !== resolved) {
+        candidates.push(real);
+      }
+    } catch {
+    }
+    for (const normalizedDir of candidates) {
+      if (!normalizedDir || seenAllowedDirectories.has(normalizedDir)) {
+        continue;
+      }
+      seenAllowedDirectories.add(normalizedDir);
+      allowedDirectories.push(normalizedDir);
+    }
+  }
   for (const name of allowedSkillNames) {
     const dirs = Array.isArray(skillDirectoriesByName[name]) ? skillDirectoriesByName[name] : [];
     for (const dir of dirs) {

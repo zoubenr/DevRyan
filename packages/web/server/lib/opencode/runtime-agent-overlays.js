@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'yaml';
 
 import {
+  findWorktreeRoot,
   OPENCODE_CONFIG_DIR,
   readConfig,
 } from './shared.js';
@@ -421,6 +422,41 @@ const applyRuntimeOverrideFrontmatter = (agent, override, options = {}) => {
 
 const shouldWriteSkillPolicyOverlay = (agent, options = {}) => shouldApplySkillPolicy(agent, options);
 
+const buildRuntimeExternalDirectories = (workingDirectory) => {
+  if (!workingDirectory) {
+    return [];
+  }
+
+  const dirs = [];
+  const addDir = (dir) => {
+    if (typeof dir !== 'string' || !dir.trim()) {
+      return;
+    }
+    const resolved = path.resolve(dir);
+    if (!dirs.includes(resolved)) {
+      dirs.push(resolved);
+    }
+  };
+
+  addDir(workingDirectory);
+  addDir(findWorktreeRoot(workingDirectory));
+  return dirs;
+};
+
+const buildRuntimeSkillPolicy = (skillPolicy, workingDirectory) => {
+  if (!skillPolicy) {
+    return null;
+  }
+  const runtimeExternalDirectories = buildRuntimeExternalDirectories(workingDirectory);
+  if (runtimeExternalDirectories.length === 0) {
+    return skillPolicy;
+  }
+  return {
+    ...skillPolicy,
+    runtimeExternalDirectories,
+  };
+};
+
 export const getRuntimeAgentOverlayConfigDirectory = (workingDirectory, options = {}) => {
   if (!workingDirectory) {
     return null;
@@ -443,6 +479,11 @@ export const syncRuntimeAgentOverlays = async (options = {}) => {
   const targetAgentDirectory = path.join(targetConfigDirectory, 'agents');
   const targetPluginDirectory = path.join(targetConfigDirectory, 'plugins');
   const overrides = normalizeOverrides(options);
+  const runtimeSkillPolicy = buildRuntimeSkillPolicy(options.skillPolicy, workingDirectory);
+  const runtimeOptions = {
+    ...options,
+    skillPolicy: runtimeSkillPolicy,
+  };
 
   const result = {
     changed: false,
@@ -514,7 +555,7 @@ export const syncRuntimeAgentOverlays = async (options = {}) => {
   }
 
   for (const [name, baseAgent] of baseAgentsByName.entries()) {
-    if (!shouldWriteSkillPolicyOverlay(baseAgent, options) || desiredAgentInputs.has(name)) {
+    if (!shouldWriteSkillPolicyOverlay(baseAgent, runtimeOptions) || desiredAgentInputs.has(name)) {
       continue;
     }
     desiredAgentInputs.set(name, { baseAgent, override: {} });
@@ -522,7 +563,7 @@ export const syncRuntimeAgentOverlays = async (options = {}) => {
 
   const desiredAgents = new Map();
   for (const [name, { baseAgent, override }] of desiredAgentInputs.entries()) {
-    const frontmatter = applyRuntimeOverrideFrontmatter(baseAgent, override, options);
+    const frontmatter = applyRuntimeOverrideFrontmatter(baseAgent, override, runtimeOptions);
     const content = formatAgentMarkdownContent(frontmatter, baseAgent.body);
     desiredAgents.set(name, {
       name,

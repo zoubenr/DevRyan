@@ -1,5 +1,5 @@
 import React from 'react';
-import { RiArrowDownSLine, RiArrowRightSLine, RiExternalLinkLine } from '@remixicon/react';
+import { RiArrowDownSLine, RiArrowRightSLine, RiCheckLine, RiExternalLinkLine } from '@remixicon/react';
 import type { ToolPart as ToolPartType } from '@opencode-ai/sdk/v2';
 import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
@@ -424,90 +424,94 @@ export const TaskToolSummary: React.FC<{
 
     const visibleRows = isExpanded ? summaryRowsState.rows : summaryRowsState.rows.slice(-6);
     const hiddenCount = Math.max(0, summaryRowsState.rows.length - visibleRows.length);
+    const hasActivityContent = summaryRowsState.rows.length > 0 || Boolean(sessionId);
 
     return (
-        <div
-            className={cn(
-                'relative pr-2 pb-2 pt-2 space-y-2 pl-[1.4375rem]',
-                'before:absolute before:left-[0.4375rem] before:w-px before:bg-border/80 before:content-[""]',
-                'before:top-[-0.25rem] before:bottom-0'
-            )}
-        >
-            {summaryRowsState.rows.length > 0 ? (
-                <ToolScrollableSection maxHeightClass={isExpanded ? 'max-h-[40vh]' : 'max-h-56'} disableHorizontal>
-                    <div className="w-full min-w-0 space-y-1">
-                        {hiddenCount > 0 ? (
-                            <div className="typography-micro text-muted-foreground/70">+{hiddenCount} more...</div>
-                        ) : null}
+        <div className="relative pr-2 pb-2 pt-2 space-y-2">
+            {hasActivityContent ? (
+                <div
+                    className={cn(
+                        'relative space-y-2 pl-[1.4375rem]',
+                        'before:absolute before:left-[0.4375rem] before:w-px before:bg-border/80 before:content-[""]',
+                        'before:top-[-0.25rem] before:bottom-0'
+                    )}
+                >
+                    {summaryRowsState.rows.length > 0 ? (
+                        <ToolScrollableSection maxHeightClass={isExpanded ? 'max-h-[40vh]' : 'max-h-56'} disableHorizontal>
+                            <div className="w-full min-w-0 space-y-1">
+                                {hiddenCount > 0 ? (
+                                    <div className="typography-micro text-muted-foreground/70">+{hiddenCount} more...</div>
+                                ) : null}
 
-                        {visibleRows.map((row, idx) => {
-                            if (row.type === 'group') {
-                                return (
-                                    <TaskToolSummaryGroupRow
-                                        key={`task-group-${row.groupInfo.key}-${row.items[0]?.id ?? idx}`}
-                                        groupInfo={row.groupInfo}
-                                        parts={row.items}
-                                        entriesById={summaryRowsState.entriesById}
-                                        isMobile={isMobile}
-                                        animateTailText={animateTailText}
-                                    />
-                                );
-                            }
+                                {visibleRows.map((row, idx) => {
+                                    if (row.type === 'group') {
+                                        return (
+                                            <TaskToolSummaryGroupRow
+                                                key={`task-group-${row.groupInfo.key}-${row.items[0]?.id ?? idx}`}
+                                                groupInfo={row.groupInfo}
+                                                parts={row.items}
+                                                entriesById={summaryRowsState.entriesById}
+                                                isMobile={isMobile}
+                                                animateTailText={animateTailText}
+                                            />
+                                        );
+                                    }
 
-                            const entry = summaryRowsState.entriesById.get(row.item.id);
-                            if (!entry) {
-                                return null;
-                            }
-                            return (
-                                <TaskToolSummaryEntryRow
-                                    key={entry.id ?? `${row.item.tool}-${idx}`}
-                                    entry={entry}
-                                    isMobile={isMobile}
-                                    animateTailText={animateTailText}
-                                />
-                            );
-                        })}
-                    </div>
-                </ToolScrollableSection>
+                                    const entry = summaryRowsState.entriesById.get(row.item.id);
+                                    if (!entry) {
+                                        return null;
+                                    }
+                                    return (
+                                        <TaskToolSummaryEntryRow
+                                            key={entry.id ?? `${row.item.tool}-${idx}`}
+                                            entry={entry}
+                                            isMobile={isMobile}
+                                            animateTailText={animateTailText}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        </ToolScrollableSection>
+                    ) : null}
+
+                    {sessionId && (
+                        <button
+                            type="button"
+                            className="flex items-center gap-2 typography-meta text-primary hover:text-primary/80 w-full"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={handleOpenSession}
+                        >
+                            <RiExternalLinkLine className="h-3.5 w-3.5 flex-shrink-0" />
+                            <span className="typography-meta text-primary font-medium">{t('chat.toolPart.openSubtask', { type: agentType.charAt(0).toUpperCase() + agentType.slice(1) })}</span>
+                        </button>
+                    )}
+                </div>
             ) : null}
 
-            {sessionId && (
-                <button
-                    type="button"
-                    className="flex items-center gap-2 typography-meta text-primary hover:text-primary/80 w-full"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={handleOpenSession}
-                >
-                    <RiExternalLinkLine className="h-3.5 w-3.5 flex-shrink-0" />
-                    <span className="typography-meta text-primary font-medium">{t('chat.toolPart.openSubtask', { type: agentType.charAt(0).toUpperCase() + agentType.slice(1) })}</span>
-                </button>
-            )}
-
             {hasOutput ? (
-                <div className={cn('space-y-1', (entries.length > 0 || sessionId) && 'pt-1')}
-                >
+                <div className={cn('space-y-1', hasActivityContent && 'pt-1')}>
                     <button
                         type="button"
-                        className="flex items-center gap-2 typography-meta text-foreground/80 hover:text-foreground w-full"
+                        className="inline-flex items-center gap-1.5 rounded-sm py-1 text-left typography-meta focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--interactive-focus-ring)]"
+                        style={{ color: 'var(--tools-title)' }}
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                             event.stopPropagation();
                             setIsOutputExpanded((prev) => !prev);
                         }}
+                        aria-expanded={isOutputExpanded}
                     >
-                        {isOutputExpanded ? (
-                            <RiArrowDownSLine className="h-3.5 w-3.5 flex-shrink-0" />
-                        ) : (
-                            <RiArrowRightSLine className="h-3.5 w-3.5 flex-shrink-0" />
-                        )}
-                        <span className="typography-meta text-foreground/80 font-medium">{t('chat.toolPart.output')}</span>
+                        <RiCheckLine className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--status-success)' }} />
+                        <span className="typography-meta font-medium">{t('chat.toolPart.output')}</span>
                     </button>
                     {isOutputExpanded ? (
-                        <ToolScrollableSection maxHeightClass="max-h-[50vh]">
-                            <div className="w-full min-w-0">
-                                <SimpleMarkdownRenderer content={trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
-                            </div>
-                        </ToolScrollableSection>
+                        <div className="pl-[1.4375rem]">
+                            <ToolScrollableSection maxHeightClass="max-h-[50vh]">
+                                <div className="w-full min-w-0">
+                                    <SimpleMarkdownRenderer content={trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
+                                </div>
+                            </ToolScrollableSection>
+                        </div>
                     ) : null}
                 </div>
             ) : null}

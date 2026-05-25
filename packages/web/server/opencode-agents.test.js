@@ -441,8 +441,24 @@ describe('Packaged OpenChamber agents', () => {
 
     expect(orchestrator?.prompt).toContain('Plan approval belongs only to the plan card lifecycle');
     expect(orchestrator?.prompt).toContain('Do not use the structured question tool to ask for approval of a design or plan');
+    expect(orchestrator?.prompt).toContain('Do not ask for design, approach, or plan approval through plain prose or the structured question tool in normal mode.');
     expect(plan?.prompt).toContain('The plan card provides the implementation action');
     expect(plan?.prompt).not.toContain('End the message with a single approval question');
+  });
+
+  it('routes normal-mode design work from Explorer discovery directly to Designer implementation', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(orchestrator?.prompt).toContain('After Explorer returns files for normal-mode design-quality UI work, immediately delegate the implementation or review to @designer.');
+    expect(orchestrator?.prompt).toContain('Do not present design options, design directions, wireframes, or implementation approaches for user approval before calling @designer.');
+    expect(orchestrator?.prompt).toContain('If the user already gave a clear design choice or sufficient requirements, treat that as enough to proceed.');
+  });
+
+  it('keeps Designer skill hints out of packaged Orchestrator prompts', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(orchestrator?.prompt).not.toContain('Skill to use:');
+    expect(orchestrator?.prompt).not.toContain('Frontend skill:');
   });
 
   it('keeps routine git checks out of Orchestrator finalization unless requested', () => {

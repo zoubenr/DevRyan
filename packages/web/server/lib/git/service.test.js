@@ -71,6 +71,64 @@ describe('file staging', () => {
   });
 });
 
+describe('git status remote divergence without upstream tracking', () => {
+  const createRepo = async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openchamber-git-status-'));
+    tempDirs.push(directory);
+    const git = simpleGit(directory);
+    await git.init();
+    await git.addConfig('user.name', 'DevRyan Test');
+    await git.addConfig('user.email', 'devryan@example.com');
+    await git.checkoutLocalBranch('main');
+    await writeFile(join(directory, 'tracked.txt'), 'base\n');
+    await git.add('tracked.txt');
+    await git.commit('base commit');
+    return { directory, git };
+  };
+
+  it('reports pullable commits from the same-named origin branch when no upstream is configured', async () => {
+    const { directory, git } = await createRepo();
+    const baseHash = (await git.revparse(['HEAD'])).trim();
+    await git.checkoutLocalBranch('remote-main');
+    await writeFile(join(directory, 'tracked.txt'), 'base\nremote\n');
+    await git.add('tracked.txt');
+    await git.commit('remote commit');
+    const remoteHash = (await git.revparse(['HEAD'])).trim();
+    await git.checkout('main');
+    await git.raw(['reset', '--hard', baseHash]);
+    await git.raw(['update-ref', 'refs/remotes/origin/main', remoteHash]);
+
+    const status = await getStatus(directory);
+
+    expect(status.tracking).toBeNull();
+    expect(status.ahead).toBe(0);
+    expect(status.behind).toBe(1);
+  });
+
+  it('does not report origin main as pullable for unrelated untracked feature branches', async () => {
+    const { directory, git } = await createRepo();
+    const baseHash = (await git.revparse(['HEAD'])).trim();
+    await git.checkoutLocalBranch('remote-main');
+    await writeFile(join(directory, 'tracked.txt'), 'base\nremote\n');
+    await git.add('tracked.txt');
+    await git.commit('remote commit');
+    const remoteHash = (await git.revparse(['HEAD'])).trim();
+    await git.checkout('main');
+    await git.raw(['reset', '--hard', baseHash]);
+    await git.raw(['update-ref', 'refs/remotes/origin/main', remoteHash]);
+    await git.checkoutLocalBranch('feature');
+    await writeFile(join(directory, 'tracked.txt'), 'base\nfeature\n');
+    await git.add('tracked.txt');
+    await git.commit('feature commit');
+
+    const status = await getStatus(directory);
+
+    expect(status.tracking).toBeNull();
+    expect(status.ahead).toBe(1);
+    expect(status.behind).toBe(0);
+  });
+});
+
 describe('git log base ref resolution', () => {
   it('prefers a local base ref over origin when both exist', async () => {
     const checkedRefs = [];

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,6 +37,19 @@ const readOverlayAgent = async (overlayDirectory, name) => {
 };
 
 const readManifest = async (manifestPath) => JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+
+const runtimeDirectoryAllows = (...directories) => Object.fromEntries(
+  directories.flatMap((directory) => {
+    const resolved = path.resolve(directory);
+    const candidates = [resolved];
+    try {
+      const real = fsSync.realpathSync(resolved);
+      if (real && real !== resolved) candidates.push(real);
+    } catch {
+    }
+    return candidates.map((candidate) => [`${candidate.replace(/\/+$/, '')}/*`, 'allow']);
+  }),
+);
 
 describe('syncRuntimeAgentOverlays', () => {
   let tempRoot;
@@ -203,10 +217,134 @@ describe('syncRuntimeAgentOverlays', () => {
     });
     expect(overlay.frontmatter.permission.external_directory).toEqual({
       '*': 'ask',
+      ...runtimeDirectoryAllows(projectDirectory),
       '/tmp/skills/frontend-design/*': 'allow',
       '/tmp/project/.opencode/skills/project-audit/*': 'allow',
     });
     expect(overlay.prompt).toBe('Packaged prompt');
+  });
+
+  it('writes packaged overlays with active project and worktree external-directory allows', async () => {
+    const worktreeRoot = path.join(tempRoot, 'repo');
+    const appDirectory = path.join(worktreeRoot, 'packages', 'app');
+    projectDirectory = appDirectory;
+    await fs.mkdir(path.join(worktreeRoot, '.git'), { recursive: true });
+    await writeAgent(packagedAgentDirectory, 'explorer', [
+      'mode: subagent',
+      'permission:',
+      '  "*": allow',
+      '  external_directory:',
+      '    "*": ask',
+      '  read:',
+      '    "*.env": ask',
+      '  skill:',
+      '    codemap: allow',
+    ], 'Packaged prompt');
+
+    const result = await syncRuntimeAgentOverlays({
+      workingDirectory: appDirectory,
+      packagedAgentDirectory,
+      overlayRoot,
+      manifestPath,
+      agentOverrides: {},
+      skillPolicy: {
+        skillNames: ['codemap'],
+        skillDirectories: ['/tmp/skills/codemap'],
+        skillDirectoriesByName: {
+          codemap: ['/tmp/skills/codemap'],
+        },
+      },
+    });
+
+    const overlay = await readOverlayAgent(result.targetConfigDirectory, 'explorer');
+    expect(result.written).toEqual(['explorer']);
+    expect(overlay.frontmatter.permission.read).toEqual({ '*.env': 'ask' });
+    expect(overlay.frontmatter.permission.external_directory).toEqual({
+      '*': 'ask',
+      ...runtimeDirectoryAllows(worktreeRoot, appDirectory),
+      '/tmp/skills/codemap/*': 'allow',
+    });
+  });
+
+  it('keeps project-directory allows out of global packaged agent sync output', async () => {
+    await writeAgent(packagedAgentDirectory, 'explorer', [
+      'mode: subagent',
+      'permission:',
+      '  "*": allow',
+      '  external_directory:',
+      '    "*": ask',
+      '  skill:',
+      '    codemap: allow',
+    ], 'Packaged prompt');
+
+    const result = await syncRuntimeAgentOverlays({
+      workingDirectory: projectDirectory,
+      packagedAgentDirectory,
+      overlayRoot,
+      manifestPath,
+      agentOverrides: {},
+      skillPolicy: {
+        skillNames: ['codemap'],
+        skillDirectories: [],
+        skillDirectoriesByName: {
+          codemap: [],
+        },
+      },
+    });
+
+    const sourceContent = await fs.readFile(path.join(packagedAgentDirectory, 'explorer.md'), 'utf8');
+    const overlay = await readOverlayAgent(result.targetConfigDirectory, 'explorer');
+    expect(sourceContent).not.toContain(`${projectDirectory}/*`);
+    expect(overlay.frontmatter.permission.external_directory).toMatchObject({
+      '*': 'ask',
+      ...runtimeDirectoryAllows(projectDirectory),
+    });
+  });
+
+  it('updates stale project-directory allows when the working directory changes', async () => {
+    const firstDirectory = path.join(tempRoot, 'project-one');
+    const secondDirectory = path.join(tempRoot, 'project-two');
+    const targetConfigDirectoryOverride = path.join(overlayRoot, 'stable-project-key');
+    await writeAgent(packagedAgentDirectory, 'explorer', [
+      'mode: subagent',
+      'permission:',
+      '  "*": allow',
+      '  external_directory:',
+      '    "*": ask',
+      '  skill:',
+      '    codemap: allow',
+    ], 'Packaged prompt');
+
+    const baseOptions = {
+      packagedAgentDirectory,
+      overlayRoot,
+      manifestPath,
+      targetConfigDirectory: targetConfigDirectoryOverride,
+      agentOverrides: {},
+      skillPolicy: {
+        skillNames: ['codemap'],
+        skillDirectories: [],
+        skillDirectoriesByName: {
+          codemap: [],
+        },
+      },
+    };
+
+    await syncRuntimeAgentOverlays({
+      ...baseOptions,
+      workingDirectory: firstDirectory,
+    });
+    const result = await syncRuntimeAgentOverlays({
+      ...baseOptions,
+      workingDirectory: secondDirectory,
+    });
+
+    const overlay = await readOverlayAgent(result.targetConfigDirectory, 'explorer');
+    expect(result.updated).toEqual(['explorer']);
+    expect(overlay.frontmatter.permission.external_directory).toEqual({
+      '*': 'ask',
+      ...runtimeDirectoryAllows(secondDirectory),
+    });
   });
 
   it('writes skill-policy overlays for project agents that define skill permissions', async () => {
@@ -254,6 +392,7 @@ describe('syncRuntimeAgentOverlays', () => {
     });
     expect(overlay.frontmatter.permission.external_directory).toEqual({
       '*': 'ask',
+      ...runtimeDirectoryAllows(projectDirectory),
       '/tmp/skills/frontend-design/*': 'allow',
     });
     expect(overlay.prompt).toBe('Project prompt');
