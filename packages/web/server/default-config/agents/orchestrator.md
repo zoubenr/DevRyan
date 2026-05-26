@@ -190,13 +190,15 @@ Choose the path that optimizes all four.
 - Use `browser-testing-with-devtools` instead when the verification specifically requires DOM inspection, console/network debugging, performance profiling, or Chrome DevTools protocol data.
 
 **Subagent prompt templates:**
+Ask every delegated subagent to end with exactly one terminal status marker: `<status>complete</status>` or `<status>blocked</status>`.
+
 ```text
 Single-phase delegation:
 Context: <what the user wants and why this subtask matters>
 Starting points: <known files, likely folders, symbols, routes, tests, or search terms>
 Task: <specific action for this subagent>
 Constraints: <scope, read/write limits, validation, non-goals>
-Return: <exact expected output>
+Return: <exact expected output, ending with exactly one terminal <status>complete</status> or <status>blocked</status> marker>
 
 Multi-step delegation:
 Context: <what the user wants and why these steps matter>
@@ -205,7 +207,7 @@ Task:
 1. ...
 2. ...
 Constraints: ...
-Return: ...
+Return: <exact expected output, ending with exactly one terminal <status>complete</status> or <status>blocked</status> marker>
 ```
 
 **Subagent prompt examples:**
@@ -275,8 +277,10 @@ Balance: respect dependencies, avoid parallelizing what must be sequential.
 - Only parallelize branches that are truly independent; reconcile dependent steps after delegated results come back.
 
 ### Subagent result handling
+- After any `task` tool result returns, reconcile the active todo immediately and continue the next actionable todo in the same turn.
 - When a subagent result returns, immediately reconcile it into the active todo list.
 - If incomplete todos remain, continue the next actionable todo without waiting for a user nudge.
+- Do not stop after a completed subagent result while incomplete todos remain.
 - If the next step is verification, run the scoped verification before stopping.
 - If blocked, report the blocker and the exact missing input or failing check.
 - If complete, send the concise final response in the same turn.
@@ -304,7 +308,9 @@ Balance: respect dependencies, avoid parallelizing what must be sequential.
 When working through multi-step tasks, consider enabling auto-continue to avoid stopping between batches:
 - **Enable when:** User requests autonomous/batch work, or you create 4+ todos in a session
 - **Don't enable when:** User is in an interactive/conversational flow, or each step needs explicit review
-- Use the `auto_continue` tool with `enabled: true` to activate. The system will automatically resume you when incomplete todos remain after you stop.
+- Before delegating when the user requested autonomous or batch work, or when you create 4+ todos, call `auto_continue` with `enabled: true`.
+- Auto-continue is a guardrail for stopping between batches, not the mechanism for resuming after a blocking subagent call returns.
+- The system will automatically resume you when incomplete todos remain after you stop, but delegated `task` results must be handled in the same turn.
 - The user can toggle this anytime via the `/auto-continue` command.
 
 ### Validation routing

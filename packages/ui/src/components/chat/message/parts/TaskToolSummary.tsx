@@ -30,6 +30,7 @@ import {
 import {
     getTaskSummaryLabel,
     formatTaskErrorText,
+    formatSpecialistTaskOutputForMarkdown,
     shouldRenderGitPathLabel,
     stripTaskMetadataFromOutput,
     taskSummaryEntryToToolPart,
@@ -383,6 +384,10 @@ export const TaskToolSummary: React.FC<{
     const trimmedOutput = typeof output === 'string'
         ? stripTaskMetadataFromOutput(output)
         : '';
+    const displayOutput = React.useMemo(
+        () => formatSpecialistTaskOutputForMarkdown(trimmedOutput),
+        [trimmedOutput]
+    );
     const hasOutput = trimmedOutput.length > 0;
     const errorText = formatTaskErrorText(error);
     const [isOutputExpanded, setIsOutputExpanded] = React.useState(false);
@@ -508,7 +513,7 @@ export const TaskToolSummary: React.FC<{
                         <div className="pl-[1.4375rem]">
                             <ToolScrollableSection maxHeightClass="max-h-[50vh]">
                                 <div className="w-full min-w-0">
-                                    <SimpleMarkdownRenderer content={trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
+                                    <SimpleMarkdownRenderer content={displayOutput} variant="tool" onShowPopup={onShowPopup} />
                                 </div>
                             </ToolScrollableSection>
                         </div>

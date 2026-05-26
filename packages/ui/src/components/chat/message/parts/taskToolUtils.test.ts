@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
     buildTaskSessionMessagesSignature,
     buildTaskSummaryEntriesFromSession,
+    formatSpecialistTaskOutputForMarkdown,
     formatTaskErrorText,
     normalizeTaskSummaryEntries,
     parseTaskMetadataBlock,
@@ -11,6 +12,114 @@ import {
 } from './taskToolUtils';
 
 describe('task tool metadata helpers', () => {
+    test('formats fixer result sections as markdown without dropping content', () => {
+        const output = [
+            '<summary>',
+            'Implemented the approved regression fix for the admin dashboard summary strip.',
+            '</summary>',
+            '<changes>',
+            '- `src/components/admin/dashboard/KPICommandBar.tsx`:',
+            '  - Added explicit blocking error and no-data states.',
+            '</changes>',
+            '<verification>',
+            '- Tests passed: yes',
+            '- Validation: passed',
+            '</verification>',
+            '<status>complete</status>',
+        ].join('\n');
+
+        expect(formatSpecialistTaskOutputForMarkdown(output)).toBe([
+            '### Summary',
+            '',
+            'Implemented the approved regression fix for the admin dashboard summary strip.',
+            '',
+            '### Changes',
+            '',
+            '- `src/components/admin/dashboard/KPICommandBar.tsx`:',
+            '  - Added explicit blocking error and no-data states.',
+            '',
+            '### Verification',
+            '',
+            '- Tests passed: yes',
+            '- Validation: passed',
+            '',
+            '**Status:** complete',
+        ].join('\n'));
+    });
+
+    test('formats explorer result sections as markdown without dropping content', () => {
+        const output = [
+            '<results>',
+            '<files>',
+            '- /repo/src/App.tsx:42 - App shell entrypoint',
+            '</files>',
+            '<answer>',
+            'The likely edit point is the shared chat message renderer.',
+            '</answer>',
+            '<confidence>high</confidence>',
+            '<next_searches>',
+            '- `rg "TaskToolSummary" packages/ui/src`',
+            '</next_searches>',
+            '<status>complete</status>',
+            '</results>',
+        ].join('\n');
+
+        expect(formatSpecialistTaskOutputForMarkdown(output)).toBe([
+            '### Files',
+            '',
+            '- /repo/src/App.tsx:42 - App shell entrypoint',
+            '',
+            '### Answer',
+            '',
+            'The likely edit point is the shared chat message renderer.',
+            '',
+            '**Confidence:** high',
+            '',
+            '### Next Searches',
+            '',
+            '- `rg "TaskToolSummary" packages/ui/src`',
+            '',
+            '**Status:** complete',
+        ].join('\n'));
+    });
+
+    test('formats specialist output after task metadata stripping', () => {
+        const output = [
+            '<summary>Completed focused changes.</summary>',
+            '<status>complete</status>',
+            '<task_metadata>{"sessionId":"child-session"}</task_metadata>',
+        ].join('\n');
+
+        const visibleOutput = stripTaskMetadataFromOutput(output);
+
+        expect(formatSpecialistTaskOutputForMarkdown(visibleOutput)).toBe([
+            '### Summary',
+            '',
+            'Completed focused changes.',
+            '',
+            '**Status:** complete',
+        ].join('\n'));
+    });
+
+    test('leaves unknown and malformed tag output unchanged', () => {
+        const unknown = '<note>Keep this custom XML visible as-is.</note>';
+        const malformed = '<summary>Missing close tag';
+
+        expect(formatSpecialistTaskOutputForMarkdown(unknown)).toBe(unknown);
+        expect(formatSpecialistTaskOutputForMarkdown(malformed)).toBe(malformed);
+    });
+
+    test('leaves code-fenced XML-like content unchanged', () => {
+        const output = [
+            '```xml',
+            '<summary>Keep this literal XML sample.</summary>',
+            '<status>complete</status>',
+            '```',
+        ].join('\n');
+
+        expect(formatSpecialistTaskOutputForMarkdown(output)).toBe(output);
+    });
+
     test('parses task metadata session id and summary entries', () => {
         const output = [
             'completed work',

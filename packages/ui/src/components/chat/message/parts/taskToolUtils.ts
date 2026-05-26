@@ -182,6 +182,201 @@ export const shouldRenderGitPathLabel = (toolName: string, label: string): boole
     return /^[A-Za-z0-9_-]+$/.test(baseName);
 };
 
+type SpecialistSectionName =
+    | 'summary'
+    | 'changes'
+    | 'verification'
+    | 'status'
+    | 'results'
+    | 'files'
+    | 'answer'
+    | 'confidence'
+    | 'next_searches';
+
+const SPECIALIST_SECTION_LABELS: Partial<Record<SpecialistSectionName, string>> = {
+    summary: 'Summary',
+    changes: 'Changes',
+    verification: 'Verification',
+    files: 'Files',
+    answer: 'Answer',
+    next_searches: 'Next Searches',
+};
+
+const SPECIALIST_SECTION_NAMES = new Set<SpecialistSectionName>([
+    'summary',
+    'changes',
+    'verification',
+    'status',
+    'results',
+    'files',
+    'answer',
+    'confidence',
+    'next_searches',
+]);
+
+type TextRange = {
+    start: number;
+    end: number;
+};
+
+const collectCodeFenceRanges = (value: string): TextRange[] => {
+    const ranges: TextRange[] = [];
+    const fencePattern = /^```.*$/gm;
+    let openStart: number | undefined;
+    let match: RegExpExecArray | null;
+
+    while ((match = fencePattern.exec(value)) !== null) {
+        if (typeof openStart !== 'number') {
+            openStart = match.index;
+            continue;
+        }
+
+        ranges.push({ start: openStart, end: match.index + match[0].length });
+        openStart = undefined;
+    }
+
+    if (typeof openStart === 'number') {
+        ranges.push({ start: openStart, end: value.length });
+    }
+
+    return ranges;
+};
+
+const isIndexInsideRanges = (index: number, ranges: readonly TextRange[]): boolean => (
+    ranges.some((range) => index >= range.start && index <= range.end)
+);
+
+const normalizeSpecialistSectionName = (value: string): SpecialistSectionName | undefined => {
+    const normalized = value.toLowerCase() as SpecialistSectionName;
+    return SPECIALIST_SECTION_NAMES.has(normalized) ? normalized : undefined;
+};
+
+const extractSpecialistSections = (output: string): Map<SpecialistSectionName, string> => {
+    const sections = new Map<SpecialistSectionName, string>();
+    const openSections = new Map<SpecialistSectionName, { end: number }>();
+    const codeFenceRanges = collectCodeFenceRanges(output);
+    const tagPattern = /<\/?([A-Za-z_][\w-]*)>/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = tagPattern.exec(output)) !== null) {
+        if (isIndexInsideRanges(match.index, codeFenceRanges)) {
+            continue;
+        }
+
+        const sectionName = normalizeSpecialistSectionName(match[1]);
+        if (!sectionName) {
+            continue;
+        }
+
+        const token = match[0];
+        const isClosingTag = token.startsWith('</');
+
+        if (!isClosingTag) {
+            openSections.set(sectionName, { end: match.index + token.length });
+            continue;
+        }
+
+        const openSection = openSections.get(sectionName);
+        if (!openSection) {
+            continue;
+        }
+
+        sections.set(sectionName, output.slice(openSection.end, match.index).trim());
+        openSections.delete(sectionName);
+    }
+
+    return sections;
+};
+
+const hasSpecialistSectionContent = (
+    sections: ReadonlyMap<SpecialistSectionName, string>,
+    sectionName: SpecialistSectionName,
+): boolean => {
+    const content = sections.get(sectionName);
+    return typeof content === 'string' && content.trim().length > 0;
+};
+
+const appendMarkdownSection = (lines: string[], label: string, content: string): void => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+        return;
+    }
+
+    if (lines.length > 0) {
+        lines.push('');
+    }
+    lines.push(`### ${label}`, '', trimmed);
+};
+
+const appendInlineMetadata = (lines: string[], label: string, content: string): void => {
+    const trimmed = content.trim().replace(/\s+/g, ' ');
+    if (!trimmed) {
+        return;
+    }
+
+    if (lines.length > 0) {
+        lines.push('');
+    }
+    lines.push(`**${label}:** ${trimmed}`);
+};
+
+export const formatSpecialistTaskOutputForMarkdown = (output: string): string => {
+    if (typeof output !== 'string' || output.trim().length === 0) {
+        return output;
+    }
+
+    const sections = extractSpecialistSections(output);
+    const hasFixerShape =
+        hasSpecialistSectionContent(sections, 'status')
+        && (
+            hasSpecialistSectionContent(sections, 'summary')
+            || hasSpecialistSectionContent(sections, 'changes')
+            || hasSpecialistSectionContent(sections, 'verification')
+        );
+    const hasExplorerShape =
+        hasSpecialistSectionContent(sections, 'results')
+        && hasSpecialistSectionContent(sections, 'status')
+        && (
+            hasSpecialistSectionContent(sections, 'files')
+            || hasSpecialistSectionContent(sections, 'answer')
+            || hasSpecialistSectionContent(sections, 'confidence')
+            || hasSpecialistSectionContent(sections, 'next_searches')
+        );
+
+    if (!hasFixerShape && !hasExplorerShape) {
+        return output;
+    }
+
+    const orderedSections: SpecialistSectionName[] = hasExplorerShape
+        ? ['files', 'answer', 'confidence', 'next_searches', 'status']
+        : ['summary', 'changes', 'verification', 'status'];
+    const lines: string[] = [];
+
+    for (const sectionName of orderedSections) {
+        const content = sections.get(sectionName);
+        if (!content) {
+            continue;
+        }
+
+        if (sectionName === 'status') {
+            appendInlineMetadata(lines, 'Status', content);
+            continue;
+        }
+
+        if (sectionName === 'confidence') {
+            appendInlineMetadata(lines, 'Confidence', content);
+            continue;
+        }
+
+        const label = SPECIALIST_SECTION_LABELS[sectionName];
+        if (label) {
+            appendMarkdownSection(lines, label, content);
+        }
+    }
+
+    return lines.length > 0 ? lines.join('\n') : output;
+};
+
 export const stripTaskMetadataFromOutput = (output: string): string => {
     return output.replace(/\n*<task_metadata>[\s\S]*?<\/task_metadata>\s*$/i, '').trimEnd();
 };

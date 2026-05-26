@@ -454,6 +454,16 @@ describe('Packaged OpenChamber agents', () => {
     expect(orchestrator?.prompt).toContain('If the user already gave a clear design choice or sufficient requirements, treat that as enough to proceed.');
   });
 
+  it('keeps subagent result continuation same-turn instead of relying on auto-continue', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(orchestrator?.prompt).toContain('After any `task` tool result returns, reconcile the active todo immediately and continue the next actionable todo in the same turn.');
+    expect(orchestrator?.prompt).toContain('Do not stop after a completed subagent result while incomplete todos remain.');
+    expect(orchestrator?.prompt).toContain('Auto-continue is a guardrail for stopping between batches, not the mechanism for resuming after a blocking subagent call returns.');
+    expect(orchestrator?.prompt).toContain('Before delegating when the user requested autonomous or batch work, or when you create 4+ todos, call `auto_continue` with `enabled: true`.');
+    expect(orchestrator?.prompt).toContain('Ask every delegated subagent to end with exactly one terminal status marker: `<status>complete</status>` or `<status>blocked</status>`.');
+  });
+
   it('keeps Designer skill hints out of packaged Orchestrator prompts', () => {
     const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
 

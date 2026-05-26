@@ -25,4 +25,13 @@ describe('TaskToolSummary output layout', () => {
         expect(outputButtonClass).not.toContain('ml-');
         expect(code).toContain('setIsOutputExpanded((prev) => !prev)');
     });
+
+    test('formats specialist output after stripping task metadata', () => {
+        const code = source();
+
+        expect(code).toContain('formatSpecialistTaskOutputForMarkdown');
+        expect(code.indexOf('const trimmedOutput')).toBeLessThan(code.indexOf('const displayOutput'));
+        expect(code).toContain('formatSpecialistTaskOutputForMarkdown(trimmedOutput)');
+        expect(code).toContain('<SimpleMarkdownRenderer content={displayOutput}');
+    });
 });
