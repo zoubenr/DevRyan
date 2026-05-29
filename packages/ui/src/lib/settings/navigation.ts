@@ -20,6 +20,7 @@ export const SETTINGS_NAV_SECTIONS = [
       'sessions',
       'agents',
       'skills.installed',
+      'plugins',
       'magic-prompts',
     ],
   },

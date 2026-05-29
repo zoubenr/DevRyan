@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { resolveMessageHeaderVariant } from './messageHeaderVariant';
+import { resolveMessageHeaderVariant, resolveMessageHeaderVariantDisplay } from './messageHeaderVariant';
 
 describe('resolveMessageHeaderVariant', () => {
     test('keeps a recorded thinking level when the model supports it', () => {
@@ -17,5 +17,16 @@ describe('resolveMessageHeaderVariant', () => {
 
     test('hides the thinking badge for models without thinking variants', () => {
         expect(resolveMessageHeaderVariant(undefined, [])).toBe(undefined);
+    });
+
+    test('keeps fast separate from the visible thinking level', () => {
+        expect(resolveMessageHeaderVariantDisplay({
+            recordedVariant: 'fast',
+            modelVariantOptions: ['low', 'medium'],
+            fastEnabled: true,
+        })).toEqual({
+            fastEnabled: true,
+            variant: 'medium',
+        });
     });
 });

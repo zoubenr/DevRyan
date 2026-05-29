@@ -6,8 +6,6 @@ import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { marked, type Tokens } from 'marked';
-import remend from 'remend';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import type { Part } from '@opencode-ai/sdk/v2';
 import { cn } from '@/lib/utils';
@@ -529,25 +527,6 @@ type MarkdownStreamBlock = {
   mode: 'full' | 'live';
 };
 
-const hasReferenceDefinitions = (text: string): boolean => {
-  return /^\[[^\]]+\]:\s+\S+/m.test(text) || /^\[\^[^\]]+\]:\s+/m.test(text);
-};
-
-const hasOpenFence = (raw: string): boolean => {
-  const match = raw.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
-  if (!match) return false;
-  const marker = match[1];
-  if (!marker) return false;
-  const char = marker[0];
-  const size = marker.length;
-  const last = raw.trimEnd().split('\n').at(-1)?.trim() ?? '';
-  return !new RegExp(`^[\\t ]{0,3}${char}{${size},}[\\t ]*$`).test(last);
-};
-
-const healMarkdown = (text: string): string => {
-  return remend(text, { linkMode: 'text-only' });
-};
-
 const fnv1a32 = (input: string): string => {
   let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i += 1) {
@@ -576,51 +555,14 @@ const streamMarkdownBlocks = (text: string, live: boolean, baseKey: string): Mar
     }];
   }
 
-  const healed = healMarkdown(text);
-  if (hasReferenceDefinitions(text)) {
-    return [{
-      key: buildStreamingMarkdownBlockKey(baseKey, 0),
-      raw: text,
-      src: healed,
-      mode: 'live',
-    }];
-  }
-
-  const tokens = marked.lexer(text);
-  const blocks: MarkdownStreamBlock[] = [];
-  let blockIndex = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index] as Tokens.Generic;
-    if (token.type === 'space') {
-      continue;
-    }
-
-    const raw = token.raw ?? '';
-    const isLast = index === tokens.length - 1 || tokens.slice(index + 1).every((nextToken) => nextToken.type === 'space');
-    const mode: 'full' | 'live' = isLast ? 'live' : 'full';
-    const src = isLast && token.type === 'code' && hasOpenFence(raw)
-      ? raw
-      : healMarkdown(raw);
-
-    blocks.push({
-      key: buildStreamingMarkdownBlockKey(baseKey, blockIndex),
-      raw,
-      src,
-      mode,
-    });
-    blockIndex += 1;
-  }
-
-  if (blocks.length === 0) {
-    return [{
-      key: buildStreamingMarkdownBlockKey(baseKey, 0),
-      raw: text,
-      src: healed,
-      mode: 'live',
-    }];
-  }
-
-  return blocks;
+  // During streaming, defer full marked.lexer passes until completion.
+  // A single live block keeps token updates cheap while preserving layout.
+  return [{
+    key: buildStreamingMarkdownBlockKey(baseKey, 0),
+    raw: text,
+    src: text,
+    mode: 'live',
+  }];
 };
 
 const useStableMarkdownBlocks = (text: string, live: boolean, baseKey: string): MarkdownStreamBlock[] => {

@@ -6,8 +6,24 @@ const DEFAULT_PRESET = 'default';
 const DEFAULT_COUNCIL_AGENT = 'builder';
 const DEFAULT_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 1_000;
+const IDLE_STABLE_RESPONSE_MS = POLL_INTERVAL_MS * 2;
+const PRESET_COUNCILLORS = Object.freeze({
+  'cursor-composer-2': Object.freeze([{ model: 'cursor-acp/composer-2' }]),
+});
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cloneCouncillors = (councillors) => councillors.map((councillor) => ({ ...councillor }));
+
+const resolveCouncilPreset = (rawPreset) => {
+  const name = String(rawPreset || DEFAULT_PRESET).trim() || DEFAULT_PRESET;
+  const key = name.toLowerCase();
+  const councillors = PRESET_COUNCILLORS[key];
+  return {
+    name: councillors ? key : name,
+    councillors: councillors ? cloneCouncillors(councillors) : null,
+  };
+};
 
 const normalizeVariant = (variant) => {
   if (typeof variant !== 'string') return undefined;
@@ -169,17 +185,30 @@ const listCouncilModels = async (client, directory) => {
   return model ? [{ model, ...(variant ? { variant } : {}) }] : [];
 };
 
-const assistantTextFromMessages = (records) => {
+const extractAssistantText = (record) => (record?.parts || [])
+  .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+  .map((part) => part.text)
+  .join('\n')
+  .trim();
+
+const isTerminalAssistantMessage = (record) => {
+  const info = record?.info;
+  if (!info || info.role !== 'assistant') return false;
+  if (typeof info.finish === 'string' && info.finish.trim()) return true;
+  const completed = info.time?.completed;
+  return typeof completed === 'number' && Number.isFinite(completed) && completed > 0;
+};
+
+const assistantResponseFromMessages = (records) => {
   const assistants = Array.isArray(records)
     ? records.filter((record) => record?.info?.role === 'assistant')
     : [];
   const latest = assistants[assistants.length - 1];
-  if (!latest) return '';
-  return (latest.parts || [])
-    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
-    .map((part) => part.text)
-    .join('\n')
-    .trim();
+  if (!latest) return { text: '', terminal: false };
+  return {
+    text: extractAssistantText(latest),
+    terminal: isTerminalAssistantMessage(latest),
+  };
 };
 
 const readAssistantResponse = async (client, sessionID, directory) => {
@@ -190,32 +219,35 @@ const readAssistantResponse = async (client, sessionID, directory) => {
       limit: 20,
     },
   }), 'session.messages');
-  return assistantTextFromMessages(records);
+  return assistantResponseFromMessages(records);
 };
 
 const waitForAssistantResponse = async (client, sessionID, directory, timeoutMs) => {
   const deadline = Date.now() + timeoutMs;
   let sawIdle = false;
   let idleSince = 0;
+  let idleResponseText = '';
 
   while (Date.now() < deadline) {
     const response = await readAssistantResponse(client, sessionID, directory);
-    if (response) return response;
+    if (response.text && response.terminal) return response.text;
 
     const statuses = unwrap(await client.session.status({
       query: { directory },
     }), 'session.status');
     const status = statuses?.[sessionID];
     if (status?.type === 'idle') {
-      if (!sawIdle) {
+      if (!sawIdle || response.text !== idleResponseText) {
         sawIdle = true;
         idleSince = Date.now();
-      } else if (Date.now() - idleSince >= POLL_INTERVAL_MS * 2) {
-        return '';
+        idleResponseText = response.text;
+      } else if (Date.now() - idleSince >= IDLE_STABLE_RESPONSE_MS) {
+        return response.text;
       }
     } else if (status) {
       sawIdle = false;
       idleSince = 0;
+      idleResponseText = '';
     }
 
     await sleep(POLL_INTERVAL_MS);
@@ -282,7 +314,7 @@ export const CouncilSessionPlugin = async ({ client }) => ({
       description: 'Run the prompt through the configured Council councillor models and return their independent responses for synthesis.',
       args: {
         prompt: tool.schema.string().describe('The full user prompt and context to send to each councillor.'),
-        preset: tool.schema.string().optional().describe('Council preset name. Defaults to "default".'),
+        preset: tool.schema.string().optional().describe('Council preset name. Defaults to "default". Use "cursor-composer-2" to force Cursor Composer 2-only councillors.'),
       },
       async execute(args, context) {
         const prompt = String(args.prompt || '').trim();
@@ -290,8 +322,8 @@ export const CouncilSessionPlugin = async ({ client }) => ({
           return 'Council session failed: prompt is required.';
         }
 
-        const preset = String(args.preset || DEFAULT_PRESET).trim() || DEFAULT_PRESET;
-        const councillors = await listCouncilModels(client, context.directory);
+        const preset = resolveCouncilPreset(args.preset);
+        const councillors = preset.councillors || await listCouncilModels(client, context.directory);
         if (councillors.length === 0) {
           return 'Council session failed: no councillor models are configured for the council agent.';
         }
@@ -316,7 +348,7 @@ export const CouncilSessionPlugin = async ({ client }) => ({
         ));
 
         return [
-          `Council session preset: ${preset}`,
+          `Council session preset: ${preset.name}`,
           `Councillors requested: ${councillors.length}`,
           '',
           ...results.flatMap((result) => [

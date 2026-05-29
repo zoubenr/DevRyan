@@ -20,6 +20,7 @@ import { isPrimaryMode } from '@/components/chat/mobileControlsUtils';
 import { cn } from '@/lib/utils';
 import { RiArrowDownSLine } from '@remixicon/react';
 import { useI18n } from '@/lib/i18n';
+import { getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
 
 type TodoSendTarget = 'session' | 'worktree';
 
@@ -60,7 +61,8 @@ type ThinkingPillProps = {
 
 const ThinkingPill = ({ value, options, disabled, onChange }: ThinkingPillProps) => {
   const { t } = useI18n();
-  const label = value || t('rightSidebar.contextNotesTodo.sendDialog.variant.default');
+  const resolvedValue = resolveThinkingVariant(value, options);
+  const label = resolvedValue || t('chat.modelControls.thinking');
 
   const trigger = (
     <div
@@ -80,18 +82,13 @@ const ThinkingPill = ({ value, options, disabled, onChange }: ThinkingPillProps)
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-w-[220px]">
-        <DropdownMenuItem className="typography-meta" onSelect={() => onChange('')}>
-          <span className={cn('font-medium', !value && 'text-primary')}>
-            {t('rightSidebar.contextNotesTodo.sendDialog.variant.default')}
-          </span>
-        </DropdownMenuItem>
         {options.map((option) => (
           <DropdownMenuItem
             key={option}
             className="typography-meta"
             onSelect={() => onChange(option)}
           >
-            <span className={cn('font-medium capitalize', value === option && 'text-primary')}>
+            <span className={cn('font-medium capitalize', resolvedValue === option && 'text-primary')}>
               {option}
             </span>
           </DropdownMenuItem>
@@ -161,15 +158,22 @@ export function TodoSendDialog(props: TodoSendDialogProps) {
   const variantOptions = React.useMemo(() => {
     const provider = providers.find((item) => item.id === execution.providerID);
     const model = provider?.models?.find((item) => item.id === execution.modelID) as { variants?: Record<string, unknown> } | undefined;
-    return model?.variants ? Object.keys(model.variants) : [];
+    return getOrderedThinkingVariants(model?.variants);
   }, [providers, execution.providerID, execution.modelID]);
 
   const hasVariantOptions = variantOptions.length > 0;
 
   React.useEffect(() => {
-    if (hasVariantOptions || !execution.variant) return;
-    setExecution((prev) => ({ ...prev, variant: '' }));
-  }, [hasVariantOptions, execution.variant]);
+    if (!hasVariantOptions) {
+      if (!execution.variant) return;
+      setExecution((prev) => ({ ...prev, variant: '' }));
+      return;
+    }
+
+    const resolvedVariant = resolveThinkingVariant(execution.variant, variantOptions);
+    if (!resolvedVariant || execution.variant === resolvedVariant) return;
+    setExecution((prev) => ({ ...prev, variant: resolvedVariant }));
+  }, [hasVariantOptions, execution.variant, variantOptions]);
 
   const canConfirm = execution.providerID.trim().length > 0 && execution.modelID.trim().length > 0;
 

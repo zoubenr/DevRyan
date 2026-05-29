@@ -15,4 +15,12 @@ describe('ChatMetadataBadge', () => {
         expect(code).toContain('text-[10px]');
         expect(code).not.toContain('translate-y-px');
     });
+
+    test('renders a trailing icon after the thinking label', () => {
+        const code = source();
+
+        expect(code).toContain('trailingIcon?: React.ReactNode');
+        expect(code).toContain('{trailingIcon ? (');
+        expect(code.indexOf('{thinkingLabel ? (')).toBeLessThan(code.indexOf('{trailingIcon ? ('));
+    });
 });

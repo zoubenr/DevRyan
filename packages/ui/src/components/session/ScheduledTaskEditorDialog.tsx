@@ -19,8 +19,10 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import type { ScheduledTask } from '@/lib/scheduledTasksApi';
 import { useI18n } from '@/lib/i18n';
+import { getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
 
 const WEEKDAY_INDEXES = [0, 1, 2, 3, 4, 5, 6] as const;
+const NO_VARIANT_VALUE = '__no_variant__';
 
 const TIMEZONE_OPTIONS = (() => {
   if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
@@ -704,31 +706,41 @@ export function ScheduledTaskEditorDialog(props: {
   const variantOptions = React.useMemo(() => {
     const provider = providers.find((item) => item.id === draft.execution.providerID);
     const model = provider?.models?.find((item) => item.id === draft.execution.modelID) as { variants?: Record<string, unknown> } | undefined;
-    return model?.variants ? Object.keys(model.variants) : [];
+    return getOrderedThinkingVariants(model?.variants);
   }, [providers, draft.execution.providerID, draft.execution.modelID]);
   const hasVariantOptions = variantOptions.length > 0;
   const selectedVariantValue = React.useMemo(() => {
-    if (!hasVariantOptions) {
-      return '__default';
-    }
-    if (!draft.execution.variant) {
-      return '__default';
-    }
-    return variantOptions.includes(draft.execution.variant) ? draft.execution.variant : '__default';
-  }, [draft.execution.variant, hasVariantOptions, variantOptions]);
+    return resolveThinkingVariant(draft.execution.variant, variantOptions) ?? NO_VARIANT_VALUE;
+  }, [draft.execution.variant, variantOptions]);
 
   React.useEffect(() => {
-    if (hasVariantOptions || !draft.execution.variant) {
+    if (!hasVariantOptions) {
+      if (!draft.execution.variant) {
+        return;
+      }
+      setDraft((prev) => ({
+        ...prev,
+        execution: {
+          ...prev.execution,
+          variant: '',
+        },
+      }));
       return;
     }
+
+    const resolvedVariant = resolveThinkingVariant(draft.execution.variant, variantOptions);
+    if (!resolvedVariant || draft.execution.variant === resolvedVariant) {
+      return;
+    }
+
     setDraft((prev) => ({
       ...prev,
       execution: {
         ...prev.execution,
-        variant: '',
+        variant: resolvedVariant,
       },
     }));
-  }, [hasVariantOptions, draft.execution.variant]);
+  }, [hasVariantOptions, draft.execution.variant, variantOptions]);
 
   const toggleWeekday = React.useCallback((weekday: number, nextChecked: boolean) => {
     setDraft((prev) => {
@@ -1313,24 +1325,26 @@ export function ScheduledTaskEditorDialog(props: {
                 value={selectedVariantValue}
                 disabled={!hasVariantOptions}
                 onValueChange={(value) => {
+                  if (value === NO_VARIANT_VALUE) {
+                    return;
+                  }
                   setDraft((prev) => ({
                     ...prev,
                     execution: {
                       ...prev.execution,
-                      variant: value === '__default' ? '' : value,
+                      variant: value,
                     },
                   }));
                 }}
               >
                 <SelectTrigger className="w-fit max-w-full">
                   <SelectValue>
-                    {(value) => value === '__default'
-                      ? t('sessions.scheduledTasks.editor.thinkingLevel.default')
+                    {(value) => value === NO_VARIANT_VALUE
+                      ? t('sessions.scheduledTasks.editor.thinkingLevel.label')
                       : value}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__default">{t('sessions.scheduledTasks.editor.thinkingLevel.default')}</SelectItem>
                   {variantOptions.map((variant) => (
                     <SelectItem key={variant} value={variant}>{variant}</SelectItem>
                   ))}

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
+import type { Model, Provider } from "@opencode-ai/sdk/v2"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { useSelectionStore } from "./selection-store"
 import {
@@ -56,6 +57,31 @@ const snapshot = (overrides: Partial<SendConfigResolverSnapshot> = {}): SendConf
   ...overrides,
 })
 
+type TestProvider = Omit<Provider, "models"> & { models: Model[] }
+
+const createStoreModel = (providerID: string, id: string, variants?: Model["variants"]): Model => ({
+  id,
+  providerID,
+  api: { id: providerID, url: "https://example.test", npm: providerID },
+  name: id,
+  capabilities: {
+    temperature: true,
+    reasoning: true,
+    attachment: false,
+    toolcall: true,
+    input: { text: true, audio: false, image: false, video: false, pdf: false },
+    output: { text: true, audio: false, image: false, video: false, pdf: false },
+    interleaved: false,
+  },
+  cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+  limit: { context: 1000, output: 1000 },
+  status: "active",
+  options: {},
+  headers: {},
+  release_date: "2026-01-01",
+  variants,
+})
+
 describe("send config resolution", () => {
   beforeEach(() => {
     useConfigStore.setState({
@@ -105,7 +131,7 @@ describe("send config resolution", () => {
     })
   })
 
-  test("uses the current model before the default agent model for a new draft without inheriting global thinking", () => {
+  test("uses the current model before the default agent model with the model's concrete thinking fallback", () => {
     const result = resolveDraftSendSelection({
       requestedAgent: undefined,
       currentAgent: "builder",
@@ -117,14 +143,14 @@ describe("send config resolution", () => {
       inputVariant: undefined,
       currentProviderID: "openai",
       currentModelID: "gpt-5.5",
-      currentVariant: "medium",
+      currentVariant: "high",
     })
 
     expect(result).toEqual({
       agent: "builder",
       providerID: "openai",
       modelID: "gpt-5.5",
-      variant: undefined,
+      variant: "medium",
     })
   })
 
@@ -214,7 +240,7 @@ describe("send config resolution", () => {
     })
   })
 
-  test("new draft ignores stale global thinking when the selected agent has no matching default variant", () => {
+  test("new draft uses the model thinking fallback when the selected agent has no matching default variant", () => {
     const result = resolveDraftSendSelection({
       requestedAgent: undefined,
       currentAgent: "builder",
@@ -237,7 +263,7 @@ describe("send config resolution", () => {
       agent: "builder",
       providerID: "anthropic",
       modelID: "claude-sonnet-4-5",
-      variant: undefined,
+      variant: "medium",
     })
   })
 
@@ -322,6 +348,139 @@ describe("send config resolution", () => {
       agent: "builder",
       variant: "medium",
       planMode: true,
+    })
+  })
+
+  test("preserves implicit OpenAI fast mode for current draft sends", () => {
+    useConfigStore.setState({
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentAgentName: "builder",
+      currentVariant: "fast",
+      providers: [{
+        id: "openai",
+        name: "OpenAI",
+        source: "custom",
+        options: {},
+        env: [],
+        models: [
+          createStoreModel("openai", "gpt-5.5"),
+        ],
+      }],
+    })
+
+    expect(resolveCurrentSendConfig(null)).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      agent: "builder",
+      variant: "fast",
+      planMode: false,
+    })
+  })
+
+  test("preserves persisted draft fast send config for implicit OpenAI fast models", () => {
+    const result = resolveDraftSendSelection({
+      requestedAgent: undefined,
+      currentAgent: "builder",
+      settingsDefaultAgent: "builder",
+      agents: [{ name: "builder", mode: "primary" }],
+      providers: [{
+        id: "openai",
+        models: [{ id: "gpt-5.5" }],
+      }],
+      inputProviderID: "openai",
+      inputModelID: "gpt-5.5",
+      inputVariant: "fast",
+      currentProviderID: "openai",
+      currentModelID: "gpt-5.5",
+      currentVariant: "fast",
+      draftSendConfig: {
+        providerID: "openai",
+        modelID: "gpt-5.5",
+        agent: "builder",
+        variant: "fast",
+      },
+    })
+
+    expect(result).toEqual({
+      agent: "builder",
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      variant: "fast",
+    })
+  })
+
+  test("preserves session fast selections for implicit OpenAI fast models", () => {
+    const result = resolveSessionSendConfigSnapshot(snapshot({
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentVariant: "fast",
+      providers: [{
+        id: "openai",
+        models: [{ id: "gpt-5.5" }],
+      }],
+      agents: [{ name: "builder", mode: "primary" }],
+      sessionAgentSelection: "builder",
+      sessionAgentModelSelection: { providerId: "openai", modelId: "gpt-5.5" },
+      sessionAgentModelVariant: "fast",
+    }))
+
+    expect(result).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      agent: "builder",
+      variant: "fast",
+      planMode: false,
+    })
+  })
+
+  test("drops unsupported fast selections before send", () => {
+    const result = resolveSessionSendConfigSnapshot(snapshot({
+      currentProviderId: "anthropic",
+      currentModelId: "claude-sonnet-4-5",
+      currentVariant: "fast",
+      providers: [{
+        id: "anthropic",
+        models: [{ id: "claude-sonnet-4-5" }],
+      }],
+      agents: [{ name: "builder", mode: "primary" }],
+    }))
+
+    expect(result).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+      agent: "builder",
+      variant: undefined,
+      planMode: false,
+    })
+  })
+
+  test("resolves an unset current thinking value to a concrete model fallback before send", () => {
+    const providers: TestProvider[] = [{
+      id: "openai",
+      name: "OpenAI",
+      source: "custom",
+      options: {},
+      env: [],
+      models: [
+        createStoreModel("openai", "gpt-5.5", { high: {}, medium: {} }),
+      ],
+    }]
+
+    useConfigStore.setState({
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentAgentName: "builder",
+      currentVariant: undefined,
+      providers,
+    })
+
+    expect(resolveCurrentSendConfig(null)).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      agent: "builder",
+      variant: "medium",
+      planMode: false,
     })
   })
 

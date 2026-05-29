@@ -88,3 +88,8 @@ export {
   deleteMcpConfig,
   recoverMcpConfigs,
 } from './mcp.js';
+
+export {
+  createPluginReadModel,
+  registerReadonlyPluginRoutes,
+} from './plugins-readonly.js';

@@ -30,6 +30,53 @@ const COMPATIBILITY_MODEL_PAIRS = [
   ['composer-2', 'Composer 2', 'composer-2-fast', 'Composer 2 Fast'],
 ];
 
+const CURSOR_MODEL_PARAM_FAST = 'fast';
+const CURSOR_MODEL_PARAM_THINKING = 'thinking';
+const CURSOR_MODEL_PARAM_REASONING = 'reasoning';
+const CURSOR_MODEL_PARAM_EFFORT = 'effort';
+const CURSOR_MODEL_PARAM_CONTEXT = 'context';
+const CURSOR_MODEL_TRUE_VALUE = 'true';
+
+const CURSOR_MODEL_EFFORT_ALIASES = new Map([
+  ['none', 'none'],
+  ['minimal', 'minimal'],
+  ['min', 'minimal'],
+  ['low', 'low'],
+  ['medium', 'medium'],
+  ['high', 'high'],
+  ['xhigh', 'extra-high'],
+  ['extra-high', 'extra-high'],
+  ['max', 'max'],
+]);
+
+const CURSOR_MODEL_EFFORT_DEFAULT_SCORES = new Map([
+  ['medium', 50],
+  ['high', 45],
+  ['low', 40],
+  ['extra-high', 35],
+  ['max', 30],
+  ['minimal', 20],
+  ['none', 10],
+]);
+
+const createCursorModelCapabilities = () => ({
+  attachment: true,
+  input: {
+    text: true,
+    audio: false,
+    image: true,
+    video: false,
+    pdf: false,
+  },
+  output: {
+    text: true,
+    audio: false,
+    image: false,
+    video: false,
+    pdf: false,
+  },
+});
+
 const now = () => Date.now();
 
 const isPlainObject = (value) => (
@@ -42,6 +89,12 @@ const importRuntimeModule = (specifier) => {
 };
 
 const trimString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const escapeXmlAttribute = (value) => trimString(value)
+  .replaceAll('&', '&amp;')
+  .replaceAll('"', '&quot;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;');
 
 const createId = (prefix) => {
   const time = Date.now().toString(16);
@@ -89,6 +142,60 @@ const normalizeToolCallStatus = (status) => {
 
 const isBunRuntime = () => typeof globalThis.Bun !== 'undefined';
 
+const isDesktopRuntimeEnv = (env) => trimString(env?.OPENCHAMBER_RUNTIME).toLowerCase() === 'desktop';
+
+const normalizeWorkerEnv = (value) => {
+  if (!isPlainObject(value)) return {};
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const envKey = trimString(key);
+    if (!envKey || entry === undefined || entry === null) continue;
+    normalized[envKey] = String(entry);
+  }
+  return normalized;
+};
+
+export const resolveCursorSdkWorkerRuntimeConfig = ({
+  env = process.env,
+  hasInjectedLoadSdk = false,
+  isBunRuntime: bunRuntime = isBunRuntime(),
+  isElectronRuntime = Boolean(process.versions?.electron),
+  execPath = process.execPath,
+  resourcesPath = process.resourcesPath,
+  nodeBinaryEnv = process.env.NODE_BINARY,
+  requestedNodeBinary = '',
+  requestedUseNodeWorkerForPrompts,
+  requestedWorkerCwd = '',
+  requestedWorkerEnv,
+  workerPath = '',
+} = {}) => {
+  const useNodeWorkerForPrompts = typeof requestedUseNodeWorkerForPrompts === 'boolean'
+    ? requestedUseNodeWorkerForPrompts
+    : (Boolean(bunRuntime) || isDesktopRuntimeEnv(env)) && !hasInjectedLoadSdk;
+  const nodeBinary = trimString(requestedNodeBinary)
+    || trimString(nodeBinaryEnv)
+    || (isElectronRuntime ? trimString(execPath) : '')
+    || 'node';
+  const defaultWorkerEnv = isElectronRuntime ? { ELECTRON_RUN_AS_NODE: '1' } : {};
+  const normalizedWorkerPath = trimString(workerPath);
+  const workerCwd = trimString(requestedWorkerCwd)
+    || (isElectronRuntime && trimString(resourcesPath)
+      ? trimString(resourcesPath)
+      : normalizedWorkerPath
+        ? path.dirname(normalizedWorkerPath)
+        : process.cwd());
+
+  return {
+    useNodeWorkerForPrompts,
+    nodeBinary,
+    workerCwd,
+    workerEnv: {
+      ...defaultWorkerEnv,
+      ...normalizeWorkerEnv(requestedWorkerEnv),
+    },
+  };
+};
+
 const isMissingCursorAgentError = (error) => /Agent .* not found/i.test(error instanceof Error ? error.message : String(error || ''));
 
 const safeJson = (value) => {
@@ -104,6 +211,65 @@ const safeJson = (value) => {
 const areRuntimeValuesEqual = (left, right) => left === right || safeJson(left) === safeJson(right);
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+const firstStringValue = (...candidates) => {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') return candidate;
+  }
+  return '';
+};
+
+const normalizeInteractionUpdateToSdkMessage = (input) => {
+  const update = isPlainObject(input?.update) ? input.update : input;
+  if (!isPlainObject(update)) return null;
+
+  if (update.type === 'text-delta' || update.type === 'token-delta') {
+    const text = firstStringValue(update.text, update.delta, update.token);
+    return text
+      ? {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text }],
+          },
+        }
+      : null;
+  }
+
+  if (update.type === 'thinking-delta') {
+    const text = firstStringValue(update.text, update.delta);
+    return text ? { type: 'thinking', text } : null;
+  }
+
+  if (
+    update.type === 'tool-call-started'
+    || update.type === 'partial-tool-call'
+    || update.type === 'tool-call-completed'
+  ) {
+    const toolCall = isPlainObject(update.toolCall) ? update.toolCall : {};
+    const callID = trimString(update.callId ?? update.call_id ?? toolCall.callId ?? toolCall.call_id ?? toolCall.id);
+    const name = trimString(toolCall.name ?? toolCall.type ?? update.name) || 'tool';
+    const status = update.type === 'tool-call-completed'
+      ? 'completed'
+      : normalizeToolCallStatus(update.status);
+    return {
+      type: 'tool_call',
+      call_id: callID,
+      name,
+      status,
+      ...(hasOwn(toolCall, 'args') ? { args: toolCall.args } : {}),
+      ...(hasOwn(toolCall, 'result') ? { result: toolCall.result } : {}),
+      ...(isPlainObject(toolCall.truncated) ? { truncated: toolCall.truncated } : {}),
+    };
+  }
+
+  if (update.type === 'summary') {
+    const text = trimString(update.summary ?? update.text);
+    return text ? { type: 'task', text } : null;
+  }
+
+  return null;
+};
 
 const mergeToolDataIntoState = (part) => {
   if (!isPlainObject(part) || part.type !== 'tool') {
@@ -142,6 +308,16 @@ const mergeTextDelta = (existing, incoming) => {
   return `${previous}${needsSentenceBoundary ? ' ' : ''}${next}`;
 };
 
+export const computeIncrementalTextDelta = (previousText, nextText) => {
+  const previous = typeof previousText === 'string' ? previousText : '';
+  const next = typeof nextText === 'string' ? nextText : '';
+  if (!next || next === previous) return '';
+  if (next.length > previous.length && next.startsWith(previous)) {
+    return next.slice(previous.length);
+  }
+  return null;
+};
+
 const mergeFinalText = (existing, incoming) => {
   const previous = typeof existing === 'string' ? existing : '';
   const next = typeof incoming === 'string' ? incoming : '';
@@ -152,8 +328,42 @@ const mergeFinalText = (existing, incoming) => {
   return mergeTextDelta(previous, next);
 };
 
+const getSdkMessageTextFingerprint = (message) => {
+  if (!isPlainObject(message)) return '';
+  if (message.type === 'assistant') {
+    const content = Array.isArray(message.message?.content) ? message.message.content : [];
+    const text = content
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('');
+    return text ? `assistant:${text}` : '';
+  }
+  if (message.type === 'thinking') {
+    const text = typeof message.text === 'string' ? message.text : '';
+    return text ? `thinking:${text}` : '';
+  }
+  return '';
+};
+
+const createCrossSourceMessageDedupe = (limit = 80) => {
+  const recent = [];
+  return (source, message) => {
+    const fingerprint = getSdkMessageTextFingerprint(message);
+    if (!fingerprint) return false;
+    const duplicate = recent.some((entry) => (
+      entry.fingerprint === fingerprint && entry.source !== source
+    ));
+    recent.push({ source, fingerprint });
+    if (recent.length > limit) {
+      recent.splice(0, recent.length - limit);
+    }
+    return duplicate;
+  };
+};
+
 const DANGLING_REASONING_LIST_MARKER_PATTERN = /(?:\n\s*)+(?:[-*]|\d+[.)])\s*$/;
 const SENTENCE_BOUNDARY_PATTERN = /[.!?][)"'\]]?(?=\s|$)/g;
+const TOOL_ONLY_COMPLETION_SUMMARY = 'Completed the requested work. See the tool activity above for details.';
 
 const trimDanglingReasoningFragment = (value) => {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -191,6 +401,43 @@ const withTimeout = async (promise, timeoutMs) => {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+};
+
+const createAsyncQueue = () => {
+  const values = [];
+  const waiters = [];
+  let closed = false;
+
+  return {
+    push(value) {
+      if (closed) return;
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter({ done: false, value });
+        return;
+      }
+      values.push(value);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      while (waiters.length > 0) {
+        const waiter = waiters.shift();
+        waiter?.({ done: true, value: undefined });
+      }
+    },
+    next() {
+      if (values.length > 0) {
+        return Promise.resolve({ done: false, value: values.shift() });
+      }
+      if (closed) {
+        return Promise.resolve({ done: true, value: undefined });
+      }
+      return new Promise((resolve) => {
+        waiters.push(resolve);
+      });
+    },
+  };
 };
 
 const execFileText = (command, args, options = {}) => new Promise((resolve) => {
@@ -364,15 +611,203 @@ export function clearCursorSdkAuth({ readAuth, writeAuth }) {
   return true;
 }
 
+const createCursorModelRecord = ({ id, name, description, options, variants }) => ({
+  id,
+  name,
+  ...(trimString(description) ? { description: trimString(description) } : {}),
+  ...(isPlainObject(options) && Object.keys(options).length > 0 ? { options } : {}),
+  ...(isPlainObject(variants) && Object.keys(variants).length > 0 ? { variants } : {}),
+  capabilities: createCursorModelCapabilities(),
+});
+
 const fallbackModelRecords = () => Object.fromEntries(
-  FALLBACK_MODELS.map(([id, name]) => [id, { id, name }]),
+  FALLBACK_MODELS.map(([id, name]) => [id, createCursorModelRecord({ id, name })]),
 );
+
+const normalizeModelSelectionParams = (params) => {
+  if (!Array.isArray(params)) return [];
+  const normalized = [];
+  for (const param of params) {
+    if (!isPlainObject(param)) continue;
+    const id = trimString(param.id);
+    const value = trimString(param.value);
+    if (!id || !value) continue;
+    normalized.push({ id, value });
+  }
+  return normalized;
+};
+
+const createCursorSdkModelSelection = (id, params) => {
+  const normalizedId = normalizeModelId(id);
+  const normalizedParams = normalizeModelSelectionParams(params);
+  return {
+    id: normalizedId,
+    ...(normalizedParams.length > 0 ? { params: normalizedParams } : {}),
+  };
+};
+
+const cloneCursorSdkModelSelection = (selection) => {
+  if (!isPlainObject(selection)) return null;
+  const id = normalizeModelId(selection.id);
+  if (!id) return null;
+  return createCursorSdkModelSelection(id, selection.params);
+};
+
+const getModelParamValue = (params, id) => {
+  const normalizedId = trimString(id);
+  if (!normalizedId) return '';
+  for (const param of normalizeModelSelectionParams(params)) {
+    if (param.id === normalizedId) return param.value;
+  }
+  return '';
+};
+
+const normalizeCursorModelEffort = (value) => (
+  CURSOR_MODEL_EFFORT_ALIASES.get(trimString(value).toLowerCase()) || ''
+);
+
+const createCursorVariantKeyFromParams = (params) => {
+  const thinkingEnabled = getModelParamValue(params, CURSOR_MODEL_PARAM_THINKING).toLowerCase() === CURSOR_MODEL_TRUE_VALUE;
+  const effort = normalizeCursorModelEffort(
+    getModelParamValue(params, CURSOR_MODEL_PARAM_REASONING)
+    || getModelParamValue(params, CURSOR_MODEL_PARAM_EFFORT)
+  );
+
+  if (thinkingEnabled && effort) return `${CURSOR_MODEL_PARAM_THINKING}-${effort}`;
+  if (thinkingEnabled) return CURSOR_MODEL_PARAM_THINKING;
+  return effort || '';
+};
+
+const getParamMagnitudeScore = (value) => {
+  const normalized = trimString(value).toLowerCase();
+  const match = normalized.match(/^(\d+(?:\.\d+)?)([km])$/);
+  if (!match) return 0;
+  const numeric = Number.parseFloat(match[1]);
+  if (!Number.isFinite(numeric)) return 0;
+  return match[2] === 'm' ? numeric * 1_000_000 : numeric * 1_000;
+};
+
+const scoreCursorSdkVariant = (sdkVariant) => {
+  const params = normalizeModelSelectionParams(sdkVariant?.params);
+  const effort = normalizeCursorModelEffort(
+    getModelParamValue(params, CURSOR_MODEL_PARAM_REASONING)
+    || getModelParamValue(params, CURSOR_MODEL_PARAM_EFFORT)
+  );
+  return (
+    (sdkVariant?.isDefault === true ? 1_000_000_000 : 0)
+    + getParamMagnitudeScore(getModelParamValue(params, CURSOR_MODEL_PARAM_CONTEXT))
+    + (CURSOR_MODEL_EFFORT_DEFAULT_SCORES.get(effort) || 0)
+  );
+};
+
+const mergeCursorSdkModelCandidate = (records, candidate) => {
+  const id = trimString(candidate.id);
+  if (!id) return;
+
+  const existing = records[id];
+  const variants = isPlainObject(existing?.variants) ? { ...existing.variants } : {};
+  const variantKey = trimString(candidate.variantKey);
+  const cursorSdkModel = createCursorSdkModelSelection(candidate.sdkModelId, candidate.params);
+  const score = Number.isFinite(candidate.score) ? candidate.score : 0;
+
+  if (variantKey) {
+    const existingVariant = variants[variantKey];
+    const existingScore = Number.isFinite(existingVariant?._cursorSdkScore) ? existingVariant._cursorSdkScore : -1;
+    if (!existingVariant || score >= existingScore) {
+      variants[variantKey] = {
+        cursorSdkModel,
+        _cursorSdkScore: score,
+      };
+    }
+  }
+
+  const existingOptions = isPlainObject(existing?.options) ? existing.options : {};
+  const existingSelectionScore = Number.isFinite(existingOptions._cursorSdkScore) ? existingOptions._cursorSdkScore : -1;
+  const nextOptions = score >= existingSelectionScore
+    ? {
+        ...existingOptions,
+        cursorSdkModel,
+        _cursorSdkScore: score,
+      }
+    : existingOptions;
+
+  records[id] = createCursorModelRecord({
+    id,
+    name: trimString(candidate.name) || existing?.name || id,
+    description: candidate.description ?? existing?.description,
+    options: nextOptions,
+    variants,
+  });
+};
+
+const stripInternalCursorSdkScores = (records) => Object.fromEntries(
+  Object.entries(records).map(([id, model]) => {
+    if (!isPlainObject(model)) return [id, model];
+    const { options: _options, variants: _variants, ...rest } = model;
+    const options = isPlainObject(model.options) ? { ...model.options } : null;
+    if (options) delete options._cursorSdkScore;
+    const variants = isPlainObject(model.variants)
+      ? Object.fromEntries(
+          Object.entries(model.variants).map(([variantKey, variant]) => {
+            if (!isPlainObject(variant)) return [variantKey, variant];
+            const nextVariant = { ...variant };
+            delete nextVariant._cursorSdkScore;
+            return [variantKey, nextVariant];
+          })
+        )
+      : null;
+    return [
+      id,
+      {
+        ...rest,
+        ...(options && Object.keys(options).length > 0 ? { options } : {}),
+        ...(variants && Object.keys(variants).length > 0 ? { variants } : {}),
+      },
+    ];
+  })
+);
+
+const addSdkModelRecord = (records, model) => {
+  const sdkModelId = trimString(model.id);
+  if (!sdkModelId) return;
+  const name = trimString(model.displayName) || trimString(model.name) || sdkModelId;
+  const description = model.description;
+  const variants = Array.isArray(model.variants) ? model.variants : [];
+
+  if (variants.length === 0) {
+    records[sdkModelId] = createCursorModelRecord({
+      id: sdkModelId,
+      name,
+      description,
+      options: { cursorSdkModel: createCursorSdkModelSelection(sdkModelId, []) },
+    });
+    return;
+  }
+
+  for (const sdkVariant of variants) {
+    if (!isPlainObject(sdkVariant)) continue;
+    const params = normalizeModelSelectionParams(sdkVariant.params);
+    const variantKey = createCursorVariantKeyFromParams(params);
+    const fastEnabled = getModelParamValue(params, CURSOR_MODEL_PARAM_FAST).toLowerCase() === CURSOR_MODEL_TRUE_VALUE;
+    const targetModelId = fastEnabled ? `${sdkModelId}-fast` : sdkModelId;
+    const targetName = fastEnabled && !/\bfast\b/i.test(name) ? `${name} Fast` : name;
+    mergeCursorSdkModelCandidate(records, {
+      id: targetModelId,
+      sdkModelId,
+      name: targetName,
+      description,
+      params,
+      variantKey,
+      score: scoreCursorSdkVariant(sdkVariant),
+    });
+  }
+};
 
 const addCompatibilityModelPair = (records, id, pairedId, pairedName) => {
   if (!records[id] || records[pairedId]) return records;
   return {
     ...records,
-    [pairedId]: { id: pairedId, name: pairedName },
+    [pairedId]: createCursorModelRecord({ id: pairedId, name: pairedName }),
   };
 };
 
@@ -390,22 +825,17 @@ const normalizeSdkModelRecords = (models) => {
     return fallbackModelRecords();
   }
 
-  const entries = [];
+  const records = {};
   for (const model of models) {
     if (!isPlainObject(model)) continue;
     const id = trimString(model.id);
     if (!id) continue;
-    entries.push([
-      id,
-      {
-        id,
-        name: trimString(model.displayName) || trimString(model.name) || id,
-        ...(trimString(model.description) ? { description: trimString(model.description) } : {}),
-      },
-    ]);
+    addSdkModelRecord(records, model);
   }
 
-  return entries.length > 0 ? addCompatibilityModelPairs(Object.fromEntries(entries)) : fallbackModelRecords();
+  return Object.keys(records).length > 0
+    ? stripInternalCursorSdkScores(addCompatibilityModelPairs(records))
+    : fallbackModelRecords();
 };
 
 const buildVirtualProvider = (models) => ({
@@ -413,6 +843,27 @@ const buildVirtualProvider = (models) => ({
   name: 'Cursor',
   models,
 });
+
+const resolveVariantRecord = (variants, variant) => {
+  if (!isPlainObject(variants)) return null;
+  const key = trimString(variant);
+  if (!key) return null;
+  const direct = variants[key];
+  if (isPlainObject(direct)) return direct;
+  const normalizedKey = createCursorVariantKeyFromParams([
+    { id: CURSOR_MODEL_PARAM_THINKING, value: key.toLowerCase().includes(CURSOR_MODEL_PARAM_THINKING) ? CURSOR_MODEL_TRUE_VALUE : 'false' },
+    { id: CURSOR_MODEL_PARAM_EFFORT, value: key },
+  ]);
+  return normalizedKey && isPlainObject(variants[normalizedKey]) ? variants[normalizedKey] : null;
+};
+
+const getCursorSdkSelectionFromModelRecord = (record, variant) => {
+  if (!isPlainObject(record)) return null;
+  const variantRecord = resolveVariantRecord(record.variants, variant);
+  const variantSelection = cloneCursorSdkModelSelection(variantRecord?.cursorSdkModel);
+  if (variantSelection) return variantSelection;
+  return cloneCursorSdkModelSelection(record.options?.cursorSdkModel);
+};
 
 const extractPromptPayload = (body) => {
   const parts = Array.isArray(body?.parts) ? body.parts : [];
@@ -452,10 +903,158 @@ const extractPromptPayload = (body) => {
   };
 };
 
+const normalizeMime = (value) => (
+  typeof value === 'string' ? value.split(';')[0].trim().toLowerCase() : ''
+);
+
+const normalizeFilename = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const IMAGE_FILENAME_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?)$/i;
+
+const isCursorImageFilePart = (part) => {
+  const mime = normalizeMime(part?.mime);
+  if (mime.startsWith('image/')) return true;
+  return !mime && IMAGE_FILENAME_PATTERN.test(normalizeFilename(part?.filename));
+};
+
+const normalizePromptFileParts = (body, { sessionID, messageID }) => {
+  const parts = Array.isArray(body?.parts) ? body.parts : [];
+  return parts
+    .map((part, index) => {
+      if (!isPlainObject(part) || part.type !== 'file') return null;
+      const url = trimString(part.url);
+      if (!url) return null;
+      const mime = trimString(part.mime || part.mimeType) || 'application/octet-stream';
+      const filename = normalizeFilename(part.filename || part.name);
+      return {
+        id: trimString(part.id) || `${messageID}_file_${String(index + 1).padStart(2, '0')}`,
+        sessionID,
+        messageID,
+        type: 'file',
+        mime,
+        url,
+        ...(filename ? { filename } : {}),
+        ...(part.synthetic === true ? { synthetic: true } : {}),
+      };
+    })
+    .filter(Boolean);
+};
+
+const buildCursorImages = (fileParts) => fileParts
+  .filter(isCursorImageFilePart)
+  .map((part) => ({ url: part.url }));
+
+const formatUnsupportedAttachment = (part) => {
+  const filename = normalizeFilename(part?.filename) || 'unnamed attachment';
+  const mime = normalizeMime(part?.mime);
+  return mime ? `${filename} (${mime})` : filename;
+};
+
+const getUnsupportedCursorAttachmentMessage = (fileParts) => {
+  const unsupported = fileParts.filter((part) => !isCursorImageFilePart(part));
+  if (unsupported.length === 0) return '';
+  const shown = unsupported.slice(0, 3).map(formatUnsupportedAttachment);
+  const extraCount = unsupported.length - shown.length;
+  return [
+    '<status>blocked</status>',
+    '',
+    `Cursor SDK provider sessions support image attachments only. Unsupported attachments were not sent: ${shown.join(', ')}${extraCount > 0 ? `, and ${extraCount} more` : ''}.`,
+    '',
+    'Remove those files, convert them into prompt text, or use a non-Cursor OpenCode model that supports the attachment type.',
+  ].join('\n');
+};
+
+const formatPromptWithAgentInstructions = ({
+  agent,
+  instructions,
+  prompt,
+  runtimeContract = '',
+  planFirst = false,
+}) => {
+  const contextBlocks = [
+    ...(runtimeContract
+      ? [
+          '<cursor_runtime_contract>',
+          runtimeContract,
+          '</cursor_runtime_contract>',
+          '',
+        ]
+      : []),
+    ...(instructions
+      ? [
+          `<agent_instructions name="${escapeXmlAttribute(agent)}">`,
+          instructions,
+          '</agent_instructions>',
+          '',
+        ]
+      : []),
+  ];
+  if (planFirst) {
+    const planBreakIndex = prompt.indexOf('\n\n');
+    if (planBreakIndex > 0 && prompt.trimStart().startsWith(PLAN_MODE_INSTRUCTION_PREFIX)) {
+      return [
+        prompt.slice(0, planBreakIndex),
+        '',
+        ...contextBlocks,
+        prompt.slice(planBreakIndex + 2),
+      ].join('\n').trim();
+    }
+    return [
+      prompt,
+      ...(contextBlocks.length > 0 ? ['', ...contextBlocks] : []),
+    ].join('\n').trim();
+  }
+  return [
+    ...contextBlocks,
+    '<user_request>',
+    prompt,
+    '</user_request>',
+  ].join('\n');
+};
+
+const getUnsupportedCursorAgentMessage = ({ agent }) => {
+  const normalized = trimString(agent).toLowerCase();
+  if (normalized !== 'council') return '';
+  return [
+    '<status>blocked</status>',
+    '',
+    'Cursor SDK provider sessions cannot run the Council agent because it requires the OpenCode council_session plugin tool, and OpenCode plugin tools are not available in Cursor SDK sessions.',
+    '',
+    'Use a non-Cursor OpenCode model for Council, or use Builder/Orchestrator with Cursor Composer 2.',
+  ].join('\n');
+};
+
 const normalizeModelId = (value) => {
   const raw = trimString(value);
   if (!raw) return 'auto';
   return raw.startsWith(`${CURSOR_PROVIDER_ID}/`) ? raw.slice(CURSOR_PROVIDER_ID.length + 1) : raw;
+};
+
+const isConcreteCursorModel = (modelID) => {
+  const model = trimString(modelID);
+  return Boolean(model && model !== 'auto');
+};
+
+const getCursorRuntimePromptContract = (modelID) => {
+  const model = trimString(modelID);
+  if (!model || model === 'auto') return '';
+  return [
+    `This Cursor SDK session is pinned to model "${model}".`,
+    'Do not start task/subagent/delegation tools with a different model.',
+    'If the request cannot be completed without switching models, return <status>blocked</status> with the reason instead of continuing.',
+  ].join('\n');
+};
+
+const getCursorDirectPlanModeInstructions = ({ agent, modelID }) => {
+  if (trimString(agent).toLowerCase() !== 'orchestrator' || !isConcreteCursorModel(modelID)) {
+    return '';
+  }
+  return [
+    `Plan mode is running directly on Cursor model "${trimString(modelID)}".`,
+    'Do not call task, subagent, delegation, explorer, fixer, or council tools.',
+    'Do not create background work. Do the minimal read-only inspection yourself, then produce the plan.',
+    'Return a plan card only: Context, Implementation, and Verification. Do not modify files.',
+  ].join('\n');
 };
 
 const normalizeRuntimeToolName = (value) => {
@@ -501,6 +1100,45 @@ const isWorkspaceMutationCandidateTool = (toolName) => {
 const isCursorPlanTool = (toolName) => {
   const normalized = normalizeRuntimeToolName(toolName);
   return normalized === 'create_plan';
+};
+
+const isCursorTaskTool = (toolName) => {
+  const normalized = normalizeRuntimeToolName(toolName);
+  return normalized === 'task';
+};
+
+const extractCursorToolModelId = (input) => {
+  if (!isPlainObject(input)) return '';
+  const candidates = [
+    input.model,
+    input.modelID,
+    input.modelId,
+    input.model_id,
+  ];
+  for (const candidate of candidates) {
+    if (isPlainObject(candidate)) {
+      const id = trimString(candidate.id || candidate.modelID || candidate.modelId || candidate.model_id);
+      if (id) return normalizeModelId(id);
+      continue;
+    }
+    const id = trimString(candidate);
+    if (id) return normalizeModelId(id);
+  }
+  return '';
+};
+
+const buildCursorTaskModelBoundaryViolation = ({ toolName, input, selectedModelID }) => {
+  const selected = normalizeModelId(selectedModelID);
+  if (!isCursorTaskTool(toolName) || !selected || selected === 'auto') return '';
+
+  const requested = extractCursorToolModelId(input);
+  if (!requested || requested === selected) return '';
+
+  return [
+    'Cursor SDK model boundary violation:',
+    `the task tool requested model "${requested}" while this session is pinned to "${selected}".`,
+    'The run was aborted so DevRyan does not silently execute part of the chat on a different model.',
+  ].join(' ');
 };
 
 const getCursorPlanToolText = (part) => {
@@ -612,15 +1250,27 @@ export function createCursorSdkRuntime(options = {}) {
   const env = isPlainObject(options.env) ? options.env : process.env;
   const storageDir = trimString(options.storageDir) || defaultStorageDir();
   const loadSdk = typeof options.loadSdk === 'function' ? options.loadSdk : () => importRuntimeModule('@cursor/sdk');
-  const nodeBinary = trimString(options.nodeBinary) || trimString(process.env.NODE_BINARY) || 'node';
-  const useNodeWorkerForPrompts = options.useNodeWorkerForPrompts ?? (isBunRuntime() && typeof options.loadSdk !== 'function');
-  let workerPath = trimString(options.workerPath);
-  if (!workerPath && useNodeWorkerForPrompts) {
-    workerPath = fileURLToPath(new URL('./node-worker.mjs', import.meta.url));
-  }
+  const workerPath = trimString(options.workerPath) || fileURLToPath(new URL('./node-worker.mjs', import.meta.url));
+  const workerConfig = resolveCursorSdkWorkerRuntimeConfig({
+    env,
+    hasInjectedLoadSdk: typeof options.loadSdk === 'function',
+    requestedNodeBinary: options.nodeBinary,
+    requestedUseNodeWorkerForPrompts: options.useNodeWorkerForPrompts,
+    requestedWorkerCwd: options.workerCwd,
+    requestedWorkerEnv: options.workerEnv,
+    workerPath,
+  });
+  const {
+    nodeBinary,
+    useNodeWorkerForPrompts,
+    workerCwd,
+    workerEnv,
+  } = workerConfig;
+  const spawnImpl = typeof options.spawnImpl === 'function' ? options.spawnImpl : spawn;
   const getWorkspaceDiff = typeof options.getWorkspaceDiff === 'function' ? options.getWorkspaceDiff : defaultGetWorkspaceDiff;
   const emitEvent = typeof options.emitEvent === 'function' ? options.emitEvent : () => {};
   const logger = options.logger || console;
+  const resolveAgentPrompt = typeof options.resolveAgentPrompt === 'function' ? options.resolveAgentPrompt : null;
   const streamIdleTimeoutMs = Math.max(0, Number(options.streamIdleTimeoutMs) || 45000);
   const finalResultWaitTimeoutMs = Math.max(0, Number(options.finalResultWaitTimeoutMs) || 1000);
   const activeRuns = new Map();
@@ -629,6 +1279,7 @@ export function createCursorSdkRuntime(options = {}) {
   let lastModelRecords = fallbackModelRecords();
   let lastModelsSource = 'fallback';
   let lastError = null;
+  let lastCancellation = null;
 
   const getSessionPath = (sessionID) => path.join(storageDir, `${encodeURIComponent(sessionID)}.json`);
 
@@ -642,6 +1293,20 @@ export function createCursorSdkRuntime(options = {}) {
   };
 
   const writeSessionState = async (sessionID, state) => writeJsonFile(getSessionPath(sessionID), state);
+
+  const persistQueues = new Map();
+
+  const enqueuePersist = (sessionID, record) => {
+    const previous = persistQueues.get(sessionID) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => appendOrReplaceRecord(sessionID, record))
+      .catch((error) => {
+        logger.error?.('[CursorSDK] persist failed:', error);
+      });
+    persistQueues.set(sessionID, next);
+    return next;
+  };
 
   const appendOrReplaceRecord = async (sessionID, record) => {
     const state = await readSessionState(sessionID);
@@ -680,6 +1345,7 @@ export function createCursorSdkRuntime(options = {}) {
       modelsSource: lastModelsSource,
       modelCount: Object.keys(lastModelRecords).length,
       lastError,
+      lastCancellation,
     };
   };
 
@@ -717,14 +1383,23 @@ export function createCursorSdkRuntime(options = {}) {
     }
   };
 
-  const getOrCreateAgent = async ({ sessionID, apiKey, modelID, directory }) => {
+  const resolveCursorSdkModelSelection = async ({ modelID, variant }) => {
+    const normalizedModelID = normalizeModelId(modelID);
+    if (!lastModelRecords || !isPlainObject(lastModelRecords[normalizedModelID])) {
+      await discoverModels();
+    }
+    const selected = getCursorSdkSelectionFromModelRecord(lastModelRecords?.[normalizedModelID], variant);
+    return selected || createCursorSdkModelSelection(normalizedModelID, []);
+  };
+
+  const getOrCreateAgent = async ({ sessionID, apiKey, modelID, modelSelection, directory }) => {
     const cached = agentsBySession.get(sessionID);
     if (cached) return cached;
 
     const { Agent } = await loadSdk();
     const state = await readSessionState(sessionID);
     const local = trimString(directory) ? { cwd: directory } : {};
-    const model = { id: normalizeModelId(modelID) };
+    const model = cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []);
     let agent = null;
     if (state.agentID) {
       try {
@@ -754,9 +1429,22 @@ export function createCursorSdkRuntime(options = {}) {
     await appendOrReplaceRecord(sessionID, record);
   };
 
-  const createDirectPromptRun = async ({ sessionID, apiKey, modelID, prompt, directory }) => {
-    const agent = await getOrCreateAgent({ sessionID, apiKey, modelID, directory });
-    const run = await agent.send({ text: prompt }, { model: { id: modelID } });
+  const createDirectPromptRun = async ({ sessionID, apiKey, modelID, modelSelection, prompt, directory, images }) => {
+    const model = cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []);
+    const agent = await getOrCreateAgent({ sessionID, apiKey, modelID, modelSelection: model, directory });
+    const message = Array.isArray(images) && images.length > 0
+      ? { text: prompt, images }
+      : { text: prompt };
+    const deltaQueue = createAsyncQueue();
+    const run = await agent.send(message, {
+      model,
+      onDelta: (event) => {
+        const sdkMessage = normalizeInteractionUpdateToSdkMessage(event);
+        if (sdkMessage) {
+          deltaQueue.push({ type: 'message', message: sdkMessage });
+        }
+      },
+    });
     const waitPromise = typeof run.wait === 'function'
       ? run.wait()
         .then((result) => ({
@@ -784,9 +1472,27 @@ export function createCursorSdkRuntime(options = {}) {
       },
       async *stream() {
         const iterator = run.stream()[Symbol.asyncIterator]();
+        const shouldSkipDuplicateMessage = createCrossSourceMessageDedupe();
         const waitEventPromise = waitPromise
           ? waitPromise.then((result) => ({ source: 'wait', result }))
           : null;
+        let streamDone = false;
+        let deltaDone = false;
+        let nextStreamPromise = iterator.next().then((next) => ({ source: 'stream', next }));
+        let nextDeltaPromise = deltaQueue.next().then((next) => ({ source: 'delta', next }));
+
+        async function* yieldSdkMessage(source, sdkMessage) {
+          if (shouldSkipDuplicateMessage(source, sdkMessage)) return;
+          yield { type: 'message', message: sdkMessage };
+        }
+
+        async function* yieldPromptEvent(source, promptEvent) {
+          if (promptEvent?.type !== 'message') {
+            yield promptEvent;
+            return;
+          }
+          yield* yieldSdkMessage(source, promptEvent.message);
+        }
 
         async function* yieldWaitResult(result) {
           if (!result) return;
@@ -794,36 +1500,36 @@ export function createCursorSdkRuntime(options = {}) {
             throw result.error || new Error('Cursor SDK run failed.');
           }
           if (trimString(result.finalText)) {
-            yield {
-              type: 'message',
+            yield* yieldSdkMessage('wait', {
+              type: 'assistant',
               message: {
-                type: 'assistant',
-                message: {
-                  role: 'assistant',
-                  content: [{ type: 'text', text: result.finalText }],
-                },
+                role: 'assistant',
+                content: [{ type: 'text', text: result.finalText }],
               },
-            };
+            });
           }
           if (result.finalStatus) {
-            yield {
-              type: 'message',
-              message: {
-                type: 'status',
-                status: sdkStatusFromRunStatus(result.result?.status || run.status),
-              },
-            };
+            yield* yieldSdkMessage('wait', {
+              type: 'status',
+              status: sdkStatusFromRunStatus(result.result?.status || run.status),
+            });
           }
         }
 
         for (;;) {
-          const nextPromise = iterator.next().then((next) => ({ source: 'stream', next }));
-          const event = waitEventPromise
-            ? await Promise.race([nextPromise, waitEventPromise])
-            : await nextPromise;
+          const pending = [];
+          if (!streamDone) pending.push(nextStreamPromise);
+          if (!deltaDone) pending.push(nextDeltaPromise);
+          if (waitEventPromise) pending.push(waitEventPromise);
+          if (pending.length === 0) {
+            break;
+          }
+          const event = await Promise.race(pending);
 
           if (event.source === 'wait') {
-            nextPromise.catch(() => {});
+            nextStreamPromise.catch(() => {});
+            nextDeltaPromise.catch(() => {});
+            deltaQueue.close();
             if (typeof iterator.return === 'function') {
               iterator.return().catch(() => {});
             }
@@ -831,12 +1537,26 @@ export function createCursorSdkRuntime(options = {}) {
             return;
           }
 
-          if (event.next?.done) {
-            break;
+          if (event.source === 'delta') {
+            if (event.next?.done) {
+              deltaDone = true;
+              continue;
+            }
+            nextDeltaPromise = deltaQueue.next().then((next) => ({ source: 'delta', next }));
+            yield* yieldPromptEvent('delta', event.next?.value);
+            continue;
           }
-          yield { type: 'message', message: event.next?.value };
+
+          if (event.next?.done) {
+            streamDone = true;
+            deltaQueue.close();
+            continue;
+          }
+          nextStreamPromise = iterator.next().then((next) => ({ source: 'stream', next }));
+          yield* yieldSdkMessage('stream', event.next?.value);
         }
 
+        deltaQueue.close();
         if (waitPromise) {
           yield* yieldWaitResult(await withTimeout(waitPromise, finalResultWaitTimeoutMs));
         }
@@ -844,12 +1564,15 @@ export function createCursorSdkRuntime(options = {}) {
     };
   };
 
-  const createNodeWorkerPromptRun = async ({ sessionID, apiKey, modelID, prompt, directory }) => {
+  const createNodeWorkerPromptRun = async ({ sessionID, apiKey, modelID, modelSelection, prompt, directory, images }) => {
     const state = await readSessionState(sessionID);
-    const child = spawn(nodeBinary, [workerPath], {
-      cwd: path.dirname(workerPath),
+    const child = spawnImpl(nodeBinary, [workerPath], {
+      cwd: workerCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: {
+        ...process.env,
+        ...workerEnv,
+      },
     });
 
     let stderr = '';
@@ -863,7 +1586,9 @@ export function createCursorSdkRuntime(options = {}) {
       apiKey,
       sessionID,
       modelID,
+      modelSelection: cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []),
       prompt,
+      images: Array.isArray(images) ? images : [],
       directory: trimString(directory),
       agentID: trimString(state.agentID),
     }));
@@ -941,6 +1666,38 @@ export function createCursorSdkRuntime(options = {}) {
       ? createNodeWorkerPromptRun
       : createDirectPromptRun;
 
+  const buildExecutionPrompt = async ({
+    requestedAgent,
+    prompt,
+    directory,
+    modelID,
+    isPlanModePrompt,
+  }) => {
+    const runtimeContract = getCursorRuntimePromptContract(modelID);
+    let instructions = isPlanModePrompt
+      ? getCursorDirectPlanModeInstructions({ agent: requestedAgent, modelID })
+      : '';
+    if (!instructions && resolveAgentPrompt && requestedAgent) {
+      try {
+        instructions = trimString(await resolveAgentPrompt({ agent: requestedAgent, directory }));
+      } catch (error) {
+        logger.warn?.('[CursorSDK] failed to resolve agent prompt:', error);
+      }
+    }
+
+    if (!instructions && !runtimeContract) {
+      return prompt;
+    }
+
+    return formatPromptWithAgentInstructions({
+      agent: requestedAgent,
+      instructions,
+      prompt,
+      runtimeContract,
+      planFirst: isPlanModePrompt,
+    });
+  };
+
   const getWorkspaceDiffSnapshot = async (directory) => {
     try {
       return normalizeDiffSnapshot(await getWorkspaceDiff(directory));
@@ -974,10 +1731,32 @@ export function createCursorSdkRuntime(options = {}) {
     }
 
     const modelID = normalizeModelId(body?.model?.modelID);
+    const variant = trimString(body?.variant);
+    const modelSelection = await resolveCursorSdkModelSelection({ modelID, variant });
     const userMessageID = trimString(body?.messageID) || createId('msg');
     const assistantMessageID = createAssistantMessageId(userMessageID);
+    const requestedAgent = trimString(body?.agent);
+    const fileParts = normalizePromptFileParts(body, { sessionID, messageID: userMessageID });
+    const images = buildCursorImages(fileParts);
+    const unsupportedAttachmentMessage = getUnsupportedCursorAttachmentMessage(fileParts);
+    const unsupportedAgentMessage = getUnsupportedCursorAgentMessage({
+      agent: requestedAgent,
+      isPlanModePrompt,
+      modelID,
+    });
+    const unsupportedMessage = unsupportedAttachmentMessage || unsupportedAgentMessage;
+    const executionPrompt = unsupportedMessage
+      ? prompt
+      : await buildExecutionPrompt({
+          requestedAgent,
+          prompt,
+          directory,
+          modelID,
+          isPlanModePrompt,
+        });
     const created = now();
     let partSequence = 0;
+    let cancellationSource = null;
     let syntheticPatchPartID = null;
     let sawMutationCandidateTool = false;
     const toolPartIdsByCallId = new Map();
@@ -1000,7 +1779,6 @@ export function createCursorSdkRuntime(options = {}) {
       toolPartIdsByCallId.set(normalizedCallID, partID);
       return partID;
     };
-    const requestedAgent = trimString(body?.agent);
     const baselineWorkspaceDiff = await getWorkspaceDiffSnapshot(directory);
     let lastSyntheticWorkspaceDiff = baselineWorkspaceDiff;
     const userParts = [{
@@ -1022,6 +1800,7 @@ export function createCursorSdkRuntime(options = {}) {
         });
       }
     }
+    userParts.push(...fileParts);
 
     const userRecord = {
       info: {
@@ -1031,6 +1810,7 @@ export function createCursorSdkRuntime(options = {}) {
         time: { created },
         providerID: CURSOR_PROVIDER_ID,
         modelID,
+        ...(variant ? { variant } : {}),
         ...(requestedAgent ? { agent: requestedAgent } : {}),
         ...(isPlanModePrompt ? { metadata: { openchamberPlanMode: true } } : {}),
       },
@@ -1046,6 +1826,7 @@ export function createCursorSdkRuntime(options = {}) {
         time: { created: created + 1 },
         providerID: CURSOR_PROVIDER_ID,
         modelID,
+        ...(variant ? { variant } : {}),
         ...(requestedAgent ? { agent: requestedAgent, mode: requestedAgent } : {}),
       },
       parts: [],
@@ -1098,8 +1879,31 @@ export function createCursorSdkRuntime(options = {}) {
       return partChanged || normalizedChanged;
     };
 
-    const emitRecordDelta = async (record) => {
-      await persistMessage(sessionID, record);
+    const emitStreamingTextPartUpdate = (part, previousPart, recordInfoId, forcePartUpdated) => {
+      const messageID = part.messageID || recordInfoId;
+      const partID = part.id;
+      const nextText = typeof part.text === 'string' ? part.text : '';
+      const previousText = previousPart && typeof previousPart.text === 'string' ? previousPart.text : '';
+
+      if (!forcePartUpdated && previousPart) {
+        const incrementalDelta = computeIncrementalTextDelta(previousText, nextText);
+        if (incrementalDelta) {
+          emittedParts.set(partID, part);
+          emit({
+            type: 'message.part.delta',
+            properties: { messageID, partID, field: 'text', delta: incrementalDelta },
+          }, directory);
+          return;
+        }
+      }
+
+      emittedParts.set(partID, part);
+      emit({ type: 'message.part.updated', properties: { part } }, directory);
+    };
+
+    const emitRecordDelta = async (record, options = {}) => {
+      const forcePartUpdated = options.forcePartUpdated === true;
+      const awaitPersist = options.awaitPersist === true;
 
       const previousInfo = emittedMessageInfo.get(record.info.id);
       if (!previousInfo || !areRuntimeValuesEqual(previousInfo, record.info)) {
@@ -1115,6 +1919,16 @@ export function createCursorSdkRuntime(options = {}) {
         if (previousPart && areRuntimeValuesEqual(previousPart, part)) {
           continue;
         }
+
+        if (
+          !forcePartUpdated
+          && (part.type === 'text' || part.type === 'reasoning')
+          && typeof part.text === 'string'
+        ) {
+          emitStreamingTextPartUpdate(part, previousPart, record.info.id, forcePartUpdated);
+          continue;
+        }
+
         emittedParts.set(part.id, part);
         emit({ type: 'message.part.updated', properties: { part } }, directory);
       }
@@ -1131,6 +1945,11 @@ export function createCursorSdkRuntime(options = {}) {
             partID,
           },
         }, directory);
+      }
+
+      const persistPromise = enqueuePersist(sessionID, record);
+      if (awaitPersist) {
+        await persistPromise;
       }
     };
 
@@ -1306,8 +2125,34 @@ export function createCursorSdkRuntime(options = {}) {
 
     const finalizeAssistantRun = async (finalStatus, completed = now()) => {
       const finish = normalizeFinish(finalStatus);
+      if (finish === 'cancelled' || cancellationSource) {
+        lastCancellation = {
+          sessionID,
+          assistantMessageID,
+          source: cancellationSource || 'provider_or_runtime',
+          finalStatus: finish,
+          at: completed,
+        };
+      }
       if (finish === 'stop' && sawMutationCandidateTool) {
         await syncWorkspacePatchPart(completed);
+      }
+
+      const hasAssistantText = assistantRecord.parts.some((part) => (
+        part?.type === 'text' && trimString(part.text || part.content)
+      ));
+      const hasToolActivity = assistantRecord.parts.some((part) => part?.type === 'tool');
+      if (finish === 'stop' && !hasAssistantText && hasToolActivity) {
+        const summaryPartId = nextPartID('text', 'tool_only_completion');
+        rawAssistantTextByPartId.set(summaryPartId, TOOL_ONLY_COMPLETION_SUMMARY);
+        upsertAssistantPart({
+          id: summaryPartId,
+          sessionID,
+          messageID: assistantMessageID,
+          type: 'text',
+          text: TOOL_ONLY_COMPLETION_SUMMARY,
+          time: { start: completed },
+        });
       }
 
       const finalToolStatus = finishToToolStatus(finish);
@@ -1363,19 +2208,29 @@ export function createCursorSdkRuntime(options = {}) {
           completed,
         },
       };
-      await emitRecordDelta(assistantRecord);
+      await emitRecordDelta(assistantRecord, { forcePartUpdated: true, awaitPersist: true });
       sessionStatuses.set(sessionID, { type: 'idle' });
       emit({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } }, directory);
     };
 
-    await emitRecordDelta(userRecord);
-    await emitRecordDelta(assistantRecord);
+    await emitRecordDelta(userRecord, { awaitPersist: true });
+    await emitRecordDelta(assistantRecord, { awaitPersist: true });
     sessionStatuses.set(sessionID, { type: 'busy' });
     emit({ type: 'session.status', properties: { sessionID, status: { type: 'busy' } } }, directory);
 
+    if (unsupportedMessage) {
+      applyFinalAssistantText(unsupportedMessage);
+      await finalizeAssistantRun('error');
+      return {
+        handled: true,
+        status: 204,
+        body: null,
+      };
+    }
+
     let run = null;
     try {
-      run = await createPromptRun({ sessionID, apiKey, modelID, prompt, directory });
+      run = await createPromptRun({ sessionID, apiKey, modelID, modelSelection, prompt: executionPrompt, directory, images });
     } catch (error) {
       const text = error instanceof Error ? error.message : 'Cursor SDK run failed.';
       applyFinalAssistantText(`Cursor SDK error: ${text}`);
@@ -1387,7 +2242,14 @@ export function createCursorSdkRuntime(options = {}) {
         body: null,
       };
     }
-    activeRuns.set(sessionID, { run, assistantMessageID, directory });
+    activeRuns.set(sessionID, {
+      run,
+      assistantMessageID,
+      directory,
+      markAbortRequested: (source = 'user_abort') => {
+        cancellationSource = source;
+      },
+    });
 
     const pump = (async () => {
       let finalStatus = 'success';
@@ -1508,10 +2370,17 @@ export function createCursorSdkRuntime(options = {}) {
           } else if (message.type === 'tool_call') {
             const partID = getToolPartID(message.call_id);
             const existing = assistantRecord.parts.find((part) => part.id === partID);
-            const status = normalizeToolCallStatus(message.status);
-            const startedAt = existing?.state?.time?.start || now();
             const input = isPlainObject(message.args) ? message.args : undefined;
-            const output = safeJson(message.result);
+            const modelBoundaryViolation = buildCursorTaskModelBoundaryViolation({
+              toolName: message.name,
+              input,
+              selectedModelID: modelID,
+            });
+            const status = modelBoundaryViolation
+              ? 'error'
+              : normalizeToolCallStatus(message.status);
+            const startedAt = existing?.state?.time?.start || now();
+            const output = modelBoundaryViolation || safeJson(message.result);
             const metadata = isPlainObject(message.metadata) ? message.metadata : undefined;
             const toolPart = {
               id: partID,
@@ -1540,6 +2409,20 @@ export function createCursorSdkRuntime(options = {}) {
             previousContentKind = 'tool';
             if (partChanged || planTextChanged) {
               await emitRecordDelta(assistantRecord);
+            }
+            if (modelBoundaryViolation) {
+              applyFinalAssistantText(modelBoundaryViolation);
+              await emitRecordDelta(assistantRecord);
+              finalStatus = 'error';
+              cancellationSource = 'model_boundary';
+              try {
+                await run.cancel?.();
+              } catch {
+              }
+              if (typeof iterator.return === 'function') {
+                iterator.return().catch(() => {});
+              }
+              break;
             }
             if (isTerminalToolStatus && isWorkspaceMutationCandidateTool(message.name)) {
               sawMutationCandidateTool = true;
@@ -1635,6 +2518,7 @@ export function createCursorSdkRuntime(options = {}) {
       if (!active?.run || typeof active.run.cancel !== 'function') {
         return false;
       }
+      active.markAbortRequested?.('user_abort');
       await active.run.cancel();
       activeRuns.delete(sessionID);
       sessionStatuses.set(sessionID, { type: 'idle' });

@@ -24,16 +24,39 @@ import {
 import { postTurnTimingMark, streamDebugMark } from "@/stores/utils/streamDebug"
 import { markArchived, markUnarchived } from "./session-materializer"
 import type { RevertTransaction } from "./revert-transactions"
+import {
+  beginCommittedRevertResend,
+  endCommittedRevertResend,
+} from "./revert-transactions"
 import { hasMessageRecordInfo, unwrapMessageRecordsResult } from "./message-fetch"
 import { isSessionWorkingFromState } from "./session-working"
+import { isTransientError, retry } from "./retry"
 
 const MESSAGE_REFETCH_LIMIT = 200
 const MESSAGE_REFETCH_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const BULK_SESSION_MUTATION_CONCURRENCY = 6
 const QUEUED_SEND_INTERRUPT_IDLE_WAIT_MS = 300
 const QUEUED_SEND_INTERRUPT_IDLE_POLL_MS = 25
+const SESSION_CREATE_RETRY_ATTEMPTS = 6
+const SESSION_CREATE_RETRY_DELAY_MS = 250
+const SESSION_CREATE_RETRY_MAX_DELAY_MS = 1000
 let revertTransactionVersion = 0
 const unexpectedAbortReconcileInFlight = new Map<string, Promise<void>>()
+
+function createAbortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError")
+  }
+  const error = new Error("Aborted")
+  error.name = "AbortError"
+  return error
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError()
+  }
+}
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
@@ -200,11 +223,22 @@ function markManualAbort(sessionId: string, messageId?: string): void {
   })
 }
 
+function postAbortRequestedMark(sessionId: string, directory?: string): void {
+  postTurnTimingMark({
+    sessionId,
+    assistantMessageId: getLatestAssistantMessageId(sessionId, directory),
+    mark: "cursor_abort_requested",
+    directory,
+    metadata: { source: "user_abort" },
+  })
+}
+
 type RevertCommitRollback = {
   sessionIndex: number
   previousRevert: Session["revert"] | undefined
   hadPreviousRevert: boolean
   previousTransaction: RevertTransaction | undefined
+  committedMessageID?: string
 }
 
 function commitRevertBeforeNewSend(
@@ -246,6 +280,8 @@ function commitRevertBeforeNewSend(
     previousRevert,
     hadPreviousRevert,
     previousTransaction,
+    committedMessageID: previousTransaction?.messageID
+      ?? (typeof previousRevert?.messageID === "string" ? previousRevert.messageID : undefined),
   }
 }
 
@@ -697,6 +733,7 @@ async function abortWorkingSessionsBeforeRemoval(
       }
 
       try {
+        postAbortRequestedMark(sessionId, directory)
         await sdk().session.abort({ sessionID: sessionId, directory })
         markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, directory))
       } catch (error) {
@@ -811,6 +848,78 @@ export function consumeLastCreateSessionError(): unknown {
   return error
 }
 
+type SessionCreatePayload = {
+  directory?: string
+  title?: string
+  parentID?: string
+}
+
+type SessionCreateResult = {
+  data?: Session | null
+  error?: unknown
+  response?: {
+    status?: number
+  }
+}
+
+function readErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined
+  }
+  const candidate = error as {
+    status?: unknown
+    response?: { status?: unknown }
+    cause?: { status?: unknown; response?: { status?: unknown } }
+  }
+  const status = candidate.status
+    ?? candidate.response?.status
+    ?? candidate.cause?.status
+    ?? candidate.cause?.response?.status
+  return typeof status === "number" ? status : undefined
+}
+
+function stringifyErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message.length > 0) {
+      return message
+    }
+  }
+  return String(error)
+}
+
+function createSessionCreateError(error: unknown, status?: number): Error {
+  const message = stringifyErrorMessage(error)
+  const formatted = new Error(status ? `session.create failed (${status}): ${message}` : `session.create failed: ${message}`)
+  if (status !== undefined) {
+    (formatted as Error & { status?: number }).status = status
+  }
+  return formatted
+}
+
+function isTransientSessionCreateError(error: unknown): boolean {
+  const status = readErrorStatus(error)
+  if (typeof status === "number" && status >= 500 && status < 600) {
+    return true
+  }
+  const message = stringifyErrorMessage(error).toLowerCase()
+  return message.includes("opencode is restarting") || isTransientError(error)
+}
+
+async function createSessionViaSdk(payload: SessionCreatePayload): Promise<Session> {
+  const result = await sdk().session.create(payload) as SessionCreateResult
+  if (result.error) {
+    throw createSessionCreateError(result.error, result.response?.status ?? readErrorStatus(result.error))
+  }
+  if (!result.data) {
+    throw createSessionCreateError("returned no data", result.response?.status)
+  }
+  return result.data
+}
+
 export async function createSession(
   title?: string,
   directoryOverride?: string | null,
@@ -832,13 +941,19 @@ export async function createSessionRecord(
 ): Promise<Session | null> {
   try {
     lastCreateSessionError = null
-    const result = await sdk().session.create({
-      directory: directoryOverride ?? dir(),
-      title,
-      parentID: parentID ?? undefined,
-    })
-    const session = result.data
-    if (!session) return null
+    const session = await retry(
+      () => createSessionViaSdk({
+        directory: directoryOverride ?? dir(),
+        title,
+        parentID: parentID ?? undefined,
+      }),
+      {
+        attempts: SESSION_CREATE_RETRY_ATTEMPTS,
+        delay: SESSION_CREATE_RETRY_DELAY_MS,
+        maxDelay: SESSION_CREATE_RETRY_MAX_DELAY_MS,
+        retryIf: isTransientSessionCreateError,
+      },
+    )
 
     const sessionDirectory = (session as { directory?: string }).directory ?? directoryOverride ?? null
     // Register hidden-session intent BEFORE upserting into the global store so
@@ -1130,12 +1245,15 @@ export async function optimisticSend(input: {
   send: (messageID: string) => Promise<void>
   onMessageID?: (messageID: string) => void
   onMessageRollback?: (messageID: string) => void
+  signal?: AbortSignal
 }): Promise<void> {
   if (!_optimisticAdd || !_optimisticRemove) {
     throw new Error("Optimistic refs not set — is useSync() mounted?")
   }
 
+  throwIfAborted(input.signal)
   await waitForConnectionOrThrow()
+  throwIfAborted(input.signal)
 
   const messageDirectory = input.directory || useSessionUIStore.getState().getDirectoryForSession(input.sessionId) || dir()
   const storeForMessage = directoryStore(messageDirectory)
@@ -1180,6 +1298,7 @@ export async function optimisticSend(input: {
   input.onMessageID?.(messageID)
 
   const revertRollback = commitRevertBeforeNewSend(storeForMessage, input.sessionId)
+  beginCommittedRevertResend(input.sessionId, revertRollback?.committedMessageID)
 
   // Insert into store + register in shadow Map (for mergeOptimisticPage cleanup)
   _optimisticAdd({
@@ -1224,6 +1343,7 @@ export async function optimisticSend(input: {
   })
 
   try {
+    throwIfAborted(input.signal)
     await input.send(messageID)
   } catch (error) {
     // Rollback via optimistic infrastructure
@@ -1242,6 +1362,8 @@ export async function optimisticSend(input: {
       },
     })
     throw error
+  } finally {
+    endCommittedRevertResend(input.sessionId, revertRollback?.committedMessageID)
   }
 }
 
@@ -1252,7 +1374,9 @@ export async function optimisticSend(input: {
 export async function abortCurrentOperation(sessionId: string): Promise<void> {
   if (!sessionId) return
   const sessionDirectory = getSessionDirectory(sessionId)
+  useSessionUIStore.getState().abortPendingSend?.(sessionId)
   try {
+    postAbortRequestedMark(sessionId, sessionDirectory)
     await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
     markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, sessionDirectory))
   } catch (error) {
@@ -1266,6 +1390,7 @@ export async function interruptCurrentOperationForQueuedSend(sessionId: string):
   const status = getSessionStatusForAction(sessionId, sessionDirectory)
   if (status?.type === "idle") return
 
+  postAbortRequestedMark(sessionId, sessionDirectory)
   await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
   markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, sessionDirectory))
   await waitForSessionIdleAfterQueuedInterrupt(sessionId, sessionDirectory)
@@ -1466,9 +1591,6 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
     }
   }
 
-  // Restore reverted message text and non-synthetic file attachments to input.
-  restoreUserMessageInput(targetParts, messageText)
-
   // Call SDK and merge authoritative result into store
   try {
     const result = await opencodeClient.revertSessionScoped(sessionId, messageId, sessionDirectory)
@@ -1491,6 +1613,10 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
       } else {
         store.setState({ revert_transaction: nextRevertTransactions })
       }
+      // Restore reverted message text and non-synthetic file attachments only
+      // after the safe scoped revert is acknowledged. If the server rejects the
+      // revert, the visible messages and the user's existing draft stay aligned.
+      restoreUserMessageInput(targetParts, messageText)
     }
   } catch (err) {
     // Rollback: restore removed messages + revert marker

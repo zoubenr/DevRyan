@@ -5,6 +5,7 @@ import type { MessageStreamPhase } from '@/stores/types/sessionTypes';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectorySync, useSessionPermissions, useSessionQuestions, useSessionStatus } from '@/sync/sync-context';
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
+import { postRendererTurnTimingMark } from '@/stores/utils/streamDebug';
 import { getAssistantToolStatusPhrase } from './assistantStatusFormatting';
 import { useSessionActivity } from './useSessionActivity';
 
@@ -475,6 +476,20 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             retryInfo: null,
         };
     }, [baseWorking, sessionPermissionRequests, sessionQuestionRequests]);
+
+    React.useEffect(() => {
+        if (!effectiveSessionId || working.isWorking || currentSessionStatus?.type !== 'idle') {
+            return;
+        }
+
+        postRendererTurnTimingMark({
+            sessionId: effectiveSessionId,
+            assistantMessageId: lastAssistantId ?? undefined,
+            mark: 'renderer_status_idle_visible',
+            directory: effectiveDirectory ?? undefined,
+            metadata: { source: 'useAssistantStatus' },
+        });
+    }, [currentSessionStatus?.type, effectiveDirectory, effectiveSessionId, lastAssistantId, working.isWorking]);
 
     return {
         forming,

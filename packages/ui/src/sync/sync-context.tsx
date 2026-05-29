@@ -24,7 +24,7 @@ import {
 } from "./live-aggregate"
 import { bootstrapGlobal, bootstrapDirectory } from "./bootstrap"
 import { retry } from "./retry"
-import { updateStreamingState } from "./streaming"
+import { updateStreamingState, useStreamingStore } from "./streaming"
 import { isSessionWorkingFromState } from "./session-working"
 import { setActionRefs } from "./session-actions"
 import { setSyncRefs } from "./sync-refs"
@@ -52,6 +52,7 @@ import { useConfigStore } from "@/stores/useConfigStore"
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
 import { useUIStore } from "@/stores/useUIStore"
 import {
+  postRendererTurnTimingMark,
   responsivenessPerfCount,
   responsivenessPerfObserve,
   streamDebugEnabled,
@@ -122,13 +123,35 @@ const rememberFirstAssistantDeltaMark = (messageID: string): void => {
   }
 }
 
-const markFirstAssistantDeltaForDebug = (state: State, payload: Event): void => {
-  if (!streamDebugEnabled() || payload.type !== "message.part.delta") {
+const markFirstAssistantStreamForDebug = (state: State, payload: Event): void => {
+  if (!streamDebugEnabled()) {
     return
   }
 
-  const props = payload.properties as { messageID?: unknown; partID?: unknown; field?: unknown }
-  const messageID = typeof props.messageID === "string" ? props.messageID : ""
+  let messageID = ""
+  let partID: string | undefined
+  let field: string | undefined
+  let eventType: "message.part.delta" | "message.part.updated" | null = null
+
+  if (payload.type === "message.part.delta") {
+    const props = payload.properties as { messageID?: unknown; partID?: unknown; field?: unknown }
+    messageID = typeof props.messageID === "string" ? props.messageID : ""
+    partID = typeof props.partID === "string" ? props.partID : undefined
+    field = typeof props.field === "string" ? props.field : undefined
+    eventType = "message.part.delta"
+  } else if (payload.type === "message.part.updated") {
+    const part = (payload.properties as { part?: { messageID?: string; id?: string; type?: string } }).part
+    if (!part || (part.type !== "text" && part.type !== "reasoning")) {
+      return
+    }
+    messageID = typeof part.messageID === "string" ? part.messageID : ""
+    partID = typeof part.id === "string" ? part.id : undefined
+    field = "text"
+    eventType = "message.part.updated"
+  } else {
+    return
+  }
+
   if (!messageID || firstAssistantDeltaMarkedMessages.has(messageID)) {
     return
   }
@@ -142,12 +165,82 @@ const markFirstAssistantDeltaForDebug = (state: State, payload: Event): void => 
       return
     }
     rememberFirstAssistantDeltaMark(messageID)
-    streamDebugMark("first-reply-first-assistant-delta", {
+    streamDebugMark("first-reply-first-assistant-stream", {
       messageID,
-      partID: typeof props.partID === "string" ? props.partID : undefined,
-      field: typeof props.field === "string" ? props.field : undefined,
+      partID,
+      field,
+      eventType,
+    })
+    if (eventType === "message.part.delta") {
+      streamDebugMark("first-reply-first-assistant-delta", {
+        messageID,
+        partID,
+        field,
+      })
+    }
+    return
+  }
+}
+
+const isTerminalAssistantInfo = (info: Message | undefined): info is Message => {
+  if (!info || info.role !== "assistant") return false
+  const finish = (info as { finish?: unknown }).finish
+  const completed = (info.time as { completed?: unknown } | undefined)?.completed
+  return typeof completed === "number" || (typeof finish === "string" && finish.length > 0)
+}
+
+const markRendererReducedEvent = (
+  payload: Event,
+  directory: string,
+  state: State,
+  routingIndex: EventRoutingIndex,
+): void => {
+  if (payload.type === "message.updated") {
+    const info = (payload.properties as { info?: Message }).info
+    if (!isTerminalAssistantInfo(info)) {
+      return
+    }
+    postRendererTurnTimingMark({
+      sessionId: info.sessionID,
+      assistantMessageId: info.id,
+      mark: "renderer_assistant_completion_observed",
+      directory,
+      metadata: { source: "message.updated" },
     })
     return
+  }
+
+  if (payload.type === "message.part.updated") {
+    const part = (payload.properties as { part?: Part }).part
+    if (!part || (part.type !== "text" && part.type !== "reasoning")) {
+      return
+    }
+    const messageID = (part as { messageID?: string }).messageID
+    if (!messageID) {
+      return
+    }
+    postRendererTurnTimingMark({
+      sessionId: (part as { sessionID?: string }).sessionID ?? resolveSessionIdForMessage(state, routingIndex, messageID) ?? undefined,
+      assistantMessageId: messageID,
+      mark: "renderer_first_assistant_part_reduced",
+      directory,
+      metadata: { source: "message.part.updated" },
+    })
+    return
+  }
+
+  if (payload.type === "message.part.delta") {
+    const props = payload.properties as { messageID?: string; sessionID?: string }
+    if (!props.messageID) {
+      return
+    }
+    postRendererTurnTimingMark({
+      sessionId: props.sessionID ?? resolveSessionIdForMessage(state, routingIndex, props.messageID) ?? undefined,
+      assistantMessageId: props.messageID,
+      mark: "renderer_first_assistant_part_reduced",
+      directory,
+      metadata: { source: "message.part.delta" },
+    })
   }
 }
 
@@ -648,7 +741,29 @@ async function detectAndMarkPlanLifecycle(
     implementedPlanRequests: sessionUI.implementedPlanRequests,
   })
 
-  if (shouldDetectTurnCompletion && !isViewedInCurrentSession(directory, sessionID)) {
+  const turnCandidate = shouldDetectTurnCompletion && !completedCandidate
+    ? detectTurnCompletedCandidate({
+        sessionID,
+        state,
+        isRecordedPlanModeUserMessage: (messageId) => sessionUI.isUserMessagePlanMode(messageId),
+        planEntry,
+      })
+    : null
+
+  const isViewed = isViewedInCurrentSession(directory, sessionID)
+  const turnCandidateMatchesTrigger = turnCandidate && (!completionMessageId || turnCandidate.completedMessageId === completionMessageId)
+
+  if (turnCandidateMatchesTrigger && !isViewed) {
+    sessionUI.markSessionTurnCompleted(
+      sessionID,
+      turnCandidate.completedMessageId,
+      getMessageCompletedAt(state, sessionID, turnCandidate.completedMessageId),
+    )
+  } else if (turnCandidateMatchesTrigger && isViewed) {
+    sessionUI.clearReadCompletionIndicators([sessionID])
+  }
+
+  if (shouldDetectTurnCompletion && !isViewed) {
     const session = state.session.find((item) => item.id === sessionID)
     const isSubtask = Boolean((session as (Session & { parentID?: string | null }) | undefined)?.parentID)
     const shouldRecordCompletion = !isSubtask || useUIStore.getState().notifyOnSubtasks
@@ -665,14 +780,7 @@ async function detectAndMarkPlanLifecycle(
         viewed: false,
         type: "turn-complete",
       })
-    } else if (shouldRecordCompletion) {
-      const turnCandidate = detectTurnCompletedCandidate({
-        sessionID,
-        state,
-        isRecordedPlanModeUserMessage: (messageId) => sessionUI.isUserMessagePlanMode(messageId),
-        planEntry,
-      })
-
+    } else if (shouldRecordCompletion && turnCandidate) {
       if (turnCandidate && (!completionMessageId || turnCandidate.completedMessageId === completionMessageId)) {
         appendNotification({
           directory,
@@ -688,6 +796,9 @@ async function detectAndMarkPlanLifecycle(
 
   if (completedCandidate) {
     sessionUI.markPlanCompleted(sessionID, completedCandidate.sourceMessageId)
+    if (isViewed) {
+      useSessionUIStore.getState().clearReadCompletionIndicators([sessionID])
+    }
   }
 
   const candidate = detectPlanProposedCandidate({
@@ -754,6 +865,18 @@ function isIdleSessionStatusEvent(payload: Event): boolean {
   if (payload.type !== "session.status") return false
   const props = payload.properties as { status?: SessionStatus } | undefined
   return props?.status?.type === "idle"
+}
+
+function isActiveSessionStatusEvent(payload: Event): boolean {
+  if (payload.type !== "session.status") return false
+  const props = payload.properties as { status?: SessionStatus } | undefined
+  return props?.status?.type === "busy" || props?.status?.type === "retry"
+}
+
+function getMessageCompletedAt(state: State, sessionID: string, messageID: string): number | undefined {
+  const message = state.message[sessionID]?.find((candidate) => candidate.id === messageID)
+  const completedAt = (message?.time as { completed?: unknown } | undefined)?.completed
+  return typeof completedAt === "number" && completedAt > 0 ? completedAt : undefined
 }
 
 function isRecentBoot() {
@@ -1679,7 +1802,7 @@ function handleEvent(
   // type will mutate. This preserves reference identity for untouched slices
   // so Zustand selectors skip re-renders for unrelated subscribers.
   const current = store.getState()
-  markFirstAssistantDeltaForDebug(current, payload)
+  markFirstAssistantStreamForDebug(current, payload)
   const draft: State = { ...current }
   const sessionUpdateInfo = payload.type === "session.updated"
     ? (payload.properties as { info?: Session }).info
@@ -1765,6 +1888,7 @@ function handleEvent(
 
   if (reducerChanged) {
     store.setState(draft)
+    markRendererReducedEvent(payload, resolvedDirectory, store.getState(), routingIndex)
     if (sessionUpdateInfo?.id) {
       if (sessionUpdateInfo.time?.archived) {
         markArchived(sessionUpdateInfo.id, resolvedDirectory)
@@ -1809,6 +1933,15 @@ function handleEvent(
   }
 
   replayPendingPartDeltasForEvent(resolvedDirectory, payload, store)
+
+  const activeStatusSessionId = isActiveSessionStatusEvent(payload) ? getSessionIdFromPayload(payload) : null
+  if (activeStatusSessionId) {
+    void import("./session-ui-store")
+      .then(({ useSessionUIStore }) => {
+        useSessionUIStore.getState().clearSessionTurnCompletion(activeStatusSessionId)
+      })
+      .catch(() => undefined)
+  }
 
   if (
     payload.type === "session.idle"
@@ -2766,8 +2899,14 @@ export function useIsSessionWorking(sessionID: string, directory?: string): bool
   const status = useSessionStatus(sessionID, directory)
   const permissions = useSessionPermissions(sessionID, directory)
   const messages = useSessionMessages(sessionID, directory)
+  const liveStreamingMessageId = useStreamingStore(
+    React.useCallback(
+      (state) => state.streamingMessageIds.get(sessionID) ?? null,
+      [sessionID],
+    ),
+  )
 
   return useMemo(() => {
-    return isSessionWorkingFromState({ status, permissions, messages })
-  }, [status, permissions, messages])
+    return isSessionWorkingFromState({ status, permissions, messages, liveStreamingMessageId })
+  }, [status, permissions, messages, liveStreamingMessageId])
 }

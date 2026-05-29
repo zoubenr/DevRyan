@@ -16,11 +16,11 @@ describe('VS Code tools runtime API', () => {
       await expect(api.getAvailableTools()).resolves.toEqual(['patch', 'task']);
       await expect(api.getToolManifest()).resolves.toEqual({
         tools: [
-          { id: 'patch', aliases: ['edit', 'write', 'patch'], sourceRuntime: 'vscode', directory: '/workspace' },
+          { id: 'patch', aliases: ['edit', 'write', 'patch', 'apply_patch'], sourceRuntime: 'vscode', directory: '/workspace' },
           { id: 'task', aliases: ['task'], sourceRuntime: 'vscode', directory: '/workspace' },
         ],
         aliases: {
-          patch: ['edit', 'write', 'patch'],
+          patch: ['edit', 'write', 'patch', 'apply_patch'],
           task: ['task'],
         },
         sourceRuntime: 'vscode',

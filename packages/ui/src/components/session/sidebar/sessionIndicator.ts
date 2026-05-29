@@ -15,6 +15,7 @@ type ResolveSidebarIndicatorOptions = {
   isWorking: boolean;
   hasUnreadStatus: boolean;
   hasUnreadCompletion: boolean;
+  hasCompletedStatus: boolean;
   pendingQuestionCount: number;
   planState: PlanIndicatorState | null;
 };
@@ -22,6 +23,12 @@ type ResolveSidebarIndicatorOptions = {
 type ResolveSidebarWorkingStatusOptions = {
   isWorking: boolean;
   pendingQuestionCount: number;
+};
+
+type ResolveLeadingIndicatorPositionOptions = {
+  hasChildren: boolean;
+  showLeadingStatus: boolean;
+  isPinnedSession: boolean;
 };
 
 const QUESTION_REQUIRED_INDICATOR: SessionIndicator = {
@@ -39,6 +46,11 @@ const PLAN_COMPLETED_INDICATOR: SessionIndicator = {
   labelKey: 'sessions.sidebar.session.status.planCompleted',
 };
 
+const SESSION_COMPLETED_INDICATOR: SessionIndicator = {
+  className: 'bg-status-success',
+  labelKey: 'sessions.sidebar.session.status.completed',
+};
+
 export function resolveSidebarWorkingStatus({
   isWorking,
   pendingQuestionCount,
@@ -52,6 +64,7 @@ export function resolveSidebarIndicator({
   isWorking,
   hasUnreadStatus,
   hasUnreadCompletion,
+  hasCompletedStatus,
   pendingQuestionCount,
   planState,
 }: ResolveSidebarIndicatorOptions): SessionIndicator | null {
@@ -67,11 +80,24 @@ export function resolveSidebarIndicator({
     return PLAN_READY_INDICATOR;
   }
 
-  if (!hasUnreadStatus) return null;
-
-  if (hasUnreadCompletion) {
+  if (planState === 'completed') {
     return PLAN_COMPLETED_INDICATOR;
   }
 
+  if (hasCompletedStatus || (hasUnreadStatus && hasUnreadCompletion)) {
+    return SESSION_COMPLETED_INDICATOR;
+  }
+
   return null;
+}
+
+export function resolveLeadingIndicatorPositionClasses({
+  hasChildren,
+  showLeadingStatus,
+  isPinnedSession,
+}: ResolveLeadingIndicatorPositionOptions): string {
+  if (showLeadingStatus && isPinnedSession) return 'left-[-34px] w-6';
+  if (showLeadingStatus) return 'left-[-24px] w-3.5';
+  if (hasChildren && isPinnedSession) return 'left-[-18px] w-3.5';
+  return 'left-[-10px] w-3.5';
 }

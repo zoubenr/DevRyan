@@ -4,6 +4,7 @@ import type { Agent } from '@opencode-ai/sdk/v2';
 import {
     formatAgentLabel,
     formatVisibleEffortLabel,
+    getCursorAcpVariantDisplayLabel,
     getCursorAcpVariantState,
     getCycledPrimaryAgentName,
     resolveCursorAcpVariantSelection,
@@ -175,10 +176,27 @@ describe('Cursor ACP variant helpers', () => {
         expect(state?.fastEnabled).toBe(false);
         expect(state?.canToggleThinking).toBe(false);
         expect(state?.visibleVariantOptions).toEqual([]);
+        expect(getCursorAcpVariantDisplayLabel(state)).toBe('Default');
+        const fastState = getCursorAcpVariantState(provider, 'composer-2.5-fast', undefined);
+        expect(fastState?.fastEnabled).toBe(true);
+        expect(getCursorAcpVariantDisplayLabel(fastState)).toBeNull();
         expect(resolveCursorAcpVariantSelection(provider, 'composer-2.5', undefined, { fastEnabled: true })).toEqual({
             modelId: 'composer-2.5-fast',
             variant: undefined,
         });
+        expect(resolveCursorAcpVariantSelection(provider, 'composer-2.5-fast', undefined, { fastEnabled: false })).toEqual({
+            modelId: 'composer-2.5',
+            variant: undefined,
+        });
+    });
+
+    test('uses effort labels instead of the fast-only Default fallback when thinking levels exist', () => {
+        const state = getCursorAcpVariantState(provider, 'claude-opus-4-7', undefined);
+
+        expect(state?.canToggleFast).toBe(true);
+        expect(state?.canToggleThinking).toBe(true);
+        expect(state?.visibleVariantOptions).toEqual(['low', 'medium', 'high']);
+        expect(getCursorAcpVariantDisplayLabel(state)).toBe('Medium');
     });
 
     test('hides paired Composer 2.5 Fast row from visible model lists', () => {

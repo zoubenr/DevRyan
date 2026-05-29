@@ -18,4 +18,13 @@ describe('MessageHeader', () => {
         );
         expect(code).toContain('className="agent-badge-combined max-w-[300px]"');
     });
+
+    test('passes a warning-colored fast icon as separate badge metadata', () => {
+        const code = source();
+
+        expect(code).toContain('fastEnabled?: boolean');
+        expect(code).toContain('RiFlashlightFill');
+        expect(code).toContain('trailingIcon={fastIcon}');
+        expect(code).toContain('text-[var(--status-warning)]');
+    });
 });

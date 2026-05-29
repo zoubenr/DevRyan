@@ -16,6 +16,25 @@ export type RevertAwareState = {
   revert_transaction?: Record<string, RevertTransaction | undefined>
 }
 
+const committedRevertResends = new Set<string>()
+
+const committedRevertResendKey = (sessionID: string, messageID: string): string => `${sessionID}\0${messageID}`
+
+export function beginCommittedRevertResend(sessionID: string, messageID: string | undefined): void {
+  if (!sessionID || !messageID) return
+  committedRevertResends.add(committedRevertResendKey(sessionID, messageID))
+}
+
+export function endCommittedRevertResend(sessionID: string, messageID: string | undefined): void {
+  if (!sessionID || !messageID) return
+  committedRevertResends.delete(committedRevertResendKey(sessionID, messageID))
+}
+
+export function isCommittedRevertResendInFlight(sessionID: string, messageID: string | undefined): boolean {
+  if (!sessionID || !messageID) return false
+  return committedRevertResends.has(committedRevertResendKey(sessionID, messageID))
+}
+
 export function getSessionRevertMessageID(session: Session | undefined): string | undefined {
   return (session as (Session & { revert?: { messageID?: string } }) | undefined)?.revert?.messageID
 }

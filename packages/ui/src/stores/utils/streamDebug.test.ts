@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import {
   getResponsivenessPerfSnapshot,
+  postRendererTurnTimingMark,
   postTurnTimingMark,
   responsivenessPerfObserve,
   resetStreamPerf,
@@ -125,6 +126,50 @@ describe("stream responsiveness diagnostics", () => {
           mark: "send_started",
           directory: "/project",
           metadata: { inputMode: "normal" },
+        },
+      },
+    ])
+  })
+
+  test("posts renderer timing marks without prompt or response text", () => {
+    const calls: Array<{ url: string; body: unknown }> = []
+    globalThis.fetch = ((url, init) => {
+      calls.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      })
+      return Promise.resolve(Response.json({ ok: true }))
+    }) as typeof fetch
+
+    window.localStorage.setItem("openchamber_stream_debug", "1")
+    postRendererTurnTimingMark({
+      sessionId: "ses_1",
+      assistantMessageId: "msg_assistant",
+      mark: "renderer_event_received",
+      directory: "/project",
+      metadata: {
+        runtime: "desktop",
+        transport: "ws",
+        visibilityState: "visible",
+        prompt: "secret prompt",
+        text: "secret response",
+        delta: "secret token",
+      },
+    })
+
+    expect(calls).toEqual([
+      {
+        url: "/api/diagnostics/turn-timing/mark",
+        body: {
+          sessionId: "ses_1",
+          assistantMessageId: "msg_assistant",
+          mark: "renderer_event_received",
+          directory: "/project",
+          metadata: {
+            runtime: "desktop",
+            transport: "ws",
+            visibilityState: "visible",
+          },
         },
       },
     ])

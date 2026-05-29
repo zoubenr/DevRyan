@@ -66,6 +66,62 @@ describe('VS Code skill discovery', () => {
   });
 });
 
+describe('VS Code plugin discovery', () => {
+  let tempHome;
+  let originalHome;
+
+  afterEach(() => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (tempHome) {
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+    tempHome = undefined;
+    vi.resetModules();
+  });
+
+  const loadRuntime = async () => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-plugins-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = tempHome;
+    vi.resetModules();
+    return import('./opencodeConfig');
+  };
+
+  it('lists existing plugin entries and files without mutating config', async () => {
+    const { listReadonlyPlugins } = await loadRuntime();
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-plugins-project-'));
+    const userConfigPath = path.join(tempHome, '.config', 'opencode', 'opencode.json');
+    const projectConfigPath = path.join(projectDir, '.opencode', 'opencode.json');
+    writeJson(userConfigPath, { plugin: ['user-plugin@1.0.0'] });
+    writeJson(projectConfigPath, { plugin: [['./project-plugin.js', { local: true }]] });
+    fs.mkdirSync(path.join(tempHome, '.config', 'opencode', 'plugins'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, '.opencode', 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(tempHome, '.config', 'opencode', 'plugins', 'user-file.mjs'), '', 'utf8');
+    fs.writeFileSync(path.join(projectDir, '.opencode', 'plugins', 'project-file.ts'), '', 'utf8');
+
+    try {
+      const result = listReadonlyPlugins(projectDir);
+
+      expect(result.entries.map((plugin) => `${plugin.scope}:${plugin.spec}:${plugin.parsedKind}`)).toEqual([
+        'user:user-plugin@1.0.0:npm',
+        'project:./project-plugin.js:path',
+      ]);
+      expect(result.entries[1].options).toEqual({ local: true });
+      expect(result.files.map((pluginFile) => `${pluginFile.scope}:${pluginFile.fileName}`)).toEqual([
+        'user:user-file.mjs',
+        'project:project-file.ts',
+      ]);
+      expect(readJson(userConfigPath)).toEqual({ plugin: ['user-plugin@1.0.0'] });
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('VS Code Cursor SDK config handling', () => {
   let tempHome;
   let originalHome;

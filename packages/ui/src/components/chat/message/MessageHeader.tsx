@@ -1,5 +1,5 @@
 import React from 'react';
-import { RiAiAgentLine, RiBrainAi3Line, RiUser3Line } from '@remixicon/react';
+import { RiAiAgentLine, RiBrainAi3Line, RiFlashlightFill, RiUser3Line } from '@remixicon/react';
 import { cn } from '@/lib/utils';
 import { getAgentColor } from '@/lib/agentColors';
 import { useProviderLogo } from '@/hooks/useProviderLogo';
@@ -14,18 +14,22 @@ interface MessageHeaderProps {
     agentName: string | undefined;
     modelName: string | undefined;
     variant?: string;
+    fastEnabled?: boolean;
     isDarkTheme: boolean;
 }
 
 const capitalizeMetadataLabel = (value: string) => (value.length > 0 ? value[0].toUpperCase() + value.slice(1) : value);
 
-const MessageHeader: React.FC<MessageHeaderProps> = ({ isUser, providerID, modelID, agentName, modelName, variant, isDarkTheme }) => {
+const MessageHeader: React.FC<MessageHeaderProps> = ({ isUser, providerID, modelID, agentName, modelName, variant, fastEnabled = false, isDarkTheme }) => {
     const { providerID: displayProviderID, modelName: displayModelName } = React.useMemo(
         () => getMessageHeaderDisplay({ providerID, modelID, modelName }),
         [modelID, modelName, providerID],
     );
     const { src: logoSrc, onError: handleLogoError, hasLogo } = useProviderLogo(displayProviderID);
     const thinkingLabel = variant ? capitalizeMetadataLabel(variant) : undefined;
+    const fastIcon = fastEnabled ? (
+        <RiFlashlightFill className="h-3 w-3 text-[var(--status-warning)]" aria-label="Fast mode" />
+    ) : null;
     // Keep the provider mark inside the model badge so the row reads: Agent, Model, Thinking.
     const modelBadgeIcon = hasLogo && logoSrc ? (
         <img
@@ -77,6 +81,7 @@ const MessageHeader: React.FC<MessageHeaderProps> = ({ isUser, providerID, model
                                     thinkingLabel={thinkingLabel}
                                     isDefaultThinking={thinkingLabel === 'Default'}
                                     icon={modelBadgeIcon}
+                                    trailingIcon={fastIcon}
                                     className="agent-badge-combined max-w-[300px]"
                                     labelClassName="max-w-[190px]"
                                 />

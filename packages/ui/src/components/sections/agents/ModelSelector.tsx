@@ -23,6 +23,7 @@ import {
     getModelDisplayName,
     splitAntigravityProviderForDisplay,
 } from '@/lib/providers/antigravity';
+import { filterHiddenProviderModels } from '@/lib/providers/modelVisibility';
 import { sortProviderTreeForPicker } from '@/lib/providers/sorting';
 import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
@@ -101,18 +102,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             ? providers.filter((provider) => allowedProviderSet.has(String(provider.id)))
             : providers;
 
-        const filtered = baseProviders
-            .map((provider) => {
-                const providerModels = Array.isArray(provider.models) ? provider.models : [];
-                const filteredModels = providerModels.filter((model: ProviderModel) => {
-                    const modelId = typeof model?.id === 'string' ? model.id : '';
-                    return !hiddenModels.some(
-                        (hidden) => hidden.providerID === String(provider.id) && hidden.modelID === modelId
-                    );
-                });
-                return { ...provider, models: filteredModels };
-            })
-            .filter((provider) => provider.models.length > 0);
+        const filtered = filterHiddenProviderModels(baseProviders, hiddenModels);
         return sortProviderTreeForPicker(splitAntigravityProviderForDisplay(filtered));
     }, [providers, allowedProviderSet, hiddenModels]);
 
@@ -157,10 +147,19 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     };
 
     const selectedModel = React.useMemo(() => {
-        const provider = providers.find((entry) => entry.id === providerId);
-        const providerModels = Array.isArray(provider?.models) ? provider.models : [];
-        return providerModels.find((model: ProviderModel) => model.id === modelId);
-    }, [modelId, providerId, providers]);
+        for (const provider of visibleProviders) {
+            const providerModels = Array.isArray(provider.models) ? provider.models : [];
+            const model = providerModels.find((entry: ProviderModel) => (
+                entry.id === modelId
+                && getExecutionProviderId(String(provider.id ?? ''), entry) === providerId
+            ));
+            if (model) {
+                return model;
+            }
+        }
+
+        return undefined;
+    }, [modelId, providerId, visibleProviders]);
 
     const selectedDisplayProviderId = selectedModel
         ? getDisplayProviderId(providerId, selectedModel)

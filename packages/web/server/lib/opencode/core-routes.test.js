@@ -24,6 +24,17 @@ describe('core-routes', () => {
     return { app, dependencies, getShutdownOpts: () => shutdownOpts };
   };
 
+  it('returns health JSON from the /api/health compatibility route', async () => {
+    const { app } = createApp();
+
+    const response = await request(app).get('/api/health');
+
+    expect(response.status).toBe(200);
+    expect(response.type).toBe('application/json');
+    expect(response.body).toMatchObject({ status: 'ok' });
+    expect(response.text).not.toContain('<!doctype html>');
+  });
+
   it('allows shutdown requests without an origin header', async () => {
     const { app, dependencies, getShutdownOpts } = createApp();
 

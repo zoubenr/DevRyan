@@ -138,13 +138,16 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   };
 
-  app.get('/health', (_req, res) => {
+  const sendHealth = (_req, res) => {
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
       ...getHealthSnapshot(),
     });
-  });
+  };
+
+  app.get('/health', sendHealth);
+  app.get('/api/health', sendHealth);
 
   app.post('/api/system/shutdown', (req, res) => {
     const rawOrigin = typeof req.get === 'function' ? req.get('origin') : '';
@@ -471,6 +474,7 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
       req.path.startsWith('/api/config/mcp') ||
       req.path.startsWith('/api/config/settings') ||
       req.path.startsWith('/api/config/skills') ||
+      req.path.startsWith('/api/config/plugins') ||
       req.path.startsWith('/api/auth') ||
       req.path.startsWith('/api/projects') ||
       req.path.startsWith('/api/fs') ||

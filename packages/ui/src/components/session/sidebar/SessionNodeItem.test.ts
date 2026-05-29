@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { hasTreeExpansionStateChange } from './sessionNodeMemo';
 import type { SessionNode } from './types';
@@ -29,5 +32,14 @@ describe('hasTreeExpansionStateChange', () => {
       new Set(['parent']),
       new Set(['parent', 'child']),
     )).toBe(true);
+  });
+});
+
+describe('SessionNodeItem row hover metadata', () => {
+  test('does not render session activity metadata in a row hover tooltip', () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'SessionNodeItem.tsx'), 'utf8');
+
+    expect(source).not.toContain('TooltipContent side="right" sideOffset={8} className="max-w-xs text-left"');
+    expect(source).not.toContain('{sessionUpdatedLabel}</div>');
   });
 });

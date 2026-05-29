@@ -28,7 +28,6 @@ import {
   RiPushpinLine,
   RiShieldLine,
   RiUnpinLine,
-  RiGitBranchLine,
   RiWindowLine,
 } from '@remixicon/react';
 import { cn } from '@/lib/utils';
@@ -45,12 +44,12 @@ import { useSync } from '@/sync/use-sync';
 import { useViewportStore } from '@/sync/viewport-store';
 import { DraggableSessionRow } from './sessionFolderDnd';
 import type { SessionNode, SessionSummaryMeta } from './types';
-import { formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText, resolveSessionDiffStats } from './utils';
+import { formatSessionCompactDateLabel, normalizePath, renderHighlightedText, resolveSessionDiffStats } from './utils';
 import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
 import { useI18n } from '@/lib/i18n';
 import type { PlanIndicatorState } from '@/sync/plan-indicator';
 import { useNotificationStore } from '@/sync/notification-store';
-import { resolveSidebarIndicator, resolveSidebarWorkingStatus } from './sessionIndicator';
+import { resolveLeadingIndicatorPositionClasses, resolveSidebarIndicator, resolveSidebarWorkingStatus } from './sessionIndicator';
 import type { SessionIndicator } from './sessionIndicator';
 import { useSessionLifecycleStatus } from '@/hooks/useSessionLifecycleStatus';
 import { SidebarSpinner } from './SidebarSpinner';
@@ -294,7 +293,6 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     mobileVariant,
     alwaysShowActions,
     renderSessionNode,
-    secondaryMeta,
     renderContext = 'project',
   } = props;
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
@@ -410,6 +408,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       return state.sessionPlanIndicator.get(session.id)?.state ?? null;
     }, [isRootSession, session.id]),
   );
+  const hasCompletedStatus = useSessionUIStore(
+    React.useCallback((state) => {
+      if (!isRootSession) return false;
+      return state.sessionCompletionIndicator.has(session.id);
+    }, [isRootSession, session.id]),
+  );
   // Plan-proposed transitions are owned by the sync layer (sync-context.tsx
   // → detectAndMarkPlanProposed on session.idle). This component only reads
   // the indicator state; it does not trigger transitions.
@@ -426,10 +430,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const sessionHasUnreadCompletion = useNotificationStore(
     React.useCallback((state) => state.index.session.unseenHasCompletion[session.id] ?? false, [session.id]),
   );
-  const sessionSummary = resolvedSession.summary as SessionSummaryMeta | undefined;
-  const sessionDiffStats = resolveSessionDiffStats(sessionSummary);
   const sessionTimestamp = userActivityTimestamp ?? resolvedSession.time?.updated ?? resolvedSession.time?.created ?? Date.now();
-  const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
   const sessionCompactUpdatedLabel = formatSessionCompactDateLabel(sessionTimestamp);
   const isMenuOpen = openSidebarMenuKey === menuInstanceKey;
   const workingStatusPaddingClass = sidebarIsWorking ? 'pr-6' : '';
@@ -579,6 +580,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     isWorking: sidebarIsWorking,
     hasUnreadStatus: scopedUnseenCount > 0,
     hasUnreadCompletion,
+    hasCompletedStatus,
     pendingQuestionCount,
     planState: effectivePlanIndicatorState,
   });
@@ -621,10 +623,11 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     <span
       className={cn(
         'pointer-events-none absolute inline-flex h-3.5 items-center justify-center gap-0.5 transition-opacity top-1/2 -translate-y-1/2',
-        hasChildren && showLeadingStatus && isPinnedSession ? 'left-[-34px] w-6' : '',
-        hasChildren && showLeadingStatus && !isPinnedSession ? 'left-[-24px] w-3.5' : '',
-        !(hasChildren && showLeadingStatus) && showLeadingStatus && isPinnedSession ? 'left-[-18px] w-6' : '',
-        !(hasChildren && showLeadingStatus) && !(showLeadingStatus && isPinnedSession) ? 'left-[-10px] w-3.5' : '',
+        resolveLeadingIndicatorPositionClasses({
+          hasChildren,
+          showLeadingStatus,
+          isPinnedSession,
+        }),
       )}
     >
       {leadingStatusMarker}
@@ -891,73 +894,51 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           {leadingIndicators}
           {subsessionChevron}
           <div className="flex min-w-0 flex-1 items-center">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  disabled={isMissingDirectory}
-                  onPointerDown={handleRowPointerDown}
-                  onPointerUp={handleRowPointerEnd}
-                  onPointerCancel={handleRowPointerEnd}
-                  onMouseDown={handleRowMouseDown}
-                  onAuxClick={handleRowAuxClick}
-                  onClick={(event) => handleRowSelect(event)}
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    handleSessionDoubleClick();
-                  }}
-                  className={cn(
-                    'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none disabled:cursor-not-allowed transition-[padding]',
-                    isTouchPressed && 'bg-interactive-hover/70',
-                    alwaysShowActions
-                      ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
-                      : revealPaddingClass,
-                    alwaysShowActions && !isVSCode ? '' : workingStatusPaddingClass,
-                  )}
-                >
-                  <div className="flex w-full items-center min-w-0 flex-1 overflow-hidden gap-1">
-                    <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : 'text-foreground')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
-                    {alwaysShowActions ? <span className="ml-2 flex-shrink-0 text-[0.72rem] text-muted-foreground/75">{sessionCompactUpdatedLabel}</span> : null}
-                    {!alwaysShowActions ? (
-                      <div className="relative ml-1 flex h-4 min-w-4 flex-shrink-0 items-center justify-end">
-                        <span className={cn(
-                          'whitespace-nowrap text-right text-[0.72rem] text-muted-foreground/75 transition-opacity duration-150',
-                          isMenuOpen
-                            ? 'opacity-0'
-                            : hideOnHoverClass,
-                        )}>
-                          {sessionCompactUpdatedLabel}
-                        </span>
-                      </div>
-                    ) : null}
-                    {pendingPermissionCount > 0 ? (
-                      <span className="inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
-                        <RiShieldLine className="h-3 w-3" />
-                        <span className="leading-none">{pendingPermissionCount}</span>
-                      </span>
-                    ) : null}
+            <button
+              type="button"
+              disabled={isMissingDirectory}
+              onPointerDown={handleRowPointerDown}
+              onPointerUp={handleRowPointerEnd}
+              onPointerCancel={handleRowPointerEnd}
+              onMouseDown={handleRowMouseDown}
+              onAuxClick={handleRowAuxClick}
+              onClick={(event) => handleRowSelect(event)}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                handleSessionDoubleClick();
+              }}
+              className={cn(
+                'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 text-foreground select-none disabled:cursor-not-allowed transition-[padding]',
+                isTouchPressed && 'bg-interactive-hover/70',
+                alwaysShowActions
+                  ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
+                  : revealPaddingClass,
+                alwaysShowActions && !isVSCode ? '' : workingStatusPaddingClass,
+              )}
+            >
+              <div className="flex w-full items-center min-w-0 flex-1 overflow-hidden gap-1">
+                <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : 'text-foreground')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
+                {alwaysShowActions ? <span className="ml-2 flex-shrink-0 text-[0.72rem] text-muted-foreground/75">{sessionCompactUpdatedLabel}</span> : null}
+                {!alwaysShowActions ? (
+                  <div className="relative ml-1 flex h-4 min-w-4 flex-shrink-0 items-center justify-end">
+                    <span className={cn(
+                      'whitespace-nowrap text-right text-[0.72rem] text-muted-foreground/75 transition-opacity duration-150',
+                      isMenuOpen
+                        ? 'opacity-0'
+                        : hideOnHoverClass,
+                    )}>
+                      {sessionCompactUpdatedLabel}
+                    </span>
                   </div>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8} className="max-w-xs text-left">
-                <div className="flex flex-col gap-1 text-left text-xs">
-                  <div className={cn('flex items-center gap-3 text-left text-muted-foreground', secondaryMeta?.projectLabel ? 'justify-between' : 'justify-start')}>
-                    {secondaryMeta?.projectLabel ? <div className="min-w-0 truncate">{secondaryMeta.projectLabel}</div> : null}
-                    <div className="flex-shrink-0">{sessionUpdatedLabel}</div>
-                  </div>
-                  {secondaryMeta?.branchLabel || sessionDiffStats ? (
-                    <div className={cn('flex items-center gap-3 text-left text-muted-foreground', secondaryMeta?.branchLabel ? 'justify-between' : 'justify-start')}>
-                      {secondaryMeta?.branchLabel ? (
-                        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                          <span className="inline-flex min-w-0 items-center gap-0.5"><RiGitBranchLine className="h-3 w-3 flex-shrink-0" /><span className="truncate">{secondaryMeta.branchLabel}</span></span>
-                        </div>
-                      ) : null}
-                      {sessionDiffStats ? <span className="flex flex-shrink-0 items-center gap-0.5"><span className="text-status-success">+{sessionDiffStats.additions}</span><span className="text-status-error">-{sessionDiffStats.deletions}</span></span> : null}
-                    </div>
-                  ) : null}
-                </div>
-              </TooltipContent>
-            </Tooltip>
+                ) : null}
+                {pendingPermissionCount > 0 ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
+                    <RiShieldLine className="h-3 w-3" />
+                    <span className="leading-none">{pendingPermissionCount}</span>
+                  </span>
+                ) : null}
+              </div>
+            </button>
           </div>
 
           {streamingIndicator && !mobileVariant ? (

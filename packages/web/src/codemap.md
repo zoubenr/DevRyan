@@ -5,7 +5,7 @@ Browser bootstrap layer for the shared UI: wires runtime API adapters, service-w
 
 ## Design
 - **Adapter-first UI boot**: exposes `RuntimeAPIs` on `window.__OPENCHAMBER_RUNTIME_APIS__` before loading `@openchamber/ui/main`.
-- **Environment-gated PWA behavior**: production registers SW; development proactively unregisters stale registrations.
+- **Environment-gated PWA behavior**: browser production registers the PWA service worker; desktop/Electron and development startups unregister stale registrations through `pwa-service-worker.ts`.
 - **Thin entrypoint strategy**: app logic lives in shared `@openchamber/ui`; this directory only provides web runtime glue.
 
 ## Flow

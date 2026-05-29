@@ -316,6 +316,11 @@ export interface SessionStore {
     setDraftPreserveDirectoryOverride: (value: boolean) => void;
     closeNewSessionDraft: () => void;
     promoteDraftToSession: (options: { draftId?: string | null; sessionId: string; directoryHint?: string | null; submittedText?: string }) => void;
+    registerPendingSendAbort: (key: string, controller?: AbortController) => AbortController;
+    promotePendingSendAbort: (fromKey: string, toKey: string) => AbortController | null;
+    abortPendingSend: (key: string) => boolean;
+    clearPendingSendAbort: (key: string, controller?: AbortController) => void;
+    hasPendingSendAbort: (key: string) => boolean;
 
     createSession: (title?: string, directoryOverride?: string | null, parentID?: string | null) => Promise<Session | null>;
     createSessionFromAssistantMessage: (sourceMessageId: string) => Promise<void>;

@@ -19,6 +19,7 @@ export type TextLoopProps = {
   onIndexChange?: (index: number) => void;
   trigger?: boolean;
   mode?: AnimatePresenceProps['mode'];
+  reserveSpace?: boolean;
 };
 
 export function TextLoop({
@@ -30,6 +31,7 @@ export function TextLoop({
   onIndexChange,
   trigger = true,
   mode = 'popLayout',
+  reserveSpace = true,
 }: TextLoopProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const items = Children.toArray(children);
@@ -56,12 +58,13 @@ export function TextLoop({
 
   return (
     <div className={cn('relative', className)}>
-      {/* Invisible element to maintain consistent width based on longest item */}
-      <div className="invisible whitespace-nowrap">
-        {items.map((item, i) => (
-          <div key={i} className={i === 0 ? '' : 'absolute'}>{item}</div>
-        ))}
-      </div>
+      {reserveSpace ? (
+        <div className="invisible whitespace-nowrap" aria-hidden="true">
+          {items.map((item, i) => (
+            <div key={i} className={i === 0 ? '' : 'absolute'}>{item}</div>
+          ))}
+        </div>
+      ) : null}
       {/* Animated visible element */}
       <div className="absolute inset-0 flex items-center justify-center">
         <AnimatePresence mode={mode} initial={false}>

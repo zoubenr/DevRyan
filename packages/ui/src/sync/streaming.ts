@@ -38,6 +38,23 @@ export const useStreamingStore = create<StreamingStore>()(() => ({
 /** Only update lastUpdateAt every this many ms to avoid 60Hz store churn */
 const STREAMING_HEARTBEAT_MS = 1000
 
+const isTerminalAssistantMessage = (message: Message | undefined): boolean => {
+  if (!message || message.role !== "assistant") return false
+  const finish = (message as { finish?: unknown }).finish
+  const completed = (message as { time?: { completed?: unknown } }).time?.completed
+  return typeof completed === "number" || (typeof finish === "string" && finish.length > 0)
+}
+
+const hasTerminalAssistantFinish = (message: Message | undefined): boolean => {
+  if (!message || message.role !== "assistant") return false
+  const finish = (message as { finish?: unknown }).finish
+  return typeof finish === "string" && finish.length > 0
+}
+
+const isIncompleteAssistantMessage = (message: Message | undefined): message is Message => (
+  Boolean(message && message.role === "assistant" && !isTerminalAssistantMessage(message))
+)
+
 export function updateStreamingState(state: State) {
   const now = Date.now()
   const currentStore = useStreamingStore.getState()
@@ -64,11 +81,17 @@ export function updateStreamingState(state: State) {
   for (const [sessionID, messages] of Object.entries(state.message)) {
     if (busySessionIds.has(sessionID)) continue
     const status = state.session_status?.[sessionID]
-    if (status && status.type !== "busy") continue
-
     const trailing = messages[messages.length - 1]
-    const completedAt = (trailing as { time?: { completed?: unknown } } | undefined)?.time?.completed
-    if (trailing?.role === "assistant" && typeof completedAt !== "number") {
+
+    if (status && status.type !== "busy") {
+      const currentStreamingId = currentStreamingIds.get(sessionID)
+      if (currentStreamingId && trailing?.id === currentStreamingId && isIncompleteAssistantMessage(trailing)) {
+        busySessionIds.add(sessionID)
+      }
+      continue
+    }
+
+    if (isIncompleteAssistantMessage(trailing)) {
       busySessionIds.add(sessionID)
     }
   }
@@ -103,7 +126,7 @@ export function updateStreamingState(state: State) {
       }
     }
 
-    if (!streamingMsg) {
+    if (!streamingMsg || hasTerminalAssistantFinish(streamingMsg)) {
       const prevId = currentStreamingIds.get(sessionID)
       if (prevId) {
         completeStreamingMessage(sessionID, prevId)

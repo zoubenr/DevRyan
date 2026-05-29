@@ -1,7 +1,7 @@
 # packages/ui/src/components/sections/
 
 ## Responsibility
-Defines settings-domain feature sections (providers, agents, MCP, skills, projects, usage, behavior, commands, remote instances, etc.) with paired sidebar and page content components.
+Defines settings-domain feature sections (providers, agents, MCP, skills, plugins, projects, usage, behavior, commands, remote instances, etc.) with paired sidebar and page content components.
 
 ## Design
 - **Section module pattern**: each section folder commonly exposes `*Sidebar` + `*Page` components consumed by `SettingsView`.

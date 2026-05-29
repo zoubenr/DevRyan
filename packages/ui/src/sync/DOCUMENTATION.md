@@ -107,6 +107,10 @@ Rules:
 1. If an action mutates session list membership or visible session metadata, update `useGlobalSessionsStore` there.
 2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
 3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
+4. Revert/fork input restoration belongs in `session-actions.ts`; for safe scoped revert, restore the clicked prompt/attachments only after the server acknowledges the revert so failed reverts do not leave the input out of sync with visible history.
+5. Draft sends must resolve and validate provider/model/agent selection before creating the backend session. A missing model should keep the draft intact and avoid creating an empty chat.
+6. A foreground send must always target a real session ID. If the UI has no current session and no open draft, `session-ui-store.ts` creates and selects a normal session before optimistic send/routing; never route a prompt with an empty session ID.
+7. Backend session creation retries transient 5xx/startup responses in `createSessionRecord()`. The managed OpenCode server can still be warming up when the web UI is already interactive, so a single `503 OpenCode is restarting` must not strand the user's first prompt.
 
 Examples of global-store updates performed in `session-actions.ts`:
 

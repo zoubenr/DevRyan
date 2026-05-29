@@ -6,6 +6,7 @@ import {
   resolveDefaultAgentName,
   resolveSelectableAgentOptions,
 } from "@/lib/agentSelection"
+import { resolveProviderModelVariant } from "@/lib/providers/variantControls"
 
 export type SendConfig = {
   providerID?: string
@@ -68,6 +69,19 @@ function findProviderModel(providers: SendConfigProvider[], providerID?: string,
   const provider = providers.find((entry) => entry.id === providerID)
   const model = provider?.models?.find((entry) => entry.id === modelID)
   return model ? { provider, model } : null
+}
+
+function resolveVariantForModel(
+  providers: SendConfigProvider[],
+  providerID?: string,
+  modelID?: string,
+  variant?: string | null,
+): string | undefined {
+  const cleanedVariant = clean(variant)
+  const providerModel = findProviderModel(providers, providerID, modelID)
+  if (!providerModel) return cleanedVariant
+
+  return resolveProviderModelVariant(providerModel.provider, modelID, cleanedVariant)
 }
 
 function hasOwn(object: object | null | undefined, key: keyof SendConfig): boolean {
@@ -160,7 +174,7 @@ export function resolveDraftSendSelection(params: {
     agent: agent?.name,
     providerID: providerID ?? "",
     modelID: modelID ?? "",
-    variant,
+    variant: resolveVariantForModel(params.providers, providerID, modelID, variant),
   }
 }
 
@@ -194,11 +208,12 @@ export function resolveSessionSendConfigSnapshot(
     ?? clean(snapshot.currentModelId)
     ?? snapshot.lastUsedProvider?.modelID
 
-  const variant = Object.prototype.hasOwnProperty.call(requested, "variant")
+  const requestedOrStoredVariant = Object.prototype.hasOwnProperty.call(requested, "variant")
     ? requested.variant
     : (agent && providerID && modelID
       ? (snapshot.sessionAgentModelVariant ?? snapshot.contextSessionAgentModelVariant)
       : undefined) ?? clean(snapshot.currentVariant)
+  const variant = resolveVariantForModel(snapshot.providers, providerID, modelID, requestedOrStoredVariant)
 
   return {
     providerID,
@@ -296,7 +311,7 @@ export function resolveCurrentSendConfig(sessionId: string | null | undefined): 
     providerID: config.currentProviderId,
     modelID: config.currentModelId,
     agent: config.currentAgentName ?? undefined,
-    variant: config.currentVariant ?? undefined,
+    variant: resolveVariantForModel(config.providers, config.currentProviderId, config.currentModelId, config.currentVariant),
     planMode: selection.getPlanModeSelection(null),
   }
 }

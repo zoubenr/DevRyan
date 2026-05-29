@@ -1,0 +1,176 @@
+import { describe, expect, test } from 'bun:test';
+
+import {
+  getModelVariantDisplayState,
+  getModelVariantControlState,
+  getOrderedThinkingVariants,
+  resolveProviderModelVariant,
+  resolveModelVariantSelection,
+  resolveThinkingVariant,
+} from './variantControls';
+
+describe('provider variant controls', () => {
+  test('orders concrete thinking variants without inventing a default option', () => {
+    expect(getOrderedThinkingVariants({
+      high: {},
+      low: {},
+      custom: {},
+      none: {},
+      xhigh: {},
+      medium: {},
+      minimal: {},
+    })).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'custom']);
+  });
+
+  test('resolves missing thinking to medium when supported, otherwise the first concrete variant', () => {
+    expect(resolveThinkingVariant(undefined, ['low', 'medium', 'high'])).toBe('medium');
+    expect(resolveThinkingVariant(undefined, ['low', 'high'])).toBe('low');
+    expect(resolveThinkingVariant('stale', ['low', 'medium'])).toBe('medium');
+  });
+
+  test('keeps none visible only when provider metadata advertises it', () => {
+    expect(getOrderedThinkingVariants({ low: {}, medium: {} })).toEqual(['low', 'medium']);
+    expect(getOrderedThinkingVariants({ none: {}, low: {}, medium: {} })).toEqual(['none', 'low', 'medium']);
+  });
+
+  test('derives a fast toggle from an explicit paired fast model and preserves thinking when possible', () => {
+    const provider = {
+      id: 'openai',
+      models: [
+        { id: 'gpt-5.4', variants: { low: {}, medium: {}, high: {} } },
+        { id: 'gpt-5.4-fast', variants: { low: {}, medium: {} } },
+      ],
+    };
+
+    const state = getModelVariantControlState(provider, 'gpt-5.4', undefined);
+
+    expect(state?.visibleVariantOptions).toEqual(['low', 'medium', 'high']);
+    expect(state?.selectedVariant).toBe('medium');
+    expect(state?.canToggleFast).toBe(true);
+    expect(state?.fastEnabled).toBe(false);
+    expect(resolveModelVariantSelection(provider, 'gpt-5.4', 'medium', { fastEnabled: true })).toEqual({
+      modelId: 'gpt-5.4-fast',
+      variant: 'medium',
+    });
+    expect(getModelVariantDisplayState(provider, 'gpt-5.4-fast', 'medium')).toEqual({
+      displayModelId: 'gpt-5.4',
+      fastEnabled: true,
+      selectedVariant: 'medium',
+      visibleVariantOptions: ['low', 'medium'],
+    });
+  });
+
+  test('does not treat mini or nano model families as a fast toggle', () => {
+    const provider = {
+      id: 'openai',
+      models: [
+        { id: 'gpt-5.4-mini', variants: { low: {}, medium: {} } },
+        { id: 'gpt-5.4-nano', variants: { low: {} } },
+      ],
+    };
+
+    const state = getModelVariantControlState(provider, 'gpt-5.4-mini', undefined);
+
+    expect(state?.canToggleFast).toBe(false);
+    expect(state?.fastModelId).toBe(undefined);
+  });
+
+  test('derives an implicit fast toggle for regular OpenAI GPT models without advertised variants', () => {
+    const provider = {
+      id: 'openai',
+      models: [
+        { id: 'gpt-5.5' },
+      ],
+    };
+
+    const state = getModelVariantControlState(provider, 'gpt-5.5', undefined);
+
+    expect(state).toEqual({
+      modelId: 'gpt-5.5',
+      baseModelId: 'gpt-5.5',
+      fastModelId: undefined,
+      fastEnabled: false,
+      canToggleFast: true,
+      selectedVariant: undefined,
+      visibleVariantOptions: [],
+    });
+    expect(resolveModelVariantSelection(provider, 'gpt-5.5', undefined, { fastEnabled: true })).toEqual({
+      modelId: 'gpt-5.5',
+      variant: 'fast',
+    });
+    expect(resolveModelVariantSelection(provider, 'gpt-5.5', 'fast', { fastEnabled: false })).toEqual({
+      modelId: 'gpt-5.5',
+      variant: undefined,
+    });
+    expect(resolveProviderModelVariant(provider, 'gpt-5.5', 'fast')).toBe('fast');
+  });
+
+  test('does not derive implicit OpenAI fast toggles for mini or nano model families', () => {
+    const provider = {
+      id: 'openai',
+      models: [
+        { id: 'gpt-5.5-mini' },
+        { id: 'gpt-5.5-nano' },
+      ],
+    };
+
+    expect(getModelVariantControlState(provider, 'gpt-5.5-mini', undefined)).toBeNull();
+    expect(getModelVariantControlState(provider, 'gpt-5.5-nano', undefined)).toBeNull();
+    expect(resolveProviderModelVariant(provider, 'gpt-5.5-mini', 'fast')).toBe(undefined);
+    expect(resolveProviderModelVariant(provider, 'gpt-5.5-nano', 'fast')).toBe(undefined);
+  });
+
+  test('treats a real fast variant as a toggle instead of a thinking level', () => {
+    const provider = {
+      id: 'custom',
+      models: [
+        { id: 'agent-model', variants: { low: {}, medium: {}, fast: {} } },
+      ],
+    };
+
+    const state = getModelVariantControlState(provider, 'agent-model', 'fast');
+
+    expect(state?.visibleVariantOptions).toEqual(['low', 'medium']);
+    expect(state?.selectedVariant).toBe('medium');
+    expect(state?.fastEnabled).toBe(true);
+    expect(getModelVariantDisplayState(provider, 'agent-model', 'fast')).toEqual({
+      displayModelId: 'agent-model',
+      fastEnabled: true,
+      selectedVariant: 'medium',
+      visibleVariantOptions: ['low', 'medium'],
+    });
+    expect(resolveModelVariantSelection(provider, 'agent-model', 'medium', { fastEnabled: true })).toEqual({
+      modelId: 'agent-model',
+      variant: 'fast',
+    });
+    expect(resolveProviderModelVariant(provider, 'agent-model', 'fast')).toBe('fast');
+  });
+
+  test('drops stale fast variants for paired fast models because fast is represented by model id', () => {
+    const provider = {
+      id: 'custom',
+      models: [
+        { id: 'agent-model', variants: { low: {}, medium: {} } },
+        { id: 'agent-model-fast', variants: { low: {}, medium: {} } },
+      ],
+    };
+
+    expect(resolveModelVariantSelection(provider, 'agent-model', 'medium', { fastEnabled: true })).toEqual({
+      modelId: 'agent-model-fast',
+      variant: 'medium',
+    });
+    expect(resolveProviderModelVariant(provider, 'agent-model', 'fast')).toBe('medium');
+    expect(resolveProviderModelVariant(provider, 'agent-model-fast', 'fast')).toBe('medium');
+  });
+
+  test('drops unsupported fast variants for providers without fast metadata', () => {
+    const provider = {
+      id: 'anthropic',
+      models: [
+        { id: 'claude-sonnet-4-5' },
+      ],
+    };
+
+    expect(resolveProviderModelVariant(provider, 'claude-sonnet-4-5', 'fast')).toBe(undefined);
+  });
+});

@@ -89,6 +89,7 @@ import {
     resolveComposerDraftTarget,
     type ComposerDraftTarget,
 } from './chatInputDraftPersistence';
+import { clearSubmittedComposerAfterSend } from './chatInputSubmitCleanup';
 
 const MAX_VISIBLE_TEXTAREA_LINES = 8;
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -1277,7 +1278,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const hasQueuedMessages = queuedMessages.length > 0;
     const canSend = hasContent || hasQueuedMessages;
 
-    const canAbort = sessionPhase !== 'idle';
+    const pendingSendAbortKey = currentSessionId ?? (currentDraftId && newSessionDraftOpen ? `draft:${currentDraftId}` : null);
+    const hasPendingSendAbort = useSessionUIStore((state) =>
+        pendingSendAbortKey ? state.abortControllers.has(pendingSendAbortKey) : false,
+    );
+    const canAbort = sessionPhase !== 'idle' || hasPendingSendAbort;
 
     const getCurrentInputSnapshot = React.useCallback(() => {
         const currentMessage = textareaRef.current?.value ?? message;
@@ -1591,24 +1596,20 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (!primaryText && primaryAttachments.length === 0 && additionalParts.length === 0) return;
 
         const clearSubmittedComposer = () => {
-            if (queuedOnly) {
-                return;
-            }
-            setMessage('');
-            if (textareaRef.current) {
-                textareaRef.current.value = '';
-            }
-            confirmedMentionsRef.current.clear();
-            // Clear per-session draft on submit
-            clearDraftTargetImmediately(activeDraftTarget);
-            // Reset message history navigation state
-            setHistoryIndex(-1);
-            setDraftMessage('');
-            if (attachedFiles.length > 0) {
-                clearAttachedFiles();
-            }
-            // Close expanded input overlay when submitting
-            setExpandedInput(false);
+            clearSubmittedComposerAfterSend({
+                queuedOnly,
+                attachedFilesCount: attachedFiles.length,
+                textarea: textareaRef.current,
+                clearPendingInputText: () => setPendingInputText(null),
+                clearPendingDraftPersist,
+                setMessage,
+                clearConfirmedMentions: () => confirmedMentionsRef.current.clear(),
+                clearDraftTarget: () => clearDraftTargetImmediately(activeDraftTarget),
+                setHistoryIndex,
+                setDraftMessage,
+                clearAttachedFiles,
+                setExpandedInput,
+            });
         };
 
         if (isMobile) {
@@ -1781,6 +1782,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                         ? error
                         : String(error ?? '');
             const normalized = rawMessage.toLowerCase();
+
+            const isUserAbort =
+                (error instanceof Error && error.name === 'AbortError') ||
+                normalized === 'aborted' ||
+                normalized.includes('aborterror');
+            if (isUserAbort) {
+                return;
+            }
 
             console.error('Message send failed:', rawMessage || error);
 
@@ -2195,8 +2204,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         clearAbortPrompt();
         startAbortIndicator();
 
-        void abortCurrentOperation(currentSessionId || undefined);
-    }, [abortCurrentOperation, clearAbortPrompt, currentSessionId, startAbortIndicator]);
+        const abortKey = currentSessionId ?? (currentDraftId && newSessionDraftOpen ? `draft:${currentDraftId}` : null);
+        if (abortKey) {
+            useSessionUIStore.getState().abortPendingSend(abortKey);
+        }
+        if (currentSessionId) {
+            void abortCurrentOperation(currentSessionId);
+        }
+    }, [abortCurrentOperation, clearAbortPrompt, currentDraftId, currentSessionId, newSessionDraftOpen, startAbortIndicator]);
 
     const handleCycleAgent = React.useCallback(() => {
         const nextAgentName = getCycledPrimaryAgentName(selectableAgentOptions, currentAgentName);

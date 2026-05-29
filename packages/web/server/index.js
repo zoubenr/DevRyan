@@ -73,7 +73,7 @@ import { createTurnTimingRuntime, registerTurnTimingRoutes } from './lib/opencod
 import { createAgentRuntimeWarmup, registerAgentRuntimeWarmupRoute } from './lib/opencode/agent-runtime-warmup.js';
 import { createHarnessPreflight, registerHarnessPreflightRoute } from './lib/opencode/harness-preflight.js';
 import { filterVisibleSkills } from './lib/opencode/skill-policy.js';
-import { getAgentSources, listConfigAgents, listStaleAgentModelOverrides } from './lib/opencode/agents.js';
+import { getAgentConfig, getAgentSources, listConfigAgents, listStaleAgentModelOverrides } from './lib/opencode/agents.js';
 import { listPackagedAgents } from './lib/opencode/packaged-agents.js';
 import {
   findWorktreeRoot,
@@ -120,12 +120,13 @@ const TUNNEL_SESSION_TTL_DEFAULT_MS = 8 * 60 * 60 * 1000;
 const TUNNEL_SESSION_TTL_MIN_MS = 5 * 60 * 1000;
 const TUNNEL_SESSION_TTL_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 const SERVER_TOOL_ALIAS_GROUPS = [
-  ['edit', 'write', 'patch'],
+  ['edit', 'write', 'patch', 'apply_patch'],
   ['read'],
   ['bash'],
   ['task'],
   ['skill'],
   ['question', 'ask', 'input', 'clarification'],
+  ['webfetch'],
 ];
 
 function buildServerHarnessToolManifest(directory) {
@@ -533,6 +534,10 @@ const cursorSdkRuntime = createCursorSdkRuntime({
   env: process.env,
   emitEvent: emitSyntheticOpenCodeEvent,
   logger: console,
+  resolveAgentPrompt: async ({ agent, directory }) => {
+    const result = getAgentConfig(agent, directory);
+    return typeof result?.config?.prompt === 'string' ? result.config.prompt : '';
+  },
 });
 
 const getActiveSessionCount = () => {

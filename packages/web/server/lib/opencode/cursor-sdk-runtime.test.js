@@ -138,6 +138,90 @@ describe('Cursor SDK runtime', () => {
     expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('All tests have passed successfully.');
   });
 
+  it('passes selected Cursor SDK thinking and fast parameters to prompt runs', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let sentModelSelection = null;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      loadSdk: async () => ({
+        Cursor: {
+          models: {
+            list: async () => [
+              {
+                id: 'claude-opus-4-7',
+                displayName: 'Opus 4.7',
+                parameters: [
+                  { id: 'thinking', values: [{ value: 'false' }, { value: 'true' }] },
+                  { id: 'effort', values: [{ value: 'low' }, { value: 'high' }] },
+                  { id: 'fast', values: [{ value: 'false' }, { value: 'true' }] },
+                ],
+                variants: [
+                  {
+                    displayName: 'Opus 4.7',
+                    params: [
+                      { id: 'thinking', value: 'true' },
+                      { id: 'effort', value: 'high' },
+                      { id: 'fast', value: 'true' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      createPromptRun: async ({ modelSelection }) => {
+        sentModelSelection = modelSelection;
+        return {
+          cancel: async () => {},
+          stream: async function* stream() {
+            yield {
+              type: 'message',
+              message: {
+                type: 'assistant',
+                message: {
+                  content: [{ type: 'text', text: 'done' }],
+                },
+              },
+            };
+          },
+        };
+      },
+    });
+
+    await runtime.getVirtualProvider();
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_1',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'claude-opus-4-7-fast' },
+        variant: 'thinking-high',
+        messageID: 'msg_e999_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_1');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(sentModelSelection).toEqual({
+      id: 'claude-opus-4-7',
+      params: [
+        { id: 'thinking', value: 'true' },
+        { id: 'effort', value: 'high' },
+        { id: 'fast', value: 'true' },
+      ],
+    });
+  });
+
   it('uses the direct Cursor SDK wait result when the stream remains open', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     const runtime = createCursorSdkRuntime({
@@ -183,6 +267,145 @@ describe('Cursor SDK runtime', () => {
     expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
     expect(records?.[1]?.info.finish).toBe('stop');
     expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('Final result from wait.');
+  });
+
+  it('streams Cursor SDK onDelta text before the final wait result', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const emitted = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (payload) => emitted.push(payload),
+      loadSdk: async () => ({
+        Agent: {
+          create: async () => ({
+            agentId: 'agent-test',
+            send: async (_message, options = {}) => {
+              setTimeout(() => {
+                options.onDelta?.({
+                  update: {
+                    type: 'text-delta',
+                    text: 'First streamed chunk. ',
+                  },
+                });
+              }, 5);
+              return {
+                stream: async function* stream() {
+                  await new Promise(() => {});
+                },
+                wait: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                  return {
+                    status: 'finished',
+                    result: 'First streamed chunk. Final answer.',
+                  };
+                },
+              };
+            },
+          }),
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_delta_stream',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        messageID: 'msg_delta_stream_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_delta_stream');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistantTextEvents = emitted.filter((event) => (
+      event?.type === 'message.part.updated'
+      && event.properties?.part?.messageID === 'msg_delta_stream_user_assistant'
+      && event.properties?.part?.type === 'text'
+    ));
+    expect(assistantTextEvents[0]?.properties?.part?.text).toBe('First streamed chunk. ');
+    expect(assistantTextEvents.at(-1)?.properties?.part?.text).toBe('First streamed chunk. Final answer.');
+  });
+
+  it('deduplicates Cursor onDelta text mirrored by the legacy stream', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const emitted = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (payload) => emitted.push(payload),
+      loadSdk: async () => ({
+        Agent: {
+          create: async () => ({
+            agentId: 'agent-test',
+            send: async (_message, options = {}) => {
+              setTimeout(() => {
+                options.onDelta?.({
+                  update: {
+                    type: 'text-delta',
+                    text: 'Mirrored streamed chunk. ',
+                  },
+                });
+              }, 5);
+              return {
+                stream: async function* stream() {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+                  yield {
+                    type: 'assistant',
+                    message: {
+                      content: [{ type: 'text', text: 'Mirrored streamed chunk. ' }],
+                    },
+                  };
+                },
+                wait: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 40));
+                  return {
+                    status: 'finished',
+                    result: 'Mirrored streamed chunk. Final answer.',
+                  };
+                },
+              };
+            },
+          }),
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_delta_dedupe',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        messageID: 'msg_delta_dedupe_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_delta_dedupe');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistantTextEvents = emitted.filter((event) => (
+      event?.type === 'message.part.updated'
+      && event.properties?.part?.messageID === 'msg_delta_dedupe_user_assistant'
+      && event.properties?.part?.type === 'text'
+    ));
+    const emittedTexts = assistantTextEvents.map((event) => event.properties.part.text);
+    expect(emittedTexts).not.toContain('Mirrored streamed chunk. Mirrored streamed chunk. ');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe(
+      'Mirrored streamed chunk. Final answer.',
+    );
   });
 
   it('merges a richer direct Cursor SDK wait result after partial streamed text', async () => {
@@ -288,6 +511,321 @@ describe('Cursor SDK runtime', () => {
     expect(records?.[0]?.parts?.find((part) => part.type === 'text')?.text).toBe('Visible prompt');
   });
 
+  it('prepends resolved agent instructions to Cursor prompts without storing them in the visible user message', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let sentPrompt = '';
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      resolveAgentPrompt: async ({ agent, directory }) => {
+        expect(agent).toBe('builder');
+        expect(directory).toBe('/tmp/project');
+        return 'Builder must always finish with Summary and Verification sections.';
+      },
+      createPromptRun: async ({ prompt }) => {
+        sentPrompt = prompt;
+        return {
+          cancel: async () => {},
+          stream: async function* stream() {
+            yield {
+              type: 'message',
+              message: {
+                type: 'assistant',
+                message: {
+                  content: [{ type: 'text', text: 'done' }],
+                },
+              },
+            };
+          },
+        };
+      },
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_agent_prompt',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        agent: 'builder',
+        messageID: 'msg_agent_prompt_user',
+        parts: [{ type: 'text', text: 'Fix the startup race.' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_agent_prompt');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(sentPrompt).toContain('<agent_instructions name="builder">');
+    expect(sentPrompt).toContain('This Cursor SDK session is pinned to model "composer-2".');
+    expect(sentPrompt).toContain('Do not start task/subagent/delegation tools with a different model.');
+    expect(sentPrompt).toContain('Builder must always finish with Summary and Verification sections.');
+    expect(sentPrompt).toContain('<user_request>');
+    expect(sentPrompt).toContain('Fix the startup race.');
+    expect(records?.[0]?.parts?.find((part) => part.type === 'text')?.text).toBe('Fix the startup race.');
+  });
+
+  it('passes image file parts to the Cursor SDK and keeps them in the visible user message', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let sentImages = null;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async ({ images }) => {
+        sentImages = images;
+        return {
+          cancel: async () => {},
+          stream: async function* stream() {
+            yield {
+              type: 'message',
+              message: {
+                type: 'assistant',
+                message: {
+                  content: [{ type: 'text', text: 'The image shows a simple sample.' }],
+                },
+              },
+            };
+          },
+        };
+      },
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_image',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        agent: 'builder',
+        messageID: 'msg_cursor_image_user',
+        parts: [
+          { type: 'text', text: 'Describe this image.' },
+          {
+            id: 'part_image_1',
+            type: 'file',
+            mime: 'image/png',
+            url: 'data:image/png;base64,aGVsbG8=',
+            filename: 'image.png',
+          },
+        ],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_image');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(sentImages).toEqual([{ url: 'data:image/png;base64,aGVsbG8=' }]);
+    expect(records?.[0]?.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'part_image_1',
+        type: 'file',
+        mime: 'image/png',
+        url: 'data:image/png;base64,aGVsbG8=',
+        filename: 'image.png',
+      }),
+    ]));
+    expect(records?.[1]?.info.finish).toBe('stop');
+  });
+
+  it('blocks unsupported Cursor file parts instead of dropping them silently', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let runCreated = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => {
+        runCreated = true;
+        throw new Error('Cursor run should not start for unsupported file attachments');
+      },
+    });
+
+    const result = await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_pdf',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        agent: 'builder',
+        messageID: 'msg_cursor_pdf_user',
+        parts: [
+          { type: 'text', text: 'Summarize this document.' },
+          {
+            id: 'part_pdf_1',
+            type: 'file',
+            mime: 'application/pdf',
+            url: 'data:application/pdf;base64,JVBERi0xLjQ=',
+            filename: 'document.pdf',
+          },
+        ],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_pdf');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(result).toMatchObject({ handled: true, status: 204 });
+    expect(runCreated).toBe(false);
+    expect(records?.[0]?.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'part_pdf_1',
+        type: 'file',
+        mime: 'application/pdf',
+        url: 'data:application/pdf;base64,JVBERi0xLjQ=',
+        filename: 'document.pdf',
+      }),
+    ]));
+    expect(records?.[1]?.info.finish).toBe('error');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toContain(
+      'Cursor SDK provider sessions support image attachments only',
+    );
+  });
+
+  it('ends Cursor Council sessions with a deterministic unsupported-agent error', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let runCreated = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => {
+        runCreated = true;
+        throw new Error('Cursor run should not start for Council');
+      },
+    });
+
+    const result = await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_council',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        agent: 'council',
+        messageID: 'msg_cursor_council_user',
+        parts: [{ type: 'text', text: 'Use council_session with cursor-composer-2.' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_council');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(result).toMatchObject({ handled: true, status: 204 });
+    expect(runCreated).toBe(false);
+    expect(records?.[1]?.info.finish).toBe('error');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toContain(
+      'requires the OpenCode council_session plugin tool',
+    );
+  });
+
+  it('allows pinned Cursor Orchestrator plan mode with a runtime model contract', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const structuredPlanBody = [
+      '# Composer 2 Plan Mode',
+      '',
+      '## Context',
+      '',
+      'Cursor Composer 2 plan mode should stream through the SDK runtime.',
+      '',
+      '## Implementation',
+      '',
+      '1. Keep the run pinned to Composer 2.',
+      '',
+      '## Verification',
+      '',
+      '1. Confirm the plan is rendered as a plan card.',
+    ].join('\n');
+    let sentPrompt = '';
+    let runCreated = false;
+    let resolvedAgentPrompt = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      resolveAgentPrompt: async () => {
+        resolvedAgentPrompt = true;
+        return 'Delegating Orchestrator instructions should not be injected for pinned Cursor plan mode.';
+      },
+      createPromptRun: async ({ prompt, modelID }) => {
+        runCreated = true;
+        sentPrompt = prompt;
+        expect(modelID).toBe('composer-2');
+        return {
+          cancel: async () => {},
+          stream: async function* stream() {
+            yield {
+              type: 'message',
+              message: {
+                type: 'assistant',
+                message: {
+                  content: [{ type: 'text', text: structuredPlanBody }],
+                },
+              },
+            };
+          },
+        };
+      },
+    });
+
+    const result = await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_orchestrator_plan',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        agent: 'orchestrator',
+        messageID: 'msg_cursor_orchestrator_plan_user',
+        parts: [
+          {
+            type: 'text',
+            text: 'User has requested to enter plan mode.\nProduce a plan only.',
+            synthetic: true,
+          },
+          { type: 'text', text: 'Plan the audit.' },
+        ],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_orchestrator_plan');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(result).toMatchObject({ handled: true, status: 204 });
+    expect(runCreated).toBe(true);
+    expect(sentPrompt.startsWith('User has requested to enter plan mode')).toBe(true);
+    expect(sentPrompt).toContain('This Cursor SDK session is pinned to model "composer-2".');
+    expect(sentPrompt).toContain('Do not start task/subagent/delegation tools with a different model.');
+    expect(sentPrompt).toContain('<agent_instructions name="orchestrator">');
+    expect(sentPrompt).toContain('Plan mode is running directly on Cursor model "composer-2".');
+    expect(sentPrompt).toContain('Do not call task, subagent, delegation, explorer, fixer, or council tools.');
+    expect(sentPrompt).not.toContain('Delegating Orchestrator instructions');
+    expect(resolvedAgentPrompt).toBe(false);
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe(
+      `<!--plan-->\n${structuredPlanBody}`,
+    );
+  });
+
   it('finalizes still-running SDK tool parts when the assistant run completes', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     const runtime = createCursorSdkRuntime({
@@ -341,6 +879,55 @@ describe('Cursor SDK runtime', () => {
     const tool = records?.[1]?.parts?.find((part) => part.type === 'tool');
     expect(tool?.state?.status).toBe('completed');
     expect(typeof tool?.state?.time?.end).toBe('number');
+  });
+
+  it('adds a visible completion summary when Cursor finishes with only tool activity', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'tool_1',
+              name: 'grep',
+              status: 'completed',
+              args: { pattern: 'Open request form' },
+              result: 'src/a.ts:1:Open request form',
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_1',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_e999_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_1');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe(
+      'Completed the requested work. See the tool activity above for details.',
+    );
+    expect(records?.[1]?.parts?.find((part) => part.type === 'tool')?.state?.status).toBe('completed');
   });
 
   it('does not re-emit large completed Cursor tool parts after later stream events', async () => {
@@ -1008,6 +1595,89 @@ describe('Cursor SDK runtime', () => {
     ]);
   });
 
+  it('normalizes Cursor plan-mode delta output into a plan card and returns to idle', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const structuredPlanBody = [
+      '# Cursor Streaming Plan',
+      '',
+      '## Context',
+      '',
+      'Composer streams interaction deltas before legacy final output.',
+      '',
+      '## Implementation',
+      '',
+      '1. Wire onDelta into the Cursor bridge.',
+      '',
+      '## Verification',
+      '',
+      '1. Confirm plan mode receives a plan card.',
+    ].join('\n');
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      loadSdk: async () => ({
+        Agent: {
+          create: async () => ({
+            agentId: 'agent-test',
+            send: async (_message, options = {}) => {
+              setTimeout(() => {
+                options.onDelta?.({
+                  update: {
+                    type: 'text-delta',
+                    text: structuredPlanBody,
+                  },
+                });
+              }, 5);
+              return {
+                stream: async function* stream() {
+                  await new Promise(() => {});
+                },
+                wait: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                  return {
+                    status: 'finished',
+                    result: structuredPlanBody,
+                  };
+                },
+              };
+            },
+          }),
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_plan_delta',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        messageID: 'msg_cursor_plan_delta_user',
+        parts: [
+          {
+            type: 'text',
+            text: 'User has requested to enter plan mode.\nProduce an implementation plan only.',
+            synthetic: true,
+          },
+          { type: 'text', text: 'Plan the Cursor streaming bridge fix.' },
+        ],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_plan_delta');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistantText = records?.[1]?.parts?.find((part) => part.type === 'text')?.text;
+    expect(assistantText).toContain('<!--plan-->');
+    expect(assistantText).toContain('# Cursor Streaming Plan');
+    expect(runtime.getSessionStatus?.().ses_cursor_plan_delta).toEqual({ type: 'idle' });
+  });
+
   it('exposes Cursor session status as busy during a run and idle after completion', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     let releaseStream;
@@ -1081,7 +1751,163 @@ describe('Cursor SDK runtime', () => {
     });
 
     expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('working done');
+    await waitFor(async () => (
+      runtime.getSessionStatus?.().ses_status?.type === 'idle' ? true : null
+    ));
     expect(runtime.getSessionStatus?.().ses_status).toEqual({ type: 'idle' });
+  });
+
+  it('cancels Cursor task subagents that switch away from the selected concrete model', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let cancelled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {
+          cancelled = true;
+        },
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_1',
+              name: 'task',
+              status: 'running',
+              args: {
+                description: 'Explore with a subagent',
+                prompt: 'Read-only exploration',
+                model: 'composer-2.5',
+              },
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'should not continue' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_model_boundary',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2' },
+        messageID: 'msg_model_boundary_user',
+        parts: [{ type: 'text', text: 'stay on composer 2' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_model_boundary');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const text = assistant?.parts?.find((part) => part.type === 'text')?.text || '';
+    const taskPart = assistant?.parts?.find((part) => part.type === 'tool' && part.tool === 'task');
+
+    expect(cancelled).toBe(true);
+    await waitFor(async () => (
+      runtime.getSessionStatus?.().ses_model_boundary?.type === 'idle' ? true : null
+    ));
+    expect(runtime.getSessionStatus?.().ses_model_boundary).toEqual({ type: 'idle' });
+    expect(runtime.getRuntimeStatus().lastCancellation).toMatchObject({
+      sessionID: 'ses_model_boundary',
+      assistantMessageID: 'msg_model_boundary_user_assistant',
+      source: 'model_boundary',
+      finalStatus: 'error',
+    });
+    expect(assistant?.info.finish).toBe('error');
+    expect(text).toContain('Cursor SDK model boundary violation');
+    expect(text).toContain('composer-2.5');
+    expect(text).toContain('composer-2');
+    expect(taskPart?.state).toMatchObject({
+      status: 'error',
+      input: {
+        model: 'composer-2.5',
+      },
+    });
+  });
+
+  it('records explicit user aborts separately from provider cancellations', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let releaseStream;
+    const streamReleased = new Promise((resolve) => {
+      releaseStream = resolve;
+    });
+    let cancelled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {
+          cancelled = true;
+          releaseStream();
+        },
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'working' }],
+              },
+            },
+          };
+          await streamReleased;
+          yield {
+            type: 'status',
+            status: 'CANCELLED',
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_abort',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_abort_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    await waitFor(async () => (
+      runtime.getSessionStatus?.().ses_abort?.type === 'busy' ? true : null
+    ));
+
+    expect(await runtime.abortSession('ses_abort')).toBe(true);
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_abort');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(cancelled).toBe(true);
+    expect(records?.find((record) => record.info?.role === 'assistant')?.info.finish).toBe('cancelled');
+    expect(runtime.getRuntimeStatus().lastCancellation).toMatchObject({
+      sessionID: 'ses_abort',
+      assistantMessageID: 'msg_abort_user_assistant',
+      source: 'user_abort',
+      finalStatus: 'cancelled',
+    });
   });
 
   it('repairs persisted SDK assistant parent ids and stale running tools on read', async () => {

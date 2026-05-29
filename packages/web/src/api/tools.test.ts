@@ -16,14 +16,14 @@ describe('web tools runtime API', () => {
       await expect(api.getAvailableTools()).resolves.toEqual(['edit', 'read', 'write']);
       await expect(api.getToolManifest()).resolves.toEqual({
         tools: [
-          { id: 'edit', aliases: ['edit', 'write', 'patch'], sourceRuntime: 'web', directory: '/repo' },
+          { id: 'edit', aliases: ['edit', 'write', 'patch', 'apply_patch'], sourceRuntime: 'web', directory: '/repo' },
           { id: 'read', aliases: ['read'], sourceRuntime: 'web', directory: '/repo' },
-          { id: 'write', aliases: ['edit', 'write', 'patch'], sourceRuntime: 'web', directory: '/repo' },
+          { id: 'write', aliases: ['edit', 'write', 'patch', 'apply_patch'], sourceRuntime: 'web', directory: '/repo' },
         ],
         aliases: {
-          edit: ['edit', 'write', 'patch'],
+          edit: ['edit', 'write', 'patch', 'apply_patch'],
           read: ['read'],
-          write: ['edit', 'write', 'patch'],
+          write: ['edit', 'write', 'patch', 'apply_patch'],
         },
         sourceRuntime: 'web',
         directory: '/repo',

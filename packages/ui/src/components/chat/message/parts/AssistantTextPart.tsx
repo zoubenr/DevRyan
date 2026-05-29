@@ -5,7 +5,7 @@ import type { StreamPhase } from '../types';
 import type { ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import { useStreamingTextThrottle } from '../../hooks/useStreamingTextThrottle';
 import { resolveAssistantDisplayText, shouldRenderAssistantText } from './assistantTextVisibility';
-import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
+import { postRendererTurnTimingMark, streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 
 type PartWithText = Part & { text?: string; content?: string; value?: string; time?: { start?: number; end?: number } };
 
@@ -29,6 +29,7 @@ interface AssistantTextPartProps {
 
 const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
     part,
+    sessionId,
     messageId,
     streamPhase,
     chatRenderMode = 'live',
@@ -78,14 +79,34 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
     const isFinalized = isMessageCompleted || Boolean(time && typeof time.end !== 'undefined');
 
     const isRenderableTextPart = part.type === 'text' || part.type === 'reasoning';
-    if (!isRenderableTextPart) {
-        return null;
-    }
-
-    if (!shouldRenderAssistantText({
+    const shouldRenderText = isRenderableTextPart && shouldRenderAssistantText({
         displayTextContent,
         isFinalized,
-    })) {
+    });
+
+    React.useEffect(() => {
+        if (!shouldRenderText || !sessionId || displayTextContent.trim().length === 0) {
+            return;
+        }
+
+        const postMark = () => {
+            postRendererTurnTimingMark({
+                sessionId,
+                assistantMessageId: messageId,
+                mark: 'renderer_first_visible_text_committed',
+                metadata: { source: 'AssistantTextPart' },
+            });
+        };
+
+        if (typeof requestAnimationFrame === 'function') {
+            const frame = requestAnimationFrame(postMark);
+            return () => cancelAnimationFrame(frame);
+        }
+
+        postMark();
+    }, [displayTextContent, messageId, sessionId, shouldRenderText]);
+
+    if (!shouldRenderText) {
         return null;
     }
 

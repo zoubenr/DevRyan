@@ -7,6 +7,7 @@ import {
     getCursorAcpFastModelId,
     isCursorAcpProvider,
 } from '@/lib/providers/cursorAcp';
+import { resolveThinkingVariant } from '@/lib/providers/variantControls';
 
 export { shouldHideCursorAcpFastModel } from '@/lib/providers/cursorAcp';
 
@@ -306,20 +307,24 @@ export const formatEffortLabel = (variant?: string) => {
         .join(' ');
 };
 
+export const getCursorAcpVariantDisplayLabel = (state: CursorAcpVariantState | null | undefined) => {
+    if (!state) {
+        return null;
+    }
+    if (state.selectedEffort) {
+        return formatEffortLabel(state.selectedEffort);
+    }
+    if (state.canToggleFast && !state.fastEnabled && !state.canToggleThinking && state.visibleVariantOptions.length === 0) {
+        return formatEffortLabel(undefined);
+    }
+    return null;
+};
+
 export const resolveVisibleEffortVariant = (
     variant: string | undefined,
     variants: string[],
 ) => {
-    if (variants.length === 0) {
-        return null;
-    }
-
-    const trimmed = typeof variant === 'string' ? variant.trim() : '';
-    if (trimmed.length > 0 && variants.includes(trimmed)) {
-        return trimmed;
-    }
-
-    return variants.find((option) => option.toLowerCase() === 'medium') ?? variants[0] ?? null;
+    return resolveThinkingVariant(variant, variants) ?? null;
 };
 
 export const formatVisibleEffortLabel = (
@@ -366,8 +371,7 @@ export const getEffortRank = (variant?: string) => {
 };
 
 export const getQuickEffortOptions = (variants: string[]) => {
-    const options = new Map<string, string | undefined>();
-    options.set('default', undefined);
+    const options = new Map<string, string>();
     for (const variant of variants) {
         options.set(variant, variant);
     }

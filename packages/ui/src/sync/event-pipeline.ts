@@ -15,7 +15,11 @@
 import type { Event, OpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { opencodeClient } from "@/lib/opencode/client"
 import { syncDebug } from "./debug"
-import { responsivenessPerfCount, responsivenessPerfObserve } from "@/stores/utils/streamDebug"
+import {
+  postRendererTurnTimingMark,
+  responsivenessPerfCount,
+  responsivenessPerfObserve,
+} from "@/stores/utils/streamDebug"
 import { appendStreamingTextDelta } from "./part-delta"
 
 export type QueuedEvent = {
@@ -26,6 +30,8 @@ export type QueuedEvent = {
 export type FlushHandler = (events: QueuedEvent[]) => void
 
 const FLUSH_FRAME_MS = 33
+const STREAMING_FLUSH_FRAME_MS = 16
+const STREAMING_FLUSH_QUEUE_DEPTH = 8
 const BACKPRESSURE_FLUSH_FRAME_MS = 200
 const BACKPRESSURE_MODE_MS = 10_000
 const STREAM_YIELD_MS = 8
@@ -244,6 +250,83 @@ function isVSCodeRuntime(): boolean {
   return runtimeApis?.runtime?.isVSCode === true
 }
 
+function getRendererRuntimeLabel(): string {
+  if (typeof window === "undefined") {
+    return "unknown"
+  }
+
+  const runtimeApis = (window as unknown as {
+    __OPENCHAMBER_DESKTOP_SERVER__?: unknown
+    __OPENCHAMBER_ELECTRON__?: unknown
+    __OPENCHAMBER_RUNTIME_APIS__?: { runtime?: { isDesktop?: boolean; isVSCode?: boolean } }
+  }).__OPENCHAMBER_RUNTIME_APIS__
+
+  if (
+    (window as unknown as { __OPENCHAMBER_DESKTOP_SERVER__?: unknown }).__OPENCHAMBER_DESKTOP_SERVER__
+    || (window as unknown as { __OPENCHAMBER_ELECTRON__?: unknown }).__OPENCHAMBER_ELECTRON__
+    || runtimeApis?.runtime?.isDesktop === true
+  ) {
+    return "desktop"
+  }
+  if (runtimeApis?.runtime?.isVSCode === true) {
+    return "vscode"
+  }
+  return "web"
+}
+
+function getVisibilityState(): string | undefined {
+  return typeof document !== "undefined" && typeof document.visibilityState === "string"
+    ? document.visibilityState
+    : undefined
+}
+
+function getRendererTimingTarget(payload: Event): { sessionId?: string; assistantMessageId?: string } | null {
+  const properties = (payload as { properties?: unknown }).properties
+  if (!properties || typeof properties !== "object") {
+    return null
+  }
+
+  const props = properties as Record<string, unknown>
+  if (payload.type === "message.updated") {
+    const info = props.info
+    if (!info || typeof info !== "object" || (info as { role?: unknown }).role !== "assistant") {
+      return null
+    }
+    return {
+      sessionId: typeof (info as { sessionID?: unknown }).sessionID === "string"
+        ? (info as { sessionID: string }).sessionID
+        : undefined,
+      assistantMessageId: typeof (info as { id?: unknown }).id === "string"
+        ? (info as { id: string }).id
+        : undefined,
+    }
+  }
+
+  if (payload.type === "message.part.updated") {
+    const part = props.part
+    if (!part || typeof part !== "object") {
+      return null
+    }
+    return {
+      sessionId: typeof (part as { sessionID?: unknown }).sessionID === "string"
+        ? (part as { sessionID: string }).sessionID
+        : undefined,
+      assistantMessageId: typeof (part as { messageID?: unknown }).messageID === "string"
+        ? (part as { messageID: string }).messageID
+        : undefined,
+    }
+  }
+
+  if (payload.type === "message.part.delta") {
+    return {
+      sessionId: typeof props.sessionID === "string" ? props.sessionID : undefined,
+      assistantMessageId: typeof props.messageID === "string" ? props.messageID : undefined,
+    }
+  }
+
+  return null
+}
+
 type DirectoryQueue = {
   queue: Event[]
   buffer: Event[]
@@ -287,6 +370,17 @@ export function coalescePartDeltaValue(field: string, previousDelta: string, inc
   }
 
   return previousDelta + incomingDelta
+}
+
+export const isStreamingPartEvent = (payload: Event): boolean => {
+  if (payload.type === "message.part.delta") {
+    return true
+  }
+  if (payload.type === "message.part.updated") {
+    const part = (payload.properties as { part?: { type?: string } }).part
+    return part?.type === "text" || part?.type === "reasoning"
+  }
+  return false
 }
 
 export function createEventPipeline(input: EventPipelineInput) {
@@ -389,11 +483,21 @@ export function createEventPipeline(input: EventPipelineInput) {
     }
   }
 
-  const scheduleDir = (directory: string) => {
+  const scheduleDir = (directory: string, streaming = false) => {
     const d = getOrCreateDir(directory)
-    if (d.timer) return
+    if (d.timer) {
+      if (!streaming) {
+        return
+      }
+      clearTimeout(d.timer)
+      d.timer = undefined
+    }
     const elapsed = Date.now() - d.last
-    const flushFrameMs = Date.now() < backpressureUntil ? BACKPRESSURE_FLUSH_FRAME_MS : FLUSH_FRAME_MS
+    const flushFrameMs = Date.now() < backpressureUntil
+      ? BACKPRESSURE_FLUSH_FRAME_MS
+      : streaming
+        ? STREAMING_FLUSH_FRAME_MS
+        : FLUSH_FRAME_MS
     d.timer = setTimeout(() => flushDir(directory), Math.max(0, flushFrameMs - elapsed))
   }
 
@@ -488,6 +592,20 @@ export function createEventPipeline(input: EventPipelineInput) {
     responsivenessPerfCount("event_pipeline.enqueue_count")
     const normalizedPayload = normalizeIncomingEvent(payload)
     const routedDirectory = routeDirectory?.(directory, normalizedPayload) || directory
+    const rendererTarget = getRendererTimingTarget(normalizedPayload)
+    if (rendererTarget?.sessionId || rendererTarget?.assistantMessageId) {
+      postRendererTurnTimingMark({
+        sessionId: rendererTarget.sessionId,
+        assistantMessageId: rendererTarget.assistantMessageId,
+        mark: "renderer_event_received",
+        directory: routedDirectory,
+        metadata: {
+          runtime: getRendererRuntimeLabel(),
+          transport: activeTransport,
+          visibilityState: getVisibilityState(),
+        },
+      })
+    }
     const d = getOrCreateDir(routedDirectory)
     invalidatePartUpdatedCoalescingAfterDelta(d, normalizedPayload)
     const k = key(normalizedPayload)
@@ -513,6 +631,12 @@ export function createEventPipeline(input: EventPipelineInput) {
         }
         syncDebug.pipeline.coalesced(normalizedPayload.type, k)
         responsivenessPerfObserve("event_pipeline.queue_depth", d.queue.length)
+        const coalescedStreaming = isStreamingPartEvent(normalizedPayload)
+        if (coalescedStreaming && d.queue.length >= STREAMING_FLUSH_QUEUE_DEPTH) {
+          flushDir(routedDirectory)
+          return
+        }
+        scheduleDir(routedDirectory, coalescedStreaming)
         return
       }
       d.coalesced.set(k, d.queue.length)
@@ -520,7 +644,12 @@ export function createEventPipeline(input: EventPipelineInput) {
 
     d.queue.push(normalizedPayload)
     responsivenessPerfObserve("event_pipeline.queue_depth", d.queue.length)
-    scheduleDir(routedDirectory)
+    const streaming = isStreamingPartEvent(normalizedPayload)
+    if (streaming && d.queue.length >= STREAMING_FLUSH_QUEUE_DEPTH) {
+      flushDir(routedDirectory)
+      return
+    }
+    scheduleDir(routedDirectory, streaming)
   }
 
   const resetHeartbeat = () => {
@@ -907,5 +1036,5 @@ export function createEventPipeline(input: EventPipelineInput) {
     flushAll()
   }
 
-  return { cleanup }
+  return { cleanup, enqueueEvent }
 }

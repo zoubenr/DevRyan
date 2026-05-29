@@ -1073,6 +1073,42 @@ export interface RuntimeAPIs {
 
 export type RuntimeAPISelector<TValue> = (apis: RuntimeAPIs) => TValue;
 
+// ============== Plugins Types ==============
+
+export type PluginScope = 'user' | 'project';
+export type PluginParsedKind = 'npm' | 'path';
+
+export interface PluginEntry {
+  id: string;
+  spec: string;
+  options?: Record<string, unknown>;
+  scope: PluginScope;
+  kind: 'config';
+  parsedKind: PluginParsedKind;
+  sourcePath: string;
+}
+
+export interface PluginFile {
+  id: string;
+  fileName: string;
+  scope: PluginScope;
+  kind: 'file';
+  absolutePath: string;
+}
+
+export interface PluginConfigError {
+  scope: PluginScope;
+  sourcePath: string;
+  index: number | null;
+  message: string;
+}
+
+export interface PluginsListResponse {
+  entries: PluginEntry[];
+  files: PluginFile[];
+  errors: PluginConfigError[];
+}
+
 // ============== Skills Catalog Types ==============
 
 export type SkillsCatalogSourceId = string;

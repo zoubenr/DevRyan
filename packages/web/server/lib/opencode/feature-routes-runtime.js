@@ -10,6 +10,7 @@ import { registerProjectIconRoutes } from './project-icon-routes.js';
 import { registerScheduledTaskRoutes } from '../scheduled-tasks/routes.js';
 import { registerSkillRoutes } from './skill-routes.js';
 import { registerOpenCodeRoutes } from './routes.js';
+import { createPluginReadModel, registerReadonlyPluginRoutes } from './plugins-readonly.js';
 
 export const createFeatureRoutesRuntime = (dependencies) => {
   const {
@@ -127,6 +128,12 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       scheduledTasksRuntime,
       getOpenChamberEventClients,
       writeSseEvent,
+    });
+
+    const pluginReadModel = createPluginReadModel({ fs, path, os });
+    registerReadonlyPluginRoutes(app, {
+      resolveOptionalProjectDirectory,
+      listPlugins: pluginReadModel.listPlugins,
     });
 
     const {

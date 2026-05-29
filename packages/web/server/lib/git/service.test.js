@@ -1,10 +1,20 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import simpleGit from 'simple-git';
 
-import { commit, getLog, getRemotes, getStatus, resolveBaseRefForLog, stageFile, unstageFile } from './service.js';
+import {
+  canonicalizeWorktreeState,
+  commit,
+  getBranches,
+  getLog,
+  getRemotes,
+  getStatus,
+  resolveBaseRefForLog,
+  stageFile,
+  unstageFile,
+} from './service.js';
 
 const tempDirs = [];
 
@@ -169,5 +179,118 @@ describe('git log base ref resolution', () => {
     const log = await getLog(directory, { from: 'main', to: 'HEAD' });
 
     expect(log.all.map((entry) => entry.message)).toEqual(['feature commit']);
+  });
+});
+
+describe('git branch listing', () => {
+  const createRepo = async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openchamber-git-branches-'));
+    tempDirs.push(directory);
+    const git = simpleGit(directory);
+    await git.init();
+    await git.addConfig('user.name', 'DevRyan Test');
+    await git.addConfig('user.email', 'devryan@example.com');
+    await git.checkoutLocalBranch('main');
+    await writeFile(join(directory, 'tracked.txt'), 'base\n');
+    await git.add('tracked.txt');
+    await git.commit('base commit');
+    return { directory, git };
+  };
+
+  it('returns an empty branch list for non-git directories without logging noise', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openchamber-non-git-branches-'));
+    tempDirs.push(directory);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(getBranches(directory)).resolves.toEqual({
+      all: [],
+      current: null,
+      branches: {},
+    });
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('preserves local remote-tracking branches when the remote cannot be probed', async () => {
+    const { directory, git } = await createRepo();
+    const head = (await git.revparse(['HEAD'])).trim();
+    await git.raw(['update-ref', 'refs/remotes/origin/main', head]);
+    await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+    await git.raw(['remote', 'add', 'origin', join(tmpdir(), 'openchamber-missing-remote')]);
+
+    const branches = await getBranches(directory);
+
+    expect(branches.all).toContain('main');
+    expect(branches.all).toContain('remotes/origin/main');
+    expect(branches.all).not.toContain('remotes/origin/HEAD');
+  });
+});
+
+describe('worktree canonicalization', () => {
+  const createRepo = async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openchamber-git-canonical-'));
+    tempDirs.push(directory);
+    const git = simpleGit(directory);
+    await git.init();
+    await git.addConfig('user.name', 'DevRyan Test');
+    await git.addConfig('user.email', 'devryan@example.com');
+    await git.checkoutLocalBranch('main');
+    await writeFile(join(directory, 'tracked.txt'), 'base\n');
+    await git.add('tracked.txt');
+    await git.commit('base commit');
+    return { directory, git };
+  };
+
+  it('uses the primary repository top-level as the canonical worktree root', async () => {
+    const { directory } = await createRepo();
+    const expectedDirectory = await realpath(directory);
+
+    const canonical = await canonicalizeWorktreeState(directory);
+
+    expect(canonical).toMatchObject({
+      worktreeRoot: expectedDirectory,
+      cwd: expectedDirectory,
+      branch: 'main',
+      headState: 'branch',
+      worktreeStatus: 'ready',
+      degraded: false,
+    });
+  });
+
+  it('uses the primary repository top-level when canonicalized from a nested directory', async () => {
+    const { directory } = await createRepo();
+    const nestedDirectory = join(directory, 'src', 'nested');
+    await mkdir(nestedDirectory, { recursive: true });
+    const expectedDirectory = await realpath(directory);
+
+    const canonical = await canonicalizeWorktreeState(nestedDirectory);
+
+    expect(canonical).toMatchObject({
+      worktreeRoot: expectedDirectory,
+      cwd: expectedDirectory,
+      branch: 'main',
+      headState: 'branch',
+      worktreeStatus: 'ready',
+      degraded: false,
+    });
+  });
+
+  it('uses a linked worktree top-level as the canonical worktree root', async () => {
+    const { git } = await createRepo();
+    const worktreeParent = await mkdtemp(join(tmpdir(), 'openchamber-linked-worktree-'));
+    tempDirs.push(worktreeParent);
+    const worktreeDirectory = join(worktreeParent, 'feature');
+    await git.raw(['worktree', 'add', '-b', 'feature', worktreeDirectory]);
+    const expectedDirectory = await realpath(worktreeDirectory);
+
+    const canonical = await canonicalizeWorktreeState(worktreeDirectory);
+
+    expect(canonical).toMatchObject({
+      worktreeRoot: expectedDirectory,
+      cwd: expectedDirectory,
+      branch: 'feature',
+      headState: 'branch',
+      worktreeStatus: 'ready',
+      degraded: false,
+    });
   });
 });

@@ -1,12 +1,13 @@
 import type { ToolManifest, ToolManifestEntry } from '../api/types';
 
 export const TOOL_PERMISSION_ALIAS_GROUPS: string[][] = [
-  ['edit', 'write', 'patch'],
+  ['edit', 'write', 'patch', 'apply_patch'],
   ['read'],
   ['bash'],
   ['task'],
   ['skill'],
   ['question', 'ask', 'input', 'clarification'],
+  ['webfetch'],
 ];
 
 const normalizeDirectory = (directory: string | null | undefined): string | null => {

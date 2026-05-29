@@ -10,6 +10,7 @@ interface ChatMetadataBadgeProps {
     label: string;
     thinkingLabel?: string;
     icon?: React.ReactNode;
+    trailingIcon?: React.ReactNode;
     agentName?: string;
     isDefaultThinking?: boolean;
     interactive?: boolean;
@@ -34,6 +35,7 @@ export const ChatMetadataBadge = React.forwardRef<HTMLSpanElement, ChatMetadataB
     label,
     thinkingLabel,
     icon,
+    trailingIcon,
     agentName,
     isDefaultThinking = false,
     interactive = false,
@@ -85,6 +87,11 @@ export const ChatMetadataBadge = React.forwardRef<HTMLSpanElement, ChatMetadataB
                         className="min-w-0 max-w-[96px] truncate text-[10px] font-medium leading-none text-muted-foreground"
                     >
                         {thinkingLabel}
+                    </span>
+                ) : null}
+                {trailingIcon ? (
+                    <span className="inline-flex h-3 w-3 flex-shrink-0 items-center justify-center self-center leading-none">
+                        {trailingIcon}
                     </span>
                 ) : null}
             </span>

@@ -46,4 +46,51 @@ describe('packaged agent defaults', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('primary coding agents require a terminal work summary', () => {
+    for (const agentName of ['builder', 'orchestrator']) {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentName}.md`), 'utf8');
+
+      expect(content).toContain('<Completion Contract>');
+      expect(content).toContain('finish every completed work turn');
+      expect(content).toContain('<summary>');
+      expect(content).toContain('<verification>');
+    }
+  });
+
+  it('council reconciles plan-mode prompts with its required council report', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'council.md'), 'utf8');
+
+    expect(content).toContain('Plan-mode council requests');
+    expect(content).toContain('<!--plan-->');
+    expect(content).toContain('Councillor Details');
+    expect(content).toContain('Council Summary');
+    expect(content).toContain('immediately before the final plan body');
+  });
+
+  it('orchestrator prompt stays condensed while preserving routing contracts', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'orchestrator.md'), 'utf8');
+    const lineCount = content.trimEnd().split('\n').length;
+
+    expect(lineCount).toBeLessThanOrEqual(260);
+    expect(content).toContain('Simple requests: do the work yourself');
+    expect(content).toContain('Design-quality UI work: route to `designer`');
+    expect(content).toContain('Context:');
+    expect(content).toContain('Starting points:');
+    expect(content).toContain('Return:');
+    expect(content).toContain('<status>complete</status>');
+    expect(content).toContain('No-mutation plans must keep snapshots and logs outside the target workspace');
+  });
+
+  it('specialist prompts stay compact while preserving terminal-status guardrails', () => {
+    for (const agentName of ['designer', 'explorer', 'fixer', 'librarian', 'oracle']) {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentName}.md`), 'utf8');
+      const lineCount = content.trimEnd().split('\n').length;
+
+      expect(lineCount, `${agentName}.md line count`).toBeLessThanOrEqual(95);
+      expect(content).toContain('On unrecoverable provider/tool errors, return `<status>blocked</status>` with a concise reason.');
+      expect(content).toContain('Avoid repeated progress-only messages such as "continuing" or "implementing" without a terminal status marker.');
+      expect(content).toContain('Do not use `git status`, `git diff`, `git diff --stat`, or `git diff --check` to determine whether you made edits.');
+    }
+  });
 });

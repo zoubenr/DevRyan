@@ -158,6 +158,33 @@ describe("useConfigStore default agent selection", () => {
     ])
   })
 
+  test("cycles through concrete thinking variants without wrapping to default", () => {
+    useConfigStore.setState({
+      currentProviderId: "opencode",
+      currentModelId: "builder-model",
+      currentVariant: undefined,
+      providers: [{
+        id: "opencode",
+        name: "OpenCode",
+        source: "custom",
+        options: {},
+        env: [],
+        models: [
+          createModel("opencode", "builder-model", { low: {}, medium: {}, high: {} }),
+        ],
+      }],
+    })
+
+    useConfigStore.getState().cycleCurrentVariant()
+    expect(useConfigStore.getState().currentVariant).toBe("medium")
+
+    useConfigStore.getState().cycleCurrentVariant()
+    expect(useConfigStore.getState().currentVariant).toBe("high")
+
+    useConfigStore.getState().cycleCurrentVariant()
+    expect(useConfigStore.getState().currentVariant).toBe("low")
+  })
+
   test("leaves an active session selection unchanged when the configured default agent changes", () => {
     useSessionUIStore.setState({ currentSessionId: "session-1" })
 

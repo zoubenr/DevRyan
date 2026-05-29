@@ -460,8 +460,34 @@ describe('Packaged OpenChamber agents', () => {
     expect(orchestrator?.prompt).toContain('After any `task` tool result returns, reconcile the active todo immediately and continue the next actionable todo in the same turn.');
     expect(orchestrator?.prompt).toContain('Do not stop after a completed subagent result while incomplete todos remain.');
     expect(orchestrator?.prompt).toContain('Auto-continue is a guardrail for stopping between batches, not the mechanism for resuming after a blocking subagent call returns.');
-    expect(orchestrator?.prompt).toContain('Before delegating when the user requested autonomous or batch work, or when you create 4+ todos, call `auto_continue` with `enabled: true`.');
+    expect(orchestrator?.prompt).toContain('Before delegating when the user requested autonomous or batch work, or when you create 4+ todos, enable `auto_continue` only if the runtime exposes that tool.');
     expect(orchestrator?.prompt).toContain('Ask every delegated subagent to end with exactly one terminal status marker: `<status>complete</status>` or `<status>blocked</status>`.');
+  });
+
+  it('keeps Orchestrator parallel delegation bounded and failure-tolerant', () => {
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(orchestrator?.prompt).toContain('Parallel delegation readiness gate');
+    expect(orchestrator?.prompt).toContain('Default to at most 3 parallel implementation subagents');
+    expect(orchestrator?.prompt).toContain('Use parallel agents only when tasks are independent and target disjoint files or subsystems.');
+    expect(orchestrator?.prompt).toContain('If tasks overlap files, share mutable state, or depend on each other, run them sequentially.');
+    expect(orchestrator?.prompt).toContain('Only call `auto_continue` when the runtime exposes that tool.');
+    expect(orchestrator?.prompt).toContain('If `auto_continue` is unavailable, continue normally and do not treat that as a blocker.');
+    expect(orchestrator?.prompt).toContain('Treat provider/tool crashes, missing terminal status markers, or repeated progress-only output as a blocked subtask.');
+    expect(orchestrator?.prompt).toContain('Continue reconciling other returned subtasks instead of waiting indefinitely for the failed branch.');
+  });
+
+  it('instructs delegated packaged specialists to block on unrecoverable runtime failures', () => {
+    const agents = listPackagedAgents();
+    const delegatedAgentNames = ['explorer', 'fixer', 'designer', 'oracle', 'librarian', 'council'];
+
+    for (const agentName of delegatedAgentNames) {
+      const agent = agents.find((candidate) => candidate.name === agentName);
+      expect(agent?.prompt).toContain('Runtime Failure Discipline');
+      expect(agent?.prompt).toContain('On unrecoverable provider/tool errors, return `<status>blocked</status>` with a concise reason.');
+      expect(agent?.prompt).toContain('Avoid repeated progress-only messages such as "continuing" or "implementing" without a terminal status marker.');
+      expect(agent?.prompt).toContain('Do not retry the same failing runtime operation more than once.');
+    }
   });
 
   it('keeps Designer skill hints out of packaged Orchestrator prompts', () => {
@@ -542,6 +568,22 @@ describe('Packaged OpenChamber agents', () => {
     });
     expect(council?.prompt).toContain('Do not ask the user');
     expect(fixer?.prompt).toContain('<status>complete|blocked</status>');
+  });
+
+  it('requires packaged Council output to show councillor details before consensus', () => {
+    const council = listPackagedAgents().find((agent) => agent.name === 'council');
+    const prompt = council?.prompt ?? '';
+
+    const detailsIndex = prompt.indexOf('## Councillor Details');
+    const responseIndex = prompt.indexOf('## Council Response');
+    const summaryIndex = prompt.indexOf('## Council Summary');
+
+    expect(detailsIndex).toBeGreaterThanOrEqual(0);
+    expect(responseIndex).toBeGreaterThanOrEqual(0);
+    expect(summaryIndex).toBeGreaterThanOrEqual(0);
+    expect(detailsIndex).toBeLessThan(responseIndex);
+    expect(responseIndex).toBeLessThan(summaryIndex);
+    expect(prompt).toContain('Do not start `Council Response` until every councillor result returned by `council_session` has been included or marked failed/timed out.');
   });
 });
 

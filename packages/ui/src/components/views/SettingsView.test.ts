@@ -29,4 +29,17 @@ describe('SettingsView navigation', () => {
     expect(topLevelSlugs).not.toContain('behavior');
     expect(resolveSettingsSlug('behavior')).toBe('agents');
   });
+
+  test('plugins sits between skills and magic prompts in workflow navigation', () => {
+    const workflowPages = SETTINGS_NAV_SECTIONS
+      .find((section) => section.labelKey === 'settings.view.nav.group.workflow')
+      ?.pages ?? [];
+
+    expect(resolveSettingsSlug('plugins')).toBe('plugins');
+    expect(workflowPages).toContain('skills.installed');
+    expect(workflowPages).toContain('plugins');
+    expect(workflowPages).toContain('magic-prompts');
+    expect(workflowPages.indexOf('plugins')).toBe(workflowPages.indexOf('skills.installed') + 1);
+    expect(workflowPages.indexOf('magic-prompts')).toBe(workflowPages.indexOf('plugins') + 1);
+  });
 });

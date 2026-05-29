@@ -35,4 +35,16 @@ describe('getMessageHeaderDisplay', () => {
             modelName: 'Gemini 3 Pro',
         });
     });
+
+    test('uses the base model name when a paired fast model supplies the display name', () => {
+        expect(getMessageHeaderDisplay({
+            providerID: 'openai',
+            modelID: 'gpt-5.4-fast',
+            modelName: 'GPT 5.4 Fast',
+            baseModelName: 'GPT 5.4',
+        })).toEqual({
+            providerID: 'openai',
+            modelName: 'GPT 5.4',
+        });
+    });
 });

@@ -20,6 +20,7 @@ import {
     resolveSelectableAgentOptions,
 } from "@/lib/agentSelection";
 import { cacheResponseStyleInstructionFromSettings } from "@/lib/responseStyle";
+import { getOrderedThinkingVariants, resolveProviderModelVariant, resolveThinkingVariant } from "@/lib/providers/variantControls";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
@@ -1256,10 +1257,7 @@ export const useConfigStore = create<ConfigStore>()(
                 getCurrentModelVariants: () => {
                     const model = get().getCurrentModel();
                     const variants = (model as { variants?: Record<string, unknown> } | undefined)?.variants;
-                    if (!variants) {
-                        return [];
-                    }
-                    return Object.keys(variants);
+                    return getOrderedThinkingVariants(variants);
                 },
 
                 cycleCurrentVariant: () => {
@@ -1269,18 +1267,14 @@ export const useConfigStore = create<ConfigStore>()(
                     }
 
                     const current = get().currentVariant;
-                    if (!current) {
-                        get().setCurrentVariant(variantKeys[0]);
+                    if (!current || !variantKeys.includes(current)) {
+                        get().setCurrentVariant(resolveThinkingVariant(current, variantKeys));
                         return;
                     }
 
                     const index = variantKeys.indexOf(current);
-                    if (index === -1 || index === variantKeys.length - 1) {
-                        get().setCurrentVariant(undefined);
-                        return;
-                    }
-
-                    get().setCurrentVariant(variantKeys[index + 1]);
+                    const nextIndex = (index + 1) % variantKeys.length;
+                    get().setCurrentVariant(variantKeys[nextIndex]);
                 },
  
                 setSelectedProvider: (providerId: string) => {
@@ -1741,8 +1735,8 @@ export const useConfigStore = create<ConfigStore>()(
                                 const agentVariant = typeof (agent as { variant?: unknown }).variant === 'string'
                                     ? (agent as { variant: string }).variant
                                     : undefined;
-                                const nextVariant = agentVariant && agentModel.variants && Object.prototype.hasOwnProperty.call(agentModel.variants, agentVariant)
-                                    ? agentVariant
+                                const nextVariant = agentVariant
+                                    ? resolveProviderModelVariant(agentProvider, modelID, agentVariant)
                                     : undefined;
                                 applyResolvedModelSelection(providerID, modelID, nextVariant);
                                 return;

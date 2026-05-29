@@ -1105,7 +1105,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url }) => {
         `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
-      backgroundThrottling: true,
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       // sandbox must stay off: the preload uses contextBridge + ipcRenderer
@@ -1332,7 +1332,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
         `--openchamber-macos-major=${desktopMacosMajor}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
-      backgroundThrottling: true,
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,

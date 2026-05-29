@@ -21,6 +21,7 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { useI18n } from '@/lib/i18n';
 import { formatAgentDisplayName } from '@/lib/agentDisplay';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
 import {
   Select,
   SelectContent,
@@ -33,7 +34,7 @@ type PermissionAction = 'allow' | 'ask' | 'deny';
 type PermissionRule = { permission: string; pattern: string; action: PermissionAction };
 type PermissionRuleKey = `${string}::${string}`;
 type AgentMode = 'primary' | 'subagent' | 'all';
-const DEFAULT_VARIANT_VALUE = '__default__';
+const NO_VARIANT_VALUE = '__no_variant__';
 const COUNCIL_AGENT_NAME = 'council';
 
 const isCouncilAgentName = (name?: string | null): boolean =>
@@ -276,13 +277,11 @@ export const AgentsPage: React.FC = () => {
     if (!parsedModel) return [];
     const provider = providers.find((entry) => entry.id === parsedModel.providerId);
     const providerModel = provider?.models.find((entry) => entry.id === parsedModel.modelId) as { variants?: Record<string, unknown> } | undefined;
-    const variants = providerModel?.variants;
-    return variants ? Object.keys(variants) : [];
+    return getOrderedThinkingVariants(providerModel?.variants);
   }, [providers]);
   const formatVariantLabel = React.useCallback((value: string) => {
-    if (value === DEFAULT_VARIANT_VALUE) return t('settings.agents.page.field.thinkingDefault');
     return value.charAt(0).toUpperCase() + value.slice(1);
-  }, [t]);
+  }, []);
 
   const setCouncilModelAt = React.useCallback((index: number, value: string) => {
     setCouncilModels((prev) => {
@@ -597,17 +596,23 @@ export const AgentsPage: React.FC = () => {
 
     setIsSavingModelOverride(true);
     try {
+      const resolvedVariant = resolveThinkingVariant(variant, getAvailableVariantsForModel(trimmedModel));
+      const resolvedCouncillors = councilModels
+        .map((entry, index) => {
+          const trimmedCouncilModel = entry.trim();
+          return {
+            model: trimmedCouncilModel,
+            variant: resolveThinkingVariant(councilVariants[index], getAvailableVariantsForModel(trimmedCouncilModel)),
+          };
+        })
+        .filter((entry) => entry.model.length > 0);
+
       await saveAgentModelOverride(selectedAgentName, {
         name: selectedAgentName,
         model: trimmedModel,
-        variant,
+        variant: resolvedVariant,
         councillors: isCouncilAgent
-          ? councilModels
-              .map((entry, index) => ({
-                model: entry.trim(),
-                variant: councilVariants[index],
-              }))
-              .filter((entry) => entry.model.length > 0)
+          ? resolvedCouncillors
           : undefined,
       });
       toast.success(t('settings.agents.page.toast.modelOverrideSaved'));
@@ -616,7 +621,7 @@ export const AgentsPage: React.FC = () => {
     } finally {
       setIsSavingModelOverride(false);
     }
-  }, [councilModels, councilVariants, isCouncilAgent, model, saveAgentModelOverride, selectedAgentName, t, variant]);
+  }, [councilModels, councilVariants, getAvailableVariantsForModel, isCouncilAgent, model, saveAgentModelOverride, selectedAgentName, t, variant]);
 
   const handleResetModelOverride = React.useCallback(async () => {
     if (!selectedAgentName) {
@@ -646,6 +651,8 @@ export const AgentsPage: React.FC = () => {
   ) => {
     const rowAvailableVariants = getAvailableVariantsForModel(modelRef);
     const rowSupportsVariants = rowAvailableVariants.length > 0;
+    const resolvedValue = resolveThinkingVariant(value, rowAvailableVariants);
+    const selectValue = resolvedValue ?? NO_VARIANT_VALUE;
 
     return (
       <div key={key} className="flex flex-col gap-1 py-1 sm:flex-row sm:items-center sm:gap-3">
@@ -657,17 +664,21 @@ export const AgentsPage: React.FC = () => {
             <span className="typography-ui-label text-foreground sm:hidden">{t('settings.agents.page.field.thinkingLevel')}</span>
           )}
           <Select
-            value={value ?? DEFAULT_VARIANT_VALUE}
-            onValueChange={(nextValue) => onChange(nextValue === DEFAULT_VARIANT_VALUE ? undefined : nextValue)}
+            value={selectValue}
+            onValueChange={(nextValue) => {
+              if (nextValue === NO_VARIANT_VALUE) {
+                return;
+              }
+              onChange(nextValue);
+            }}
             disabled={isSavingModelOverride || !rowSupportsVariants}
           >
             <SelectTrigger className="w-fit min-w-[120px]">
               <SelectValue placeholder={t('settings.agents.page.field.thinkingPlaceholder')}>
-                {formatVariantLabel(value ?? DEFAULT_VARIANT_VALUE)}
+                {resolvedValue ? formatVariantLabel(resolvedValue) : t('settings.agents.page.field.thinkingPlaceholder')}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={DEFAULT_VARIANT_VALUE}>{t('settings.agents.page.field.thinkingDefault')}</SelectItem>
               {rowAvailableVariants.map((availableVariant) => (
                 <SelectItem key={availableVariant} value={availableVariant}>
                   {formatVariantLabel(availableVariant)}

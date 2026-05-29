@@ -7,6 +7,7 @@ import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useMcpConfigStore } from '@/stores/useMcpConfigStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useSkillsCatalogStore } from '@/stores/useSkillsCatalogStore';
+import { usePluginsStore } from '@/stores/usePluginsStore';
 import {
   RiAiAgentLine,
   RiAiGenerate2,
@@ -26,6 +27,7 @@ import {
   RiListUnordered,
   RiNotification3Line,
   RiPaletteLine,
+  RiPlugLine,
   RiRobot2Line,
   RiRestartLine,
   RiServerLine,
@@ -43,6 +45,8 @@ import { McpSidebar } from '@/components/sections/mcp/McpSidebar';
 import { McpPage } from '@/components/sections/mcp/McpPage';
 import { SkillsSidebar } from '@/components/sections/skills/SkillsSidebar';
 import { SkillsPage } from '@/components/sections/skills/SkillsPage';
+import { PluginsSidebar } from '@/components/sections/plugins/PluginsSidebar';
+import { PluginsPage } from '@/components/sections/plugins/PluginsPage';
 import { ProjectsSidebar } from '@/components/sections/projects/ProjectsSidebar';
 import { ProjectsPage } from '@/components/sections/projects/ProjectsPage';
 import { RemoteInstancesSidebar } from '@/components/sections/remote-instances/RemoteInstancesSidebar';
@@ -140,6 +144,8 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): React.ComponentType<
       return RiBookOpenLine;
     case 'skills.catalog':
       return RiBookLine;
+    case 'plugins':
+      return RiPlugLine;
 
     case 'git':
       return RiGithubLine;
@@ -368,6 +374,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     if (settingsSlug === 'skills.installed' || settingsSlug === 'skills.catalog') {
       void useSkillsStore.getState().loadSkills();
       void useSkillsCatalogStore.getState().loadCatalog();
+      return;
+    }
+    if (settingsSlug === 'plugins') {
+      void usePluginsStore.getState().loadPlugins();
     }
   }, [activeProjectId, isSettingsDialogOpen, runtimeCtx.isVSCode, settingsSlug]);
 
@@ -431,6 +441,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return t('settings.page.skills.title');
       case 'skills.catalog':
         return t('settings.page.skillsCatalog.title');
+      case 'plugins':
+        return t('settings.page.plugins.title');
       case 'git':
         return t('settings.page.git.title');
       case 'appearance':
@@ -480,6 +492,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <McpSidebar onItemSelect={opts.onItemSelect} />;
       case 'skills.installed':
         return <SkillsSidebar onItemSelect={opts.onItemSelect} />;
+      case 'plugins':
+        return <PluginsSidebar onItemSelect={opts.onItemSelect} />;
       case 'providers':
         return <ProvidersSidebar onItemSelect={opts.onItemSelect} />;
       case 'usage':
@@ -516,6 +530,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <SkillsPage view="installed" />;
       case 'skills.catalog':
         return <SkillsPage view="catalog" />;
+      case 'plugins':
+        return <PluginsPage />;
       case 'providers':
         return <ProvidersPage />;
       case 'usage':

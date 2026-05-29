@@ -22,6 +22,7 @@ import {
   readSkillSupportingFile,
   writeSkillSupportingFile,
   deleteSkillSupportingFile,
+  listReadonlyPlugins,
   type SkillScope,
   type DiscoveredSkill,
   SKILL_SCOPE,
@@ -730,6 +731,12 @@ export async function handleConfigBridgeMessage(
           reloadDelayMs: deps.clientReloadDelayMs,
         },
       };
+    }
+
+    case 'api:config/plugins': {
+      const { directory } = (payload || {}) as { directory?: string };
+      const workingDirectory = resolveWorkingDirectory(ctx, directory);
+      return { id, type, success: true, data: listReadonlyPlugins(workingDirectory) };
     }
 
     case 'api:config/skills': {

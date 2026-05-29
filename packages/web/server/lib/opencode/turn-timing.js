@@ -26,6 +26,12 @@ const KNOWN_TURN_MARKS = new Set([
   'first_text_delta',
   'assistant_message_completed',
   'session_status_idle',
+  'renderer_event_received',
+  'renderer_first_assistant_part_reduced',
+  'renderer_first_visible_text_committed',
+  'renderer_assistant_completion_observed',
+  'renderer_status_idle_visible',
+  'cursor_abort_requested',
 ]);
 
 const DURATION_PAIRS = [
@@ -43,9 +49,20 @@ const DURATION_PAIRS = [
   ['prompt_accepted', 'first_tool_completed'],
   ['prompt_accepted', 'first_text_delta'],
   ['prompt_accepted', 'assistant_message_completed'],
+  ['prompt_accepted', 'renderer_event_received'],
+  ['prompt_accepted', 'renderer_first_assistant_part_reduced'],
+  ['prompt_accepted', 'renderer_first_visible_text_committed'],
+  ['first_text_delta', 'renderer_event_received'],
+  ['first_text_delta', 'renderer_first_assistant_part_reduced'],
+  ['first_text_delta', 'renderer_first_visible_text_committed'],
   ['assistant_message_created', 'first_part_updated'],
   ['assistant_message_created', 'first_text_delta'],
+  ['renderer_event_received', 'renderer_first_assistant_part_reduced'],
+  ['renderer_first_assistant_part_reduced', 'renderer_first_visible_text_committed'],
+  ['assistant_message_completed', 'renderer_assistant_completion_observed'],
   ['assistant_message_completed', 'session_status_idle'],
+  ['assistant_message_completed', 'renderer_status_idle_visible'],
+  ['renderer_assistant_completion_observed', 'renderer_status_idle_visible'],
 ];
 
 const FINAL_TOOL_STATUSES = new Set(['completed', 'complete', 'done', 'error', 'failed', 'aborted', 'timeout', 'timedout', 'cancelled', 'canceled']);
@@ -180,6 +197,19 @@ function sanitizeClientMarkMetadata(mark, metadata) {
     if (typeof restarted === 'boolean') sanitized.restarted = restarted;
     if (typeof cached === 'boolean') sanitized.cached = cached;
     if (typeof failed === 'boolean') sanitized.failed = failed;
+  }
+
+  if (mark.startsWith('renderer_')) {
+    for (const key of ['runtime', 'transport', 'visibilityState', 'source']) {
+      if (typeof metadata[key] === 'string' && metadata[key].trim()) {
+        sanitized[key] = metadata[key].trim();
+      }
+    }
+  }
+
+  if (mark === 'cursor_abort_requested') {
+    const source = normalizeString(metadata.source);
+    if (source) sanitized.source = source;
   }
 
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
@@ -524,6 +554,16 @@ function createTurnTimingRuntime(options = {}) {
 
     setMark(record, 'first_part_updated', { partId: normalizeString(part.id || properties.partID || properties.partId), type: partType });
 
+    if (partType === 'text' || partType === 'reasoning') {
+      const text = typeof part.text === 'string' ? part.text : '';
+      if (text.length > 0) {
+        setMark(record, 'first_text_delta', {
+          partId: normalizeString(part.id || properties.partID || properties.partId),
+          source: 'part_updated',
+        });
+      }
+    }
+
     if (partType === 'step-start') {
       setMark(record, 'first_step_start', { partId: normalizeString(part.id || properties.partID || properties.partId) });
       return;
@@ -614,16 +654,29 @@ function createTurnTimingRuntime(options = {}) {
     recordClientMark(input = {}) {
       const sessionId = normalizeString(input.sessionId);
       const messageId = normalizeString(input.messageId || input.messageID);
+      const assistantMessageId = normalizeString(input.assistantMessageId || input.assistantMessageID);
       const mark = normalizeMark(input.mark);
-      if (!sessionId || !mark) {
+      if ((!sessionId && !assistantMessageId) || !mark) {
         return false;
       }
 
-      const record = getOrCreateUserRecord({
-        sessionId,
-        userMessageId: messageId,
-        directory: input.directory,
-      });
+      const record = assistantMessageId
+        ? recordsByAssistantMessage.get(assistantMessageId)
+          || (sessionId
+            ? getOrCreateAssistantRecord({
+                sessionId,
+                assistantMessageId,
+                userMessageId: messageId,
+              })
+            : null)
+        : getOrCreateUserRecord({
+            sessionId,
+            userMessageId: messageId,
+            directory: input.directory,
+          });
+      if (!record) {
+        return false;
+      }
       setMark(record, mark, input.metadata, true);
       if (input.directory && record) {
         record.directory = normalizeDirectory(input.directory);

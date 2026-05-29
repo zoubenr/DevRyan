@@ -336,11 +336,28 @@ export const streamDebugMark = (name: string, detail?: Record<string, unknown>):
 };
 
 export type TurnTimingMarkInput = {
-    sessionId: string;
+    sessionId?: string;
     messageId?: string;
+    assistantMessageId?: string;
     mark: string;
     directory?: string | null;
     metadata?: Record<string, unknown>;
+};
+
+const sanitizeRendererTimingMetadata = (metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
+    if (!metadata || typeof metadata !== 'object') {
+        return undefined;
+    }
+
+    const sanitized: Record<string, unknown> = {};
+    for (const key of ['runtime', 'transport', 'visibilityState', 'source']) {
+        const value = metadata[key];
+        if (typeof value === 'string' && value.trim().length > 0) {
+            sanitized[key] = value.trim();
+        }
+    }
+
+    return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 };
 
 export const postTurnTimingMark = (input: TurnTimingMarkInput): void => {
@@ -349,17 +366,23 @@ export const postTurnTimingMark = (input: TurnTimingMarkInput): void => {
     }
 
     const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+    const assistantMessageId = typeof input.assistantMessageId === 'string' ? input.assistantMessageId.trim() : '';
     const mark = typeof input.mark === 'string' ? input.mark.trim() : '';
-    if (!sessionId || !mark) {
+    if ((!sessionId && !assistantMessageId) || !mark) {
         return;
     }
 
     const body: Record<string, unknown> = {
-        sessionId,
         mark,
     };
+    if (sessionId) {
+        body.sessionId = sessionId;
+    }
     if (typeof input.messageId === 'string' && input.messageId.trim().length > 0) {
         body.messageId = input.messageId.trim();
+    }
+    if (assistantMessageId) {
+        body.assistantMessageId = assistantMessageId;
     }
     if (typeof input.directory === 'string' && input.directory.trim().length > 0) {
         body.directory = input.directory.trim();
@@ -376,6 +399,13 @@ export const postTurnTimingMark = (input: TurnTimingMarkInput): void => {
         },
         body: JSON.stringify(body),
     }).catch(() => undefined);
+};
+
+export const postRendererTurnTimingMark = (input: TurnTimingMarkInput): void => {
+    postTurnTimingMark({
+        ...input,
+        metadata: sanitizeRendererTimingMetadata(input.metadata),
+    });
 };
 
 export const streamPerfMeasure = <T>(metric: string, fn: () => T): T => {

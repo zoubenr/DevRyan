@@ -18,6 +18,7 @@ import {
 import { sortProviderTreeForPicker } from '@/lib/providers/sorting';
 import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
+import { getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
 
 /** Chip height class - shared between chips and add button */
 const CHIP_HEIGHT_CLASS = 'h-7';
@@ -167,6 +168,14 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
     return modelsMetadata.get(key);
   };
 
+  const resolveInitialVariantForModel = React.useCallback((providerID: string, modelID: string) => {
+    const provider = providers.find((entry) => entry.id === providerID);
+    const providerModel = provider?.models.find((model: Record<string, unknown>) => (model as { id?: string }).id === modelID) as
+      | { variants?: Record<string, unknown> }
+      | undefined;
+    return resolveThinkingVariant(undefined, getOrderedThinkingVariants(providerModel?.variants));
+  }, [providers]);
+
   const getTruncatedModelDisplayName = (model: Record<string, unknown>) => {
     const name = getModelDisplayName(model);
     const nameStr = String(name);
@@ -303,6 +312,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
             providerID,
             modelID,
             displayName: getModelDisplayName(model) || modelID,
+            variant: resolveInitialVariantForModel(providerID, modelID),
             instanceId: generateInstanceId(),
           });
           // Don't close dropdown - allow selecting multiple
@@ -411,6 +421,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                     providerID: selectedItem.providerID,
                     modelID: selectedItem.modelID,
                     displayName: getModelDisplayName(selectedItem.model) || selectedItem.modelID,
+                    variant: resolveInitialVariantForModel(selectedItem.providerID, selectedItem.modelID),
                     instanceId: generateInstanceId(),
                   });
                 }
@@ -521,11 +532,9 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
               const providerModel = provider?.models.find((m: Record<string, unknown>) => (m as { id?: string }).id === model.modelID) as
                 | { variants?: Record<string, unknown> }
                 | undefined;
-              const variantKeys = providerModel?.variants ? Object.keys(providerModel.variants) : [];
+              const variantKeys = getOrderedThinkingVariants(providerModel?.variants);
               const hasVariants = variantKeys.length > 0;
-
-              const DEFAULT_VARIANT_VALUE = '__default__';
-              const variantValue = model.variant ?? DEFAULT_VARIANT_VALUE;
+              const variantValue = resolveThinkingVariant(model.variant, variantKeys);
 
               return (
                 <div key={model.instanceId} className="flex items-center gap-2 min-w-0">
@@ -541,8 +550,7 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                       value={variantValue}
                       onValueChange={(value) => {
                         if (!onUpdate) return;
-                        const nextVariant = value === DEFAULT_VARIANT_VALUE ? undefined : value;
-                        onUpdate(index, { ...model, variant: nextVariant });
+                        onUpdate(index, { ...model, variant: value });
                       }}
                     >
                       <SelectTrigger
@@ -552,15 +560,12 @@ export const ModelMultiSelect: React.FC<ModelMultiSelectProps> = ({
                         <RiBrainAi3Line
                           className={cn(
                             'h-3.5 w-3.5 flex-shrink-0',
-                            variantValue === DEFAULT_VARIANT_VALUE ? 'text-muted-foreground' : 'text-[color:var(--status-info)]'
+                            variantValue ? 'text-[color:var(--status-info)]' : 'text-muted-foreground'
                           )}
                         />
                         <SelectValue placeholder={t('multirun.modelMultiSelect.variant.placeholder')} />
                       </SelectTrigger>
                       <SelectContent fitContent>
-                        <SelectItem value={DEFAULT_VARIANT_VALUE} className="pr-2 [&>span:first-child]:hidden">
-                          {t('multirun.modelMultiSelect.variant.default')}
-                        </SelectItem>
                         {variantKeys.map((variant) => (
                           <SelectItem key={variant} value={variant} className="pr-2 [&>span:first-child]:hidden">
                             {variant}

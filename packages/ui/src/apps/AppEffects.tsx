@@ -6,6 +6,7 @@ import { useSessionAutoCleanup } from '@/hooks/useSessionAutoCleanup';
 import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlayLayout';
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 
@@ -50,6 +51,7 @@ const MiniChatPresenceBridge: React.FC = () => {
       setExternallyViewedSession(data.directory, data.sessionId, viewed);
       if (viewed) {
         markSessionViewed(data.sessionId);
+        useSessionUIStore.getState().clearReadCompletionIndicators([data.sessionId]);
       }
     };
 

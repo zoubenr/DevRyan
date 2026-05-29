@@ -28,6 +28,7 @@ const USER_CONFIG_PATHS = [
   path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
 ];
 const PROMPT_FILE_PATTERN = /^\{file:(.+)\}$/i;
+const PLUGIN_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/;
 const ANTHROPIC_OAUTH_PROVIDER_IDS = new Set([
   'anthropic',
   'claude',
@@ -57,6 +58,39 @@ export const COMMAND_SCOPE = {
 
 export type AgentScope = typeof AGENT_SCOPE[keyof typeof AGENT_SCOPE];
 export type CommandScope = typeof COMMAND_SCOPE[keyof typeof COMMAND_SCOPE];
+export type PluginScope = 'user' | 'project';
+export type PluginParsedKind = 'npm' | 'path';
+
+export type PluginEntry = {
+  id: string;
+  spec: string;
+  options?: Record<string, unknown>;
+  scope: PluginScope;
+  kind: 'config';
+  parsedKind: PluginParsedKind;
+  sourcePath: string;
+};
+
+export type PluginFile = {
+  id: string;
+  fileName: string;
+  scope: PluginScope;
+  kind: 'file';
+  absolutePath: string;
+};
+
+export type PluginConfigError = {
+  scope: PluginScope;
+  sourcePath: string;
+  index: number | null;
+  message: string;
+};
+
+export type PluginsListResponse = {
+  entries: PluginEntry[];
+  files: PluginFile[];
+  errors: PluginConfigError[];
+};
 
 export type ConfigSources = {
   md: { exists: boolean; path: string | null; fields: string[]; scope?: AgentScope | CommandScope | null };
@@ -370,6 +404,114 @@ const readConfigLayers = (workingDirectory?: string) => {
 
 const readConfig = (workingDirectory?: string): Record<string, unknown> =>
   readConfigLayers(workingDirectory).mergedConfig;
+
+const encodePluginId = (prefix: string, value: string): string => Buffer.from(`${prefix}:${value}`).toString('base64url');
+
+const isPluginPathSpec = (spec: string): boolean => (
+  spec.startsWith('/')
+  || spec.startsWith('./')
+  || spec.startsWith('../')
+  || spec.startsWith('~')
+  || path.win32.isAbsolute(spec)
+);
+
+const parsePluginRaw = (raw: unknown): { spec: string; options?: Record<string, unknown> } => {
+  const normalizeSpec = (spec: unknown): string => {
+    if (typeof spec !== 'string' || !spec.trim()) {
+      throw new Error('Plugin spec must be a non-empty string');
+    }
+    if (spec.includes('\0')) {
+      throw new Error('Plugin spec cannot contain null bytes');
+    }
+    return spec.trim();
+  };
+
+  if (typeof raw === 'string') {
+    return { spec: normalizeSpec(raw) };
+  }
+
+  if (Array.isArray(raw) && raw.length === 2 && isPlainObject(raw[1])) {
+    return { spec: normalizeSpec(raw[0]), options: { ...raw[1] } };
+  }
+
+  throw new Error('Plugin entry must be a string or [string, object]');
+};
+
+const listReadonlyPluginEntriesFromSource = (
+  source: { scope: PluginScope; path: string; config: Record<string, unknown> },
+  errors: PluginConfigError[],
+): PluginEntry[] => {
+  if (!Array.isArray(source.config.plugin)) {
+    return [];
+  }
+
+  const entries: PluginEntry[] = [];
+  source.config.plugin.forEach((raw, index) => {
+    try {
+      const parsed = parsePluginRaw(raw);
+      entries.push({
+        id: encodePluginId('config', `${source.scope}:${source.path}:${index}:${parsed.spec}`),
+        spec: parsed.spec,
+        ...(parsed.options ? { options: parsed.options } : {}),
+        scope: source.scope,
+        kind: 'config',
+        parsedKind: isPluginPathSpec(parsed.spec) ? 'path' : 'npm',
+        sourcePath: source.path,
+      });
+    } catch (error) {
+      errors.push({
+        scope: source.scope,
+        sourcePath: source.path,
+        index,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+  return entries;
+};
+
+const listReadonlyPluginFilesForScope = (scope: PluginScope, pluginDir: string): PluginFile[] => {
+  try {
+    if (!fs.existsSync(pluginDir)) {
+      return [];
+    }
+    return fs.readdirSync(pluginDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && PLUGIN_FILE_NAME_PATTERN.test(entry.name))
+      .map((entry) => ({
+        id: encodePluginId('file', `${scope}:${pluginDir}:${entry.name}`),
+        fileName: entry.name,
+        scope,
+        kind: 'file',
+        absolutePath: path.join(pluginDir, entry.name),
+      }));
+  } catch {
+    return [];
+  }
+};
+
+export const listReadonlyPlugins = (workingDirectory?: string): PluginsListResponse => {
+  const layers = readConfigLayers(workingDirectory);
+  const errors: PluginConfigError[] = [];
+  const userConfigPath = layers.paths.customPath || layers.paths.userPath;
+  const userConfig = layers.paths.customPath ? layers.customConfig : layers.userConfig;
+  const userPluginDir = path.join(layers.paths.customPath ? path.dirname(layers.paths.customPath) : OPENCODE_CONFIG_DIR, 'plugins');
+
+  const sources: Array<{ scope: PluginScope; path: string; config: Record<string, unknown> }> = [
+    { scope: 'user', path: userConfigPath, config: userConfig },
+  ];
+  if (workingDirectory && layers.paths.projectPath && fs.existsSync(layers.paths.projectPath)) {
+    sources.push({ scope: 'project', path: layers.paths.projectPath, config: layers.projectConfig });
+  }
+
+  return {
+    entries: sources.flatMap((source) => listReadonlyPluginEntriesFromSource(source, errors)),
+    files: [
+      ...listReadonlyPluginFilesForScope('user', userPluginDir),
+      ...(workingDirectory ? listReadonlyPluginFilesForScope('project', path.join(workingDirectory, '.opencode', 'plugins')) : []),
+    ],
+    errors,
+  };
+};
 
 const getAncestors = (startDir?: string, stopDir?: string): string[] => {
   if (!startDir) return [];

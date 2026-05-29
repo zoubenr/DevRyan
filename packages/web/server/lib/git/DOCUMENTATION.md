@@ -36,7 +36,7 @@ The following functions are exported and used by the web server:
 - `unstageFile(directory, filePath)`: Remove a file from the Git index while preserving working tree changes.
 
 ### Branch Operations
-- `getBranches(directory)`: Get list of local and remote branches (filtered to active remote branches).
+- `getBranches(directory)`: Get list of local and remote branches (filtered to active remote branches); non-Git directories return an empty branch response without logging stack traces.
 - `createBranch(directory, branchName, options)`: Create and checkout a new branch.
 - `checkoutBranch(directory, branchName)`: Checkout an existing branch.
 - `deleteBranch(directory, branch, options)`: Delete a branch (supports force flag).

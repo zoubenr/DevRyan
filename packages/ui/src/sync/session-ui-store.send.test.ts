@@ -41,8 +41,22 @@ let mockSourceParts: Array<Record<string, unknown>> = []
 let mockChildStoreState: Record<string, unknown> = { message: {}, part: {} }
 let mockArchivedSessions: Array<Record<string, unknown>> = []
 let rejectNextSendMessage = false
+let deferNextSendMessage = false
+let deferredSendMessage: { promise: Promise<unknown>; resolve: (value: unknown) => void; reject: (reason?: unknown) => void } | null = null
+let deferNextCreateSession = false
+let deferredCreateSession: { promise: Promise<unknown>; resolve: (value: unknown) => void; reject: (reason?: unknown) => void } | null = null
 let selectCreatedSessionDuringCreate = false
 let deferredActivateDirectoryResolve: (() => void) | null = null
+
+function createDeferredSend() {
+  let resolve!: (value: unknown) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<unknown>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
 
 const createMockSessionRecord = (
   title?: string,
@@ -80,9 +94,21 @@ mock.module("@/lib/opencode/client", () => ({
     }),
     sendMessage: mock((params: Record<string, unknown>) => {
       sendMessageCalls.push(params)
+      const signal = params.signal as AbortSignal | undefined
+      if (signal?.aborted) {
+        return Promise.reject(new DOMException("Aborted", "AbortError"))
+      }
       if (rejectNextSendMessage) {
         rejectNextSendMessage = false
         return Promise.reject(new Error("send failed"))
+      }
+      if (deferNextSendMessage) {
+        deferNextSendMessage = false
+        deferredSendMessage = createDeferredSend()
+        signal?.addEventListener("abort", () => {
+          deferredSendMessage?.reject(new DOMException("Aborted", "AbortError"))
+        }, { once: true })
+        return deferredSendMessage.promise
       }
       return Promise.resolve({ data: true })
     }),
@@ -112,7 +138,15 @@ mock.module("./session-actions", () => ({
     return Promise.resolve(created)
   }),
   createSessionRecord: mock((title?: string, directory?: string | null, parentID?: string | null) =>
-    Promise.resolve(createMockSessionRecord(title, directory, parentID)),
+    {
+      if (deferNextCreateSession) {
+        deferNextCreateSession = false
+        createSessionCalls.push({ title, directory, parentID })
+        deferredCreateSession = createDeferredSend()
+        return deferredCreateSession.promise
+      }
+      return Promise.resolve(createMockSessionRecord(title, directory, parentID))
+    },
   ),
   consumeLastCreateSessionError: mock(() => null),
   deleteSession: mock(() => Promise.resolve(true)),
@@ -380,6 +414,10 @@ describe("session-ui-store send routing", () => {
     mockChildStoreState = { message: {}, part: {} }
     mockArchivedSessions = []
     rejectNextSendMessage = false
+    deferNextSendMessage = false
+    deferredSendMessage = null
+    deferNextCreateSession = false
+    deferredCreateSession = null
     selectCreatedSessionDuringCreate = false
     deferredActivateDirectoryResolve = null
     const storage = getSafeStorage()
@@ -403,6 +441,7 @@ describe("session-ui-store send routing", () => {
       implementedPlanRequests: new Set(),
       planModeUserMessages: new Set(),
       planModeUserMessagesBySession: new Map(),
+      abortControllers: new Map(),
     })
     useInputStore.setState({ pendingInputText: null, pendingInputMode: "replace" })
     useMessageQueueStore.setState({ queuedMessages: {}, queueModeEnabled: true })
@@ -463,6 +502,52 @@ describe("session-ui-store send routing", () => {
     })
   })
 
+  test("clears normal completion indicators when a session is read", () => {
+    useSessionUIStore.setState({
+      sessionCompletionIndicator: new Map([
+        ["session-a", { messageId: "msg-a", completedAt: 123 }],
+      ]),
+      sessionPlanIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().clearReadCompletionIndicators(["session-a"])
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has("session-a")).toBe(false)
+  })
+
+  test("clears completed plan indicators when a session is read without hiding plan availability", () => {
+    useSessionUIStore.setState({
+      sessionPlanAvailable: new Map([["session-a", true]]),
+      sessionPlanIndicator: new Map([
+        ["session-a", { state: "completed", sourceMessageId: "msg-plan" }],
+      ]),
+      sessionCompletionIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().clearReadCompletionIndicators(["session-a"])
+
+    const state = useSessionUIStore.getState()
+    expect(state.sessionPlanIndicator.has("session-a")).toBe(false)
+    expect(state.sessionPlanAvailable.get("session-a")).toBe(true)
+  })
+
+  test("keeps proposed plan indicators when a session is read", () => {
+    useSessionUIStore.setState({
+      sessionPlanAvailable: new Map([["session-a", true]]),
+      sessionPlanIndicator: new Map([
+        ["session-a", { state: "proposed", sourceMessageId: "msg-plan" }],
+      ]),
+      sessionCompletionIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().clearReadCompletionIndicators(["session-a"])
+
+    expect(useSessionUIStore.getState().sessionPlanIndicator.get("session-a")).toEqual({
+      state: "proposed",
+      sourceMessageId: "msg-plan",
+    })
+  })
+
   test("sendMessageToSession exposes implementation send message ids", async () => {
     const messageIds: string[] = []
 
@@ -484,6 +569,118 @@ describe("session-ui-store send routing", () => {
     )
 
     expect(messageIds).toEqual(["message-1"])
+  })
+
+  test("sendMessage defensively creates a session when no draft or current session exists", async () => {
+    mockCreatedSession = { id: "session-created", directory: "/repo" }
+
+    await useSessionUIStore.getState().sendMessage(
+      "start a new chat",
+      "provider-a",
+      "model-a",
+      "builder",
+    )
+
+    expect(createSessionCalls).toEqual([{ title: undefined, directory: "/repo", parentID: null }])
+    expect(useSessionUIStore.getState().currentSessionId).toBe("session-created")
+    expect(optimisticCalls).toEqual([{
+      sessionId: "session-created",
+      content: "start a new chat",
+      providerID: "provider-a",
+      modelID: "model-a",
+      agent: "builder",
+    }])
+    expect(sendMessageCalls[0]?.id).toBe("session-created")
+    expect(sendMessageCalls[0]?.providerID).toBe("provider-a")
+    expect(sendMessageCalls[0]?.modelID).toBe("model-a")
+    expect(sendMessageCalls[0]?.text).toBe("start a new chat")
+    expect(sendMessageCalls[0]?.agent).toBe("builder")
+    expect(sendMessageCalls[0]?.directory).toBe("/repo")
+  })
+
+  test("new draft sends expose a pending abort target before prompt acceptance", async () => {
+    mockCreatedSession = { id: "session-created", directory: "/repo" }
+    deferNextCreateSession = true
+    deferNextSendMessage = true
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentDraftId: "draft-send",
+      draftsById: {
+        "draft-send": {
+          id: "draft-send",
+          text: "start a new chat",
+          createdAt: 1,
+          updatedAt: 1,
+          directoryOverride: "/repo",
+          parentID: null,
+        },
+      },
+      draftOrder: ["draft-send"],
+      newSessionDraft: { open: true, id: "draft-send", directoryOverride: "/repo", parentID: null },
+    })
+
+    const sendPromise = useSessionUIStore.getState().sendMessage(
+      "start a new chat",
+      "provider-a",
+      "model-a",
+      "builder",
+    )
+    await Promise.resolve()
+
+    expect((useSessionUIStore.getState() as unknown as { hasPendingSendAbort: (key: string) => boolean }).hasPendingSendAbort("draft:draft-send")).toBe(true)
+    expect(sendMessageCalls).toHaveLength(0)
+
+    deferredCreateSession?.resolve(mockCreatedSession)
+    await Promise.resolve()
+    expect((useSessionUIStore.getState() as unknown as { hasPendingSendAbort: (key: string) => boolean }).hasPendingSendAbort("session-created")).toBe(true)
+    expect((useSessionUIStore.getState() as unknown as { hasPendingSendAbort: (key: string) => boolean }).hasPendingSendAbort("draft:draft-send")).toBe(false)
+    expect(sendMessageCalls[0]?.signal).toBeInstanceOf(AbortSignal)
+
+    deferredSendMessage?.resolve({ data: true })
+    await sendPromise
+  })
+
+  test("aborting a promoted draft send cancels prompt acceptance and clears pending state", async () => {
+    mockCreatedSession = { id: "session-created", directory: "/repo" }
+    deferNextSendMessage = true
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentDraftId: "draft-send",
+      draftsById: {
+        "draft-send": {
+          id: "draft-send",
+          text: "stop me",
+          createdAt: 1,
+          updatedAt: 1,
+          directoryOverride: "/repo",
+          parentID: null,
+        },
+      },
+      draftOrder: ["draft-send"],
+      newSessionDraft: { open: true, id: "draft-send", directoryOverride: "/repo", parentID: null },
+    })
+
+    const sendPromise = useSessionUIStore.getState().sendMessage(
+      "stop me",
+      "provider-a",
+      "model-a",
+      "builder",
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect((useSessionUIStore.getState() as unknown as { abortPendingSend: (key: string) => boolean }).abortPendingSend("session-created")).toBe(true)
+
+    let thrown: unknown = null
+    try {
+      await sendPromise
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    expect((sendMessageCalls[0]?.signal as AbortSignal | undefined)?.aborted).toBe(true)
+    expect((useSessionUIStore.getState() as unknown as { hasPendingSendAbort: (key: string) => boolean }).hasPendingSendAbort("session-created")).toBe(false)
   })
 
   test("blocks PDF attachments before optimistic send when model explicitly lacks PDF input", async () => {
@@ -1713,6 +1910,65 @@ describe("session-ui-store send routing", () => {
     }
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toBe("Failed to create session")
+
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBe(null)
+    expect(state.currentDraftId).toBe("draft-send")
+    expect(state.draftsById["draft-send"]?.text).toBe("message from draft")
+    expect(state.newSessionDraft.open).toBe(true)
+  })
+
+  test("draft send validates provider and model before creating a session", async () => {
+    mockCreatedSession = { id: "session-new", directory: "/repo" }
+    mockConfigState = {
+      currentProviderId: "",
+      currentModelId: "",
+      providers: [],
+      agents: [],
+    }
+    useSessionUIStore.setState({
+      currentSessionId: null,
+      currentDraftId: "draft-send",
+      draftsById: {
+        "draft-send": {
+          id: "draft-send",
+          text: "message from draft",
+          createdAt: 1,
+          updatedAt: 1,
+          selectedProjectId: null,
+          directoryOverride: "/repo",
+          parentID: null,
+        },
+      },
+      draftOrder: ["draft-send"],
+      newSessionDraft: {
+        open: true,
+        id: "draft-send",
+        directoryOverride: "/repo",
+        parentID: null,
+      },
+    })
+
+    let thrown: unknown = null
+    try {
+      await useSessionUIStore.getState().sendMessage(
+        "message from draft",
+        "",
+        "",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "normal",
+      )
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toBe("Cannot send message: provider or model not selected")
+    expect(createSessionCalls).toEqual([])
 
     const state = useSessionUIStore.getState()
     expect(state.currentSessionId).toBe(null)

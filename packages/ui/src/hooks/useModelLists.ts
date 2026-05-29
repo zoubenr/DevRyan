@@ -1,6 +1,7 @@
 import React from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { isHiddenModelRef } from '@/lib/providers/modelVisibility';
 import type { Provider } from '@opencode-ai/sdk/v2';
 
 type ProviderModel = Provider["models"][string];
@@ -18,10 +19,6 @@ export const useModelLists = () => {
   const favoriteModels = useUIStore((state) => state.favoriteModels);
   const hiddenModels = useUIStore((state) => state.hiddenModels);
 
-  const isHidden = React.useCallback((providerID: string, modelID: string) => {
-    return hiddenModels.some((item) => item.providerID === providerID && item.modelID === modelID);
-  }, [hiddenModels]);
-
   const favoriteModelsList = React.useMemo(() => {
     return favoriteModels
       .map(({ providerID, modelID }) => {
@@ -30,11 +27,11 @@ export const useModelLists = () => {
         const providerModels = Array.isArray(provider.models) ? provider.models : [];
         const model = providerModels.find((m: ProviderModel) => m.id === modelID);
         if (!model) return null;
-        if (isHidden(providerID, modelID)) return null;
+        if (isHiddenModelRef(hiddenModels, providerID, modelID)) return null;
         return { provider, model, providerID, modelID };
       })
       .filter((item): item is ModelListItem => item !== null);
-  }, [favoriteModels, providers, isHidden]);
+  }, [favoriteModels, providers, hiddenModels]);
 
   return { favoriteModelsList };
 };

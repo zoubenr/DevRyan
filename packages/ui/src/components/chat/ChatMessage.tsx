@@ -32,8 +32,9 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual, areRelevantTurnGroupingContextsEqual } from './message/renderCompare';
-import { resolveMessageHeaderVariant } from './message/messageHeaderVariant';
+import { resolveMessageHeaderVariantDisplay } from './message/messageHeaderVariant';
 import { isPlanModeUserMessage } from '@/lib/messages/actionablePlan';
+import { getModelVariantDisplayState, getOrderedThinkingVariants } from '@/lib/providers/variantControls';
 import { resolveUserMessageRevertSessionId } from './chatMessageActions';
 import { classifyAssistantError } from './message/assistantError';
 import { getAssistantMessageBottomPaddingClass, hasRenderableAssistantContent } from './chatMessageLayout';
@@ -367,13 +368,25 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         return contextModelSelection?.modelId ?? null;
     }, [isUser, messageModelID, contextModelSelection]);
 
+    const headerVariantRaw = !isUser ? (turnGroupingContext?.userMessageVariant ?? previousUserMetadata?.variant) : undefined;
+
+    const modelVariantDisplayState = React.useMemo(() => {
+        if (isUser || !providerID || !modelID || providers.length === 0) {
+            return null;
+        }
+
+        const provider = providers.find((p) => p.id === providerID);
+        return getModelVariantDisplayState(provider, modelID, headerVariantRaw);
+    }, [headerVariantRaw, isUser, modelID, providerID, providers]);
+
     const modelName = React.useMemo(() => {
         if (isUser) return undefined;
 
         if (providerID && modelID && providers.length > 0) {
             const provider = providers.find((p) => p.id === providerID);
             if (provider?.models && Array.isArray(provider.models)) {
-                const model = provider.models.find((m: Record<string, unknown>) => (m as Record<string, unknown>).id === modelID);
+                const displayModelId = modelVariantDisplayState?.displayModelId ?? modelID;
+                const model = provider.models.find((m: Record<string, unknown>) => (m as Record<string, unknown>).id === displayModelId);
                 const modelObj = model as Record<string, unknown> | undefined;
                 const name = modelObj?.name;
                 return typeof name === 'string' ? name : undefined;
@@ -381,7 +394,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
 
         return undefined;
-    }, [isUser, providerID, modelID, providers]);
+    }, [isUser, providerID, modelID, modelVariantDisplayState, providers]);
 
     const modelVariantOptions = React.useMemo(() => {
         if (isUser) return [];
@@ -392,13 +405,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             return [];
         }
 
+        if (modelVariantDisplayState) {
+            return modelVariantDisplayState.visibleVariantOptions;
+        }
+
         const model = provider.models.find((m: Record<string, unknown>) => (m as Record<string, unknown>).id === modelID) as
             | { variants?: Record<string, unknown> }
             | undefined;
 
-        const variants = model?.variants;
-        return variants ? Object.keys(variants) : [];
-    }, [isUser, modelID, providerID, providers]);
+        return getOrderedThinkingVariants(model?.variants);
+    }, [isUser, modelID, modelVariantDisplayState, providerID, providers]);
 
     const displayAgentName = useStickyDisplayValue<string>(agentName);
     const displayProviderIDValue = useStickyDisplayValue<string>(providerID ?? undefined);
@@ -684,9 +700,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         });
     }, []);
 
-    const headerVariantRaw = !isUser ? (turnGroupingContext?.userMessageVariant ?? previousUserMetadata?.variant) : undefined;
-
-    const headerVariant = !isUser ? resolveMessageHeaderVariant(headerVariantRaw, modelVariantOptions) : undefined;
+    const headerVariantDisplay = !isUser
+        ? resolveMessageHeaderVariantDisplay({
+            recordedVariant: headerVariantRaw,
+            modelVariantOptions,
+            fastEnabled: modelVariantDisplayState?.fastEnabled ?? false,
+        })
+        : { variant: undefined, fastEnabled: false };
 
     // Summary body removed — flat rendering means text is always inline.
 
@@ -1147,7 +1167,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                     modelID={headerModelID}
                                     agentName={headerAgentName}
                                     modelName={headerModelName}
-                                    variant={headerVariant}
+                                    variant={headerVariantDisplay.variant}
+                                    fastEnabled={headerVariantDisplay.fastEnabled}
                                     isDarkTheme={isDarkTheme}
                                 />
                             )}

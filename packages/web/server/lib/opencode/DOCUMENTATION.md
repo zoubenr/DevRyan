@@ -45,6 +45,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
 - `packages/web/server/lib/opencode/project-icon-routes.js`: project icon upload/read/discovery route registration and icon storage orchestration.
 - `packages/web/server/lib/opencode/skill-routes.js`: route registration for skill config CRUD, supporting files, and skills catalog scan/install flows.
+- `packages/web/server/lib/opencode/plugins-readonly.js`: read-only OpenCode plugin discovery for Settings. Lists top-level `plugin` config entries and user/project plugin files without mutation routes, registry calls, or OpenCode reload behavior.
 - `packages/web/server/lib/opencode/settings-runtime.js`: Settings persistence runtime (disk IO, migrations, normalization, project validation, and persisted update serialization).
 - `packages/web/server/lib/opencode/settings-helpers.js`: Settings payload sanitization/format helpers runtime for response shaping and persisted merge prep.
 - `packages/web/server/lib/opencode/settings-normalization-runtime.js`: path/settings/tunnel normalization and sanitization helpers runtime used by settings/routes/config wiring.
@@ -157,6 +158,7 @@ This module provides OpenCode server integration utilities for the web server ru
 
 ## Public exports (harness-preflight.js)
 - `lintAgentHarness(options?)`: read-only linting for unavailable delegated agents, invalid permission keys, hidden skills still allowed by agents, stale model overrides, duplicate skill names by path, malformed skill frontmatter, and latest warmup failures.
+- Permission-key linting accepts DevRyan's canonical tool aliases, including the edit/write/patch/apply_patch group, `webfetch`, and documented MCP-style wildcard denies such as `supabase_*`.
 - `auditPackagedPromptContext(options?)`: report-only prompt context budget audit for packaged agents. It measures byte count, repeated routing rules, duplicated tool-safety text, and extraction candidates without mutating prompt content.
 - `createHarnessPreflight(dependencies?)`: composes lint/audit/tool manifest/warmup diagnostics into a preflight result.
 - `registerHarnessPreflightRoute(app, preflight)`: registers `GET` and `POST /api/diagnostics/harness/preflight`.
@@ -263,7 +265,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `createProjectDirectoryRuntime(dependencies)`: creates runtime for request/project directory candidate normalization and validation.
 - Returned API:
   - `resolveDirectoryCandidate(value)`
-  - `validateDirectoryPath(candidate)`
+  - `validateDirectoryPath(candidate)`: validates that the candidate exists as a directory and returns its filesystem realpath so request-scoped OpenCode calls use the same canonical directory key as session records.
   - `resolveProjectDirectory(req)`
   - `resolveOptionalProjectDirectory(req)`
 

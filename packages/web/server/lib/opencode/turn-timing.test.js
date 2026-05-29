@@ -518,4 +518,52 @@ describe('turn timing runtime', () => {
         }));
       });
   });
+
+  it('accepts sanitized renderer timing marks without storing prompt or response text', () => {
+    let now = 1_000;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({
+      sessionId: 'ses_1',
+      messageId: 'msg_user',
+      mark: 'send_started',
+      directory: '/project',
+    });
+
+    now = 1_100;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_assistant',
+          sessionID: 'ses_1',
+          role: 'assistant',
+          parentID: 'msg_user',
+          time: { created: 1_100 },
+        },
+      },
+    });
+
+    now = 1_150;
+    expect(runtime.recordClientMark({
+      assistantMessageId: 'msg_assistant',
+      mark: 'renderer_event_received',
+      metadata: {
+        runtime: 'desktop',
+        transport: 'ws',
+        visibilityState: 'visible',
+        prompt: 'secret prompt',
+        text: 'secret response',
+        delta: 'secret token',
+      },
+    })).toBe(true);
+
+    const record = runtime.getRecentTimings({ sessionId: 'ses_1' }).records[0];
+    expect(record.marks.renderer_event_received.metadata).toEqual({
+      runtime: 'desktop',
+      transport: 'ws',
+      visibilityState: 'visible',
+    });
+    expect(JSON.stringify(record)).not.toContain('secret');
+  });
 });

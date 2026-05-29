@@ -18,7 +18,7 @@ import type { Event, Message, Part, Session, SessionStatus } from "@opencode-ai/
 import { ChildStoreManager } from "./child-store"
 import { INITIAL_STATE } from "./types"
 import { useSessionUIStore } from "./session-ui-store"
-import { applySyncEventForTest } from "./sync-context"
+import { applySyncEventForTest, setActiveSession } from "./sync-context"
 import { useNotificationStore } from "./notification-store"
 
 const DIRECTORY = "/repo"
@@ -116,6 +116,11 @@ const partUpdatedEvent = (part: Part): Event => ({
   properties: { part },
 } as Event)
 
+const sessionStatusEvent = (status: SessionStatus): Event => ({
+  type: "session.status",
+  properties: { sessionID: SESSION_ID, status },
+} as Event)
+
 const routingIndexFor = (messageIds: string[] = [USER_MESSAGE_ID, ASSISTANT_MESSAGE_ID]) => ({
   sessionDirectoryById: new Map([[SESSION_ID, DIRECTORY]]),
   messageSessionById: new Map(messageIds.map((messageId) => [messageId, SESSION_ID])),
@@ -132,10 +137,12 @@ describe("sync plan lifecycle on message.part.delta", () => {
     useSessionUIStore.setState({
       sessionPlanIndicator: new Map(),
       sessionPlanAvailable: new Map(),
+      sessionCompletionIndicator: new Map(),
       implementedPlanRequests: new Set(),
       planModeUserMessages: new Set(),
       planModeUserMessagesBySession: new Map(),
     })
+    setActiveSession("", "")
     useNotificationStore.setState({
       list: [],
       index: {
@@ -242,6 +249,64 @@ describe("sync plan lifecycle on message.part.delta", () => {
     expect(notificationState.list[0]?.messageId).toBe(ASSISTANT_MESSAGE_ID)
     expect(notificationState.list[0]?.viewed).toBe(false)
     expect(notificationState.sessionHasCompletion(SESSION_ID)).toBe(true)
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.get(SESSION_ID)).toEqual({
+      messageId: ASSISTANT_MESSAGE_ID,
+      completedAt: 3,
+    })
+  })
+
+  test("marks viewed normal turn completion without creating an unread notification", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const completedPart = textPart("Completed work.")
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [userMessage(), assistantMessage()],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [completedPart],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+    setActiveSession(DIRECTORY, SESSION_ID)
+
+    applySyncEventForTest(DIRECTORY, partUpdatedEvent(completedPart), childStores, routingIndexFor())
+    await flushAsync()
+
+    expect(useNotificationStore.getState().list).toHaveLength(0)
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
+  })
+
+  test("clears normal completion when the session becomes busy again", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [userMessage(), assistantMessage()],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [textPart("Completed work.")],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+    useSessionUIStore.getState().markSessionTurnCompleted(SESSION_ID, ASSISTANT_MESSAGE_ID, 3)
+
+    applySyncEventForTest(DIRECTORY, sessionStatusEvent({ type: "busy" } as SessionStatus), childStores, routingIndexFor())
+    await flushAsync()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
   })
 
   test("marks implemented plan completed and records unread completion from part update", async () => {
@@ -301,6 +366,58 @@ describe("sync plan lifecycle on message.part.delta", () => {
     expect(notificationState.list[0]?.session).toBe(SESSION_ID)
     expect(notificationState.list[0]?.messageId).toBe(IMPLEMENT_ASSISTANT_MESSAGE_ID)
     expect(notificationState.list[0]?.viewed).toBe(false)
+  })
+
+  test("marks viewed implemented plan completed without requiring unread notification", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const completedPart = implementTextPart("Implemented the plan.")
+    const implementationKey = `${SESSION_ID}:${ASSISTANT_MESSAGE_ID}:plan:0`
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Plan session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [
+          userMessage(),
+          assistantMessage(),
+          implementingUserMessage(),
+          implementingAssistantMessage(),
+        ],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [planModePart()],
+        [ASSISTANT_MESSAGE_ID]: [textPart(`<!--plan-->\n${structuredPlanBody}`)],
+        [IMPLEMENT_USER_MESSAGE_ID]: [],
+        [IMPLEMENT_ASSISTANT_MESSAGE_ID]: [completedPart],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+    setActiveSession(DIRECTORY, SESSION_ID)
+
+    useSessionUIStore.getState().recordUserMessagePlanMode(SESSION_ID, USER_MESSAGE_ID, true)
+    useSessionUIStore.getState().markPlanProposed(SESSION_ID, ASSISTANT_MESSAGE_ID)
+    useSessionUIStore.getState().markPlanImplementationRequested(implementationKey)
+    useSessionUIStore.getState().markPlanImplementing(
+      SESSION_ID,
+      ASSISTANT_MESSAGE_ID,
+      IMPLEMENT_USER_MESSAGE_ID,
+    )
+
+    applySyncEventForTest(
+      DIRECTORY,
+      partUpdatedEvent(completedPart),
+      childStores,
+      routingIndexFor([USER_MESSAGE_ID, ASSISTANT_MESSAGE_ID, IMPLEMENT_USER_MESSAGE_ID, IMPLEMENT_ASSISTANT_MESSAGE_ID]),
+    )
+    await flushAsync()
+
+    const sessionUIState = useSessionUIStore.getState()
+    expect(sessionUIState.sessionPlanIndicator.has(SESSION_ID)).toBe(false)
+    expect(sessionUIState.sessionPlanAvailable.get(SESSION_ID)).toBe(true)
+    expect(useNotificationStore.getState().list).toHaveLength(0)
   })
 
   test("does not record stale completion when part update finalizes a different message", async () => {

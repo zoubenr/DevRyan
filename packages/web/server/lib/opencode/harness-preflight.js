@@ -18,6 +18,7 @@ const KNOWN_PERMISSION_KEYS = new Set([
   'external_directory',
   'grep_app_*',
   'input',
+  'apply_patch',
   'patch',
   'plan_enter',
   'plan_exit',
@@ -25,7 +26,9 @@ const KNOWN_PERMISSION_KEYS = new Set([
   'question_*',
   'read',
   'skill',
+  'supabase_*',
   'task',
+  'webfetch',
   'websearch_*',
   'write',
 ]);

@@ -24,6 +24,7 @@ import { openExternalUrl } from '@/lib/url';
 import { splitAntigravityProviderForDisplay } from '@/lib/providers/antigravity';
 import { CURSOR_ACP_PROVIDER_ID } from '@/lib/providers/cursorAcp';
 import { getProviderDisplayName, isAnthropicOAuthProviderId } from '@/lib/providers/display';
+import { isHiddenModelRef } from '@/lib/providers/modelVisibility';
 import { getProviderModelsForDisplay } from './providerSorting';
 import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
@@ -1764,9 +1765,7 @@ export const ProvidersPage: React.FC = () => {
                   const modelId = typeof model?.id === 'string' ? model.id : '';
                   const modelName = typeof model?.name === 'string' ? model.name : modelId;
                   const metadata = modelId ? getModelMetadata(selectedProvider.id, modelId) as ModelMetadata | undefined : undefined;
-                  const isHidden = hiddenModels.some(
-                    (item) => item.providerID === selectedProvider.id && item.modelID === modelId
-                  );
+                  const isHidden = isHiddenModelRef(hiddenModels, selectedProvider.id, modelId);
 
                   const contextTokens = formatTokens(metadata?.limit?.context);
                   const outputTokens = formatTokens(metadata?.limit?.output);

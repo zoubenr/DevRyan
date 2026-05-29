@@ -722,6 +722,7 @@ class OpencodeService {
       retryCount?: number;
     };
     directory?: string | null;
+    signal?: AbortSignal;
   }): Promise<string> {
     // Reuse one client-side message ID across retries. The server accepts this
     // as the real user message ID, making ambiguous network retries idempotent.
@@ -808,6 +809,9 @@ class OpencodeService {
     if (targetDirectory) {
       await waitForWorktreeBootstrap(targetDirectory);
     }
+    if (params.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
 
     // Use async prompt endpoint so the client doesn't block waiting
     // for model work (SSE will deliver output/status).
@@ -876,8 +880,12 @@ class OpencodeService {
             ...(params.format ? { format: params.format } : {}),
             parts,
           }),
+          signal: params.signal,
         });
       } catch (error) {
+        if (params.signal?.aborted) {
+          throw error;
+        }
         if (attempt < 2 && isRetryableFetchError(error)) {
           const delay = getRetryDelayMs(attempt);
           console.warn(
@@ -948,6 +956,7 @@ class OpencodeService {
     files?: Array<FileInputLite>;
     messageId?: string;
     directory?: string | null;
+    signal?: AbortSignal;
   }): Promise<string> {
     const tempMessageId = params.messageId ?? ascendingId("msg");
 
@@ -964,6 +973,9 @@ class OpencodeService {
     if (targetDirectory) {
       await waitForWorktreeBootstrap(targetDirectory);
       url.searchParams.set('directory', targetDirectory);
+    }
+    if (params.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
     }
 
     const payload: Record<string, unknown> = {
@@ -983,6 +995,7 @@ class OpencodeService {
         accept: 'application/json',
       },
       body: JSON.stringify(payload),
+      signal: params.signal,
     });
 
     if (!response.ok) {

@@ -10,12 +10,55 @@ function assistantMessage(id: string, completed?: number): Message {
   } as Message
 }
 
+function terminalAssistantMessage(id: string, finish: string): Message {
+  return {
+    id,
+    role: "assistant",
+    finish,
+    time: { created: 1 },
+  } as unknown as Message
+}
+
 describe("isSessionWorkingFromState", () => {
   test("trusts authoritative idle status over incomplete assistant messages", () => {
     expect(isSessionWorkingFromState({
       status: { type: "idle" } as SessionStatus,
       permissions: [],
       messages: [assistantMessage("msg_assistant_1")],
+    })).toBe(false)
+  })
+
+  test("keeps a live streaming message working through a premature idle status", () => {
+    expect(isSessionWorkingFromState({
+      status: { type: "idle" } as SessionStatus,
+      permissions: [],
+      messages: [assistantMessage("msg_assistant_1")],
+      liveStreamingMessageId: "msg_assistant_1",
+    })).toBe(true)
+  })
+
+  test("does not keep terminal assistant messages working through delayed status cleanup", () => {
+    expect(isSessionWorkingFromState({
+      status: { type: "busy" } as SessionStatus,
+      permissions: [],
+      messages: [terminalAssistantMessage("msg_assistant_1", "cancelled")],
+      liveStreamingMessageId: "msg_assistant_1",
+    })).toBe(false)
+
+    expect(isSessionWorkingFromState({
+      status: { type: "idle" } as SessionStatus,
+      permissions: [],
+      messages: [terminalAssistantMessage("msg_assistant_1", "stop")],
+      liveStreamingMessageId: "msg_assistant_1",
+    })).toBe(false)
+  })
+
+  test("does not treat a stale streaming id for another message as working", () => {
+    expect(isSessionWorkingFromState({
+      status: { type: "idle" } as SessionStatus,
+      permissions: [],
+      messages: [assistantMessage("msg_assistant_1")],
+      liveStreamingMessageId: "msg_assistant_old",
     })).toBe(false)
   })
 

@@ -2220,12 +2220,34 @@ export async function getBranches(directory) {
       branches: result.branches
     };
   } catch (error) {
+    if (isNotGitRepositoryError(error)) {
+      return {
+        all: [],
+        current: null,
+        branches: {}
+      };
+    }
     console.error('Failed to get branches:', error);
     throw error;
   }
 }
 
 async function filterActiveRemoteBranches(git, remoteBranches) {
+  const parsedRemoteBranches = remoteBranches
+    .map((remoteBranch) => {
+      const match = remoteBranch.match(/^remotes\/([^/]+)\/(.+)$/);
+      if (!match) {
+        return null;
+      }
+      return {
+        remoteBranch,
+        remoteName: match[1],
+        branchName: match[2],
+      };
+    })
+    .filter(Boolean)
+    .filter(({ branchName }) => branchName !== 'HEAD');
+
   try {
     const remotes = await git.getRemotes();
     const branchesByRemote = new Map();
@@ -2243,20 +2265,21 @@ async function filterActiveRemoteBranches(git, remoteBranches) {
         }
         branchesByRemote.set(remote.name, actualRemoteBranches);
       } catch {
-        // Skip remotes that fail (e.g., unreachable)
+        // Keep local remote-tracking refs when a remote cannot be verified.
       }
     }));
 
-    return remoteBranches.filter(remoteBranch => {
-      const match = remoteBranch.match(/^remotes\/[^\/]+\/(.+)$/);
-      if (!match) return false;
-      const remoteName = remoteBranch.split('/')[1];
-      const branchName = match[1];
-      return branchesByRemote.get(remoteName)?.has(branchName) ?? false;
-    });
+    return parsedRemoteBranches
+      .filter(({ remoteName, branchName }) => {
+        if (!branchesByRemote.has(remoteName)) {
+          return true;
+        }
+        return branchesByRemote.get(remoteName).has(branchName);
+      })
+      .map(({ remoteBranch }) => remoteBranch);
   } catch (error) {
     console.warn('Failed to filter active remote branches, returning all:', error.message);
-    return remoteBranches;
+    return parsedRemoteBranches.map(({ remoteBranch }) => remoteBranch);
   }
 }
 
@@ -3053,7 +3076,7 @@ export async function canonicalizeWorktreeState(directory) {
     };
   }
 
-  const cwd = await canonicalPath(directoryPath);
+  let cwd = await canonicalPath(directoryPath);
   const git = await createGit(directoryPath);
 
   let worktreeRoot = null;
@@ -3064,9 +3087,17 @@ export async function canonicalizeWorktreeState(directory) {
 
   try {
     const context = await resolveWorktreeProjectContext(directoryPath);
-    worktreeRoot = await canonicalPath(context.worktreeRoot);
+    const topLevel = await canonicalPath(context.sandbox);
+    worktreeRoot = topLevel;
+    cwd = topLevel;
   } catch {
     worktreeStatus = 'invalid';
+    const topLevel = await git.raw(['rev-parse', '--show-toplevel']).then((value) => String(value || '').trim()).catch(() => '');
+    if (topLevel) {
+      const canonicalTopLevel = await canonicalPath(path.resolve(directoryPath, topLevel));
+      worktreeRoot = canonicalTopLevel;
+      cwd = canonicalTopLevel;
+    }
   }
 
   try {

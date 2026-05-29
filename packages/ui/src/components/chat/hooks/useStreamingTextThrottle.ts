@@ -7,7 +7,7 @@ interface UseStreamingTextThrottleInput {
     identityKey?: string;
 }
 
-const DEFAULT_STREAMING_TEXT_THROTTLE_MS = 100;
+export const DEFAULT_STREAMING_TEXT_THROTTLE_MS = 16;
 
 export const computeStreamingThrottleDelay = (lastEmitAt: number, now: number, throttleMs: number): number => {
     const elapsed = now - lastEmitAt;
@@ -16,6 +16,7 @@ export const computeStreamingThrottleDelay = (lastEmitAt: number, now: number, t
 
 interface StreamingThrottleState {
     timer: ReturnType<typeof setTimeout> | null;
+    rafId: number | null;
     pendingText: string;
     lastEmitAt: number;
 }
@@ -26,6 +27,14 @@ const clearTimer = (state: StreamingThrottleState): void => {
     }
     clearTimeout(state.timer);
     state.timer = null;
+};
+
+const clearRaf = (state: StreamingThrottleState): void => {
+    if (state.rafId === null) {
+        return;
+    }
+    cancelAnimationFrame(state.rafId);
+    state.rafId = null;
 };
 
 export const useStreamingTextThrottle = ({
@@ -40,6 +49,7 @@ export const useStreamingTextThrottle = ({
 
     const stateRef = React.useRef<StreamingThrottleState>({
         timer: null,
+        rafId: null,
         pendingText: text,
         lastEmitAt: 0,
     });
@@ -55,6 +65,7 @@ export const useStreamingTextThrottle = ({
     React.useEffect(() => {
         const state = stateRef.current;
         clearTimer(state);
+        clearRaf(state);
         state.pendingText = latestTextRef.current;
         state.lastEmitAt = 0;
         setThrottledText(latestTextRef.current);
@@ -66,26 +77,7 @@ export const useStreamingTextThrottle = ({
         const currentThrottled = throttledTextRef.current;
         const stableText = isStreaming && currentThrottled.length > text.length ? currentThrottled : text;
 
-        if (!isStreaming) {
-            clearTimer(state);
-            state.lastEmitAt = Date.now();
-            setThrottledText(stableText);
-            return;
-        }
-
-        const now = Date.now();
-        const remaining = computeStreamingThrottleDelay(state.lastEmitAt, now, throttleMs);
-
-        if (remaining <= 0) {
-            clearTimer(state);
-            state.lastEmitAt = now;
-            setThrottledText(stableText);
-            return;
-        }
-
-        clearTimer(state);
-        state.timer = setTimeout(() => {
-            state.timer = null;
+        const emitPendingText = () => {
             state.lastEmitAt = Date.now();
             setThrottledText((prev) => {
                 if (isStreaming && prev.length > state.pendingText.length) {
@@ -93,6 +85,49 @@ export const useStreamingTextThrottle = ({
                 }
                 return state.pendingText;
             });
+        };
+
+        if (!isStreaming) {
+            clearTimer(state);
+            clearRaf(state);
+            setThrottledText(stableText);
+            return;
+        }
+
+        const useRaf = throttleMs <= DEFAULT_STREAMING_TEXT_THROTTLE_MS
+            && typeof requestAnimationFrame === 'function';
+
+        if (useRaf) {
+            clearTimer(state);
+            if (state.rafId !== null) {
+                return () => {
+                    clearRaf(state);
+                };
+            }
+            state.rafId = requestAnimationFrame(() => {
+                state.rafId = null;
+                emitPendingText();
+            });
+            return () => {
+                clearRaf(state);
+            };
+        }
+
+        const now = Date.now();
+        const remaining = computeStreamingThrottleDelay(state.lastEmitAt, now, throttleMs);
+
+        if (remaining <= 0) {
+            clearTimer(state);
+            clearRaf(state);
+            emitPendingText();
+            return;
+        }
+
+        clearTimer(state);
+        clearRaf(state);
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            emitPendingText();
         }, remaining);
 
         return () => {
@@ -104,6 +139,7 @@ export const useStreamingTextThrottle = ({
         const state = stateRef.current;
         return () => {
             clearTimer(state);
+            clearRaf(state);
         };
     }, []);
 

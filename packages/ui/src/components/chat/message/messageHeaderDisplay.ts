@@ -4,6 +4,7 @@ interface MessageHeaderDisplayInput {
     providerID: string | null;
     modelID?: string | null;
     modelName?: string;
+    baseModelName?: string;
 }
 
 export interface MessageHeaderDisplay {
@@ -15,11 +16,12 @@ export const getMessageHeaderDisplay = ({
     providerID,
     modelID,
     modelName,
+    baseModelName,
 }: MessageHeaderDisplayInput): MessageHeaderDisplay => {
     const modelDisplayInfo = {
         ...(modelID ? { id: modelID } : {}),
         ...(providerID ? { providerID } : {}),
-        ...(modelName ? { name: modelName } : {}),
+        ...(modelName ? { name: baseModelName || modelName } : {}),
     };
 
     return {

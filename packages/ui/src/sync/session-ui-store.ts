@@ -71,6 +71,7 @@ import {
   updateSessionTitle as updateSessionTitleAction,
   shareSession as shareSessionAction,
   unshareSession as unshareSessionAction,
+  abortCurrentOperation as abortCurrentOperationAction,
   optimisticSend,
   refetchSessionMessages,
   getSessionIdsWithDescendants,
@@ -96,6 +97,21 @@ const CURSOR_ACP_PROVIDER_ID = "cursor-acp"
 const CROSS_RUNTIME_HANDOFF_MAX_MESSAGES = 8
 const CROSS_RUNTIME_HANDOFF_MAX_CHARS = 6000
 const CROSS_RUNTIME_HANDOFF_MAX_TEXT_CHARS = 1400
+
+function createAbortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError")
+  }
+  const error = new Error("Aborted")
+  error.name = "AbortError"
+  return error
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError()
+  }
+}
 
 function isKnownArchivedSession(sessionId: string | null | undefined): boolean {
   if (!sessionId) return false
@@ -229,11 +245,13 @@ async function routeMessage(params: {
   additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
   lifecycleCallbacks?: SendLifecycleCallbacks
 }): Promise<boolean> {
+  throwIfAborted(params.lifecycleCallbacks?.signal)
   const messageDirectory = normalizePath(params.directory ?? useSessionUIStore.getState().getDirectoryForSession(params.sessionId) ?? opencodeClient.getDirectory() ?? null)
   if (params.inputMode === "shell") {
     if (messageDirectory) {
       await waitForWorktreeBootstrap(messageDirectory)
     }
+    throwIfAborted(params.lifecycleCallbacks?.signal)
     const sdk = opencodeClient.getSdkClient()
     await sdk.session.shell({
       sessionID: params.sessionId,
@@ -304,6 +322,7 @@ async function routeMessage(params: {
           useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, false)
           params.lifecycleCallbacks?.onMessageRollback?.(messageID)
         },
+        signal: params.lifecycleCallbacks?.signal,
         send: (messageID) => opencodeClient.sendCommand({
           id: params.sessionId,
           providerID: params.providerID,
@@ -315,6 +334,7 @@ async function routeMessage(params: {
           files: params.files,
           messageId: messageID,
           directory: messageDirectory,
+          signal: params.lifecycleCallbacks?.signal,
         }).then(() => {}),
       })
       await repairCursorSessionTitleAfterSuccessfulSend({
@@ -346,6 +366,7 @@ async function routeMessage(params: {
       useSessionUIStore.getState().recordUserMessagePlanMode(params.sessionId, messageID, false)
       params.lifecycleCallbacks?.onMessageRollback?.(messageID)
     },
+    signal: params.lifecycleCallbacks?.signal,
     send: (messageID) => opencodeClient.sendMessage({
       id: params.sessionId,
       providerID: params.providerID,
@@ -357,6 +378,7 @@ async function routeMessage(params: {
       additionalParts,
       messageId: messageID,
       directory: messageDirectory,
+      signal: params.lifecycleCallbacks?.signal,
     }).then(() => {}),
   })
   await repairCursorSessionTitleAfterSuccessfulSend({
@@ -467,6 +489,8 @@ export type ViewportAnchor = {
 type SendLifecycleCallbacks = {
   onMessageID?: (messageID: string) => void
   onMessageRollback?: (messageID: string) => void
+  onSessionReady?: (sessionID: string, directory?: string | null) => void
+  signal?: AbortSignal
 }
 
 export type SessionHistoryMeta = {
@@ -476,6 +500,11 @@ export type SessionHistoryMeta = {
   isLoading: boolean
   loading?: boolean
   nextCursor?: string
+}
+
+export type SessionCompletionIndicatorEntry = {
+  messageId: string
+  completedAt: number
 }
 
 export type SessionUIState = {
@@ -499,6 +528,7 @@ export type SessionUIState = {
   // Plan mode - per-session plan file availability (set when plan_enter tool creates a plan)
   sessionPlanAvailable: Map<string, boolean>
   sessionPlanIndicator: Map<string, PlanIndicatorEntry>
+  sessionCompletionIndicator: Map<string, SessionCompletionIndicatorEntry>
   implementedPlanRequests: Set<string>
   planModeUserMessages: Set<string>
   planModeUserMessagesBySession: Map<string, string>
@@ -512,6 +542,14 @@ export type SessionUIState = {
   markPlanImplementing: (sessionId: string, sourceMessageId?: string, implementationMessageId?: string) => void
   markPlanCompleted: (sessionId: string, sourceMessageId?: string) => void
   markPlanImplementationRequested: (planKey: string) => void
+  registerPendingSendAbort: (key: string, controller?: AbortController) => AbortController
+  promotePendingSendAbort: (fromKey: string, toKey: string) => AbortController | null
+  abortPendingSend: (key: string) => boolean
+  clearPendingSendAbort: (key: string, controller?: AbortController) => void
+  hasPendingSendAbort: (key: string) => boolean
+  markSessionTurnCompleted: (sessionId: string, messageId: string, completedAt?: number) => void
+  clearSessionTurnCompletion: (sessionId: string) => void
+  clearReadCompletionIndicators: (sessionIds: string[]) => void
   rollbackPlanImplementation: (
     sessionId: string,
     sourceMessageId: string | undefined,
@@ -1034,7 +1072,9 @@ const applyCurrentSessionSideEffects = (
   // Mark the selected session and any loaded descendants viewed; parent rows
   // aggregate subagent completions, so selecting the parent must clear that scope.
   if (id) {
-    markSessionsViewed(getSessionIdsWithDescendants([id]))
+    const viewedSessionIds = getSessionIdsWithDescendants([id])
+    markSessionsViewed(viewedSessionIds)
+    get().clearReadCompletionIndicators(viewedSessionIds)
     setActiveSession(resolvedDir ?? "", id)
   }
 }
@@ -1130,9 +1170,61 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   lastLoadedDirectory: null,
   sessionPlanAvailable: new Map(),
   sessionPlanIndicator: new Map(),
+  sessionCompletionIndicator: new Map(),
   starterAssistantMessages: new Map(),
   ...readPersistedPlanMessageState(),
   pendingChangesBarDismissed: new Map(),
+
+  registerPendingSendAbort: (key, controller = new AbortController()) => {
+    if (!key) return controller
+    set((state) => {
+      const abortControllers = new Map(state.abortControllers)
+      abortControllers.set(key, controller)
+      return { abortControllers }
+    })
+    return controller
+  },
+
+  promotePendingSendAbort: (fromKey, toKey) => {
+    if (!fromKey || !toKey || fromKey === toKey) {
+      return get().abortControllers.get(fromKey || toKey) ?? null
+    }
+    const controller = get().abortControllers.get(fromKey)
+    if (!controller) return null
+    set((state) => {
+      const abortControllers = new Map(state.abortControllers)
+      abortControllers.delete(fromKey)
+      abortControllers.set(toKey, controller)
+      return { abortControllers }
+    })
+    return controller
+  },
+
+  abortPendingSend: (key) => {
+    if (!key) return false
+    const controller = get().abortControllers.get(key)
+    if (!controller) return false
+    controller.abort()
+    set((state) => {
+      const abortControllers = new Map(state.abortControllers)
+      abortControllers.delete(key)
+      return { abortControllers }
+    })
+    return true
+  },
+
+  clearPendingSendAbort: (key, controller) => {
+    if (!key) return
+    set((state) => {
+      const current = state.abortControllers.get(key)
+      if (!current || (controller && current !== controller)) return state
+      const abortControllers = new Map(state.abortControllers)
+      abortControllers.delete(key)
+      return { abortControllers }
+    })
+  },
+
+  hasPendingSendAbort: (key) => Boolean(key && get().abortControllers.has(key)),
 
   getStarterAssistantMessage: (sessionId) => get().starterAssistantMessages.get(sessionId),
 
@@ -1632,6 +1724,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const map = new Map(get().pendingChangesBarDismissed);
       map.delete(sid);
       set({ pendingChangesBarDismissed: map });
+      get().clearSessionTurnCompletion(sid)
     }
 
     const draft = get().newSessionDraft
@@ -1641,6 +1734,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (draft?.open) {
       const draftTargetFolderId = draft.targetFolderId
       const capturedDraftId = get().currentDraftId ?? draft.id ?? null
+      const draftAbortKey = capturedDraftId ? `draft:${capturedDraftId}` : "draft"
+      const draftAbortController = get().registerPendingSendAbort(draftAbortKey)
       const capturedDraft = capturedDraftId ? get().draftsById[capturedDraftId] : null
       const draftSendConfig = normalizeDraftSendConfig(capturedDraft?.sendConfig ?? draft.sendConfig)
       const resolvedPlanMode = typeof draftSendConfig?.planMode === "boolean"
@@ -1664,28 +1759,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
       if (draft.pendingWorktreeRequestId) {
         draftDirectoryOverride = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
+        throwIfAborted(draftAbortController.signal)
         get().resolvePendingDraftWorktreeTarget(draft.pendingWorktreeRequestId, draftDirectoryOverride)
       }
 
-      const created = await createSessionRecordAction(draft.title, draftDirectoryOverride, draft.parentID ?? null)
-      if (!created?.id) {
-        const createError = consumeLastCreateSessionError()
-        if (createError instanceof Error) {
-          throw createError
-        }
-        throw new Error("Failed to create session")
-      }
-      streamDebugMark("first-reply-session-created", {
-        sessionId: created.id,
-        directory: normalizePath(draftDirectoryOverride ?? created.directory ?? null),
-      })
-
-      persistDraftTarget({
-        projectId: draftProjectId,
-        directory: normalizePath(draftDirectoryOverride ?? created.directory ?? null),
-      })
-
-      const draftSyntheticParts = draft.syntheticParts
       const configState = useConfigStore.getState()
       const draftSelection = resolveDraftSendSelection({
         requestedAgent: draftAgentSelection ? undefined : trimmedAgent,
@@ -1711,8 +1788,37 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const effectiveVariant = draftSelection.variant
 
       if (!effectiveProviderID || !effectiveModelID) {
+        get().clearPendingSendAbort(draftAbortKey, draftAbortController)
         throw new Error("Cannot send message: provider or model not selected")
       }
+
+      const created = await createSessionRecordAction(draft.title, draftDirectoryOverride, draft.parentID ?? null)
+      if (!created?.id) {
+        get().clearPendingSendAbort(draftAbortKey, draftAbortController)
+        const createError = consumeLastCreateSessionError()
+        if (createError instanceof Error) {
+          throw createError
+        }
+        throw new Error("Failed to create session")
+      }
+      const createdDirectory = normalizePath(draftDirectoryOverride ?? created.directory ?? null)
+      const promotedAbortController = get().promotePendingSendAbort(draftAbortKey, created.id) ?? draftAbortController
+      if (promotedAbortController.signal.aborted) {
+        await abortCurrentOperationAction(created.id)
+        get().clearPendingSendAbort(created.id, promotedAbortController)
+        throw createAbortError()
+      }
+      streamDebugMark("first-reply-session-created", {
+        sessionId: created.id,
+        directory: createdDirectory,
+      })
+
+      persistDraftTarget({
+        projectId: draftProjectId,
+        directory: createdDirectory,
+      })
+
+      const draftSyntheticParts = draft.syntheticParts
 
       activateConfigForDirectoryInBackground(draftDirectoryOverride ?? created.directory ?? null)
 
@@ -1738,8 +1844,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       useSelectionStore.getState().clearDraftPlanMode()
 
       get().initializeNewOpenChamberSession(created.id, configState.agents ?? [])
-
-      const createdDirectory = normalizePath(draftDirectoryOverride ?? created.directory ?? null)
 
       get().promoteDraftToSession({
         draftId: capturedDraftId,
@@ -1774,36 +1878,47 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         filename: a.filename,
       }))
 
-      await routeMessage({
-        sessionId: created.id,
-        content,
-        providerID: effectiveProviderID,
-        modelID: effectiveModelID,
-        agent: effectiveDraftAgent,
-        variant: effectiveVariant,
-        inputMode,
-        directory: createdDirectory,
-        files,
-        planMode: resolvedPlanMode,
-        additionalParts: mergedAdditionalParts?.map((p) => ({
-          text: p.text,
-          synthetic: p.synthetic,
-          files: p.attachments?.map((a: AttachedFile) => ({
-            type: "file" as const,
-            mime: a.mimeType,
-            url: a.dataUrl,
-            filename: a.filename,
+      try {
+        await routeMessage({
+          sessionId: created.id,
+          content,
+          providerID: effectiveProviderID,
+          modelID: effectiveModelID,
+          agent: effectiveDraftAgent,
+          variant: effectiveVariant,
+          inputMode,
+          directory: createdDirectory,
+          files,
+          planMode: resolvedPlanMode,
+          additionalParts: mergedAdditionalParts?.map((p) => ({
+            text: p.text,
+            synthetic: p.synthetic,
+            files: p.attachments?.map((a: AttachedFile) => ({
+              type: "file" as const,
+              mime: a.mimeType,
+              url: a.dataUrl,
+              filename: a.filename,
+            })),
           })),
-        })),
-      })
+          lifecycleCallbacks: {
+            signal: promotedAbortController.signal,
+            onSessionReady: (sessionID, directory) => {
+              void sessionID
+              void directory
+            },
+          },
+        })
+      } finally {
+        get().clearPendingSendAbort(created.id, promotedAbortController)
+      }
       return
     }
 
-    // ---- Existing session ----
-    const currentSessionId = get().currentSessionId
-    const resolvedPlanMode = planMode ?? useSelectionStore.getState().getPlanModeSelection(currentSessionId)
-    const existingSelection = currentSessionId
-      ? resolveSessionSendConfig(currentSessionId, {
+    // ---- Existing session, or defensive fallback when the UI has no active draft/session ----
+    let targetSessionId = get().currentSessionId
+    const resolvedPlanMode = planMode ?? useSelectionStore.getState().getPlanModeSelection(targetSessionId)
+    const existingSelection = targetSessionId
+      ? resolveSessionSendConfig(targetSessionId, {
           providerID,
           modelID,
           agent: trimmedAgent,
@@ -1816,39 +1931,67 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const effectiveAgent = existingSelection.agent
     const effectiveVariant = existingSelection.variant
 
-    if (currentSessionId && effectiveAgent) {
-      useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, effectiveAgent)
-      useSelectionStore.getState().saveAgentModelVariantForSession(currentSessionId, effectiveAgent, effectiveProviderID, effectiveModelID, effectiveVariant)
+    if (!effectiveProviderID || !effectiveModelID) {
+      throw new Error("Cannot send message: provider or model not selected")
     }
 
-    if (currentSessionId) {
-      const viewportState = useViewportStore.getState()
-      const memState = viewportState.sessionMemoryState.get(currentSessionId)
-      if (!memState || !memState.lastUserMessageAt) {
-        const newMemState = new Map(viewportState.sessionMemoryState)
-        newMemState.set(currentSessionId, {
-          viewportAnchor: 0,
-          isStreaming: false,
-          lastAccessedAt: Date.now(),
-          backgroundMessageCount: 0,
-          ...memState,
-          lastUserMessageAt: Date.now(),
-        })
-        useViewportStore.setState({ sessionMemoryState: newMemState })
-      }
-    }
-
-    const currentSessionDirectory = currentSessionId
-      ? normalizePath(get().getDirectoryForSession(currentSessionId))
+    let targetSessionDirectory = targetSessionId
+      ? normalizePath(get().getDirectoryForSession(targetSessionId))
       : null
 
-    if (currentSessionId) {
-      notifyMessageSent(currentSessionId)
+    if (!targetSessionId) {
+      const fallbackDirectory = normalizePath(opencodeClient.getDirectory())
+      const created = await createSessionRecordAction(undefined, fallbackDirectory, null)
+      if (!created?.id) {
+        const createError = consumeLastCreateSessionError()
+        if (createError instanceof Error) {
+          throw createError
+        }
+        throw new Error("Failed to create session")
+      }
+
+      targetSessionId = created.id
+      targetSessionDirectory = normalizePath((created as { directory?: string }).directory ?? fallbackDirectory)
+      get().setCurrentSession(created.id, targetSessionDirectory)
+      get().initializeNewOpenChamberSession(created.id, useConfigStore.getState().agents ?? [])
+      if (targetSessionDirectory) {
+        getSyncChildStores().ensureChild(targetSessionDirectory)
+      }
+      if (resolvedPlanMode) {
+        useSelectionStore.getState().setSessionPlanMode(created.id, true)
+      }
+      streamDebugMark("first-reply-session-created", {
+        sessionId: created.id,
+        directory: targetSessionDirectory,
+      })
     }
 
-    if (currentSessionId) {
-      markPendingUserSendAnimation(currentSessionId)
+    if (effectiveProviderID && effectiveModelID) {
+      useSelectionStore.getState().saveSessionModelSelection(targetSessionId, effectiveProviderID, effectiveModelID)
     }
+
+    if (effectiveAgent) {
+      useSelectionStore.getState().saveSessionAgentSelection(targetSessionId, effectiveAgent)
+      useSelectionStore.getState().saveAgentModelVariantForSession(targetSessionId, effectiveAgent, effectiveProviderID, effectiveModelID, effectiveVariant)
+    }
+
+    const viewportState = useViewportStore.getState()
+    const memState = viewportState.sessionMemoryState.get(targetSessionId)
+    if (!memState || !memState.lastUserMessageAt) {
+      const newMemState = new Map(viewportState.sessionMemoryState)
+      newMemState.set(targetSessionId, {
+        viewportAnchor: 0,
+        isStreaming: false,
+        lastAccessedAt: Date.now(),
+        backgroundMessageCount: 0,
+        ...memState,
+        lastUserMessageAt: Date.now(),
+      })
+      useViewportStore.setState({ sessionMemoryState: newMemState })
+    }
+
+    notifyMessageSent(targetSessionId)
+    markPendingUserSendAnimation(targetSessionId)
 
     const files = attachments?.map((a) => ({
       type: "file" as const,
@@ -1857,19 +2000,19 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       filename: a.filename,
     }))
 
-    const starterContext = consumeStarterAssistantContext(get, set, currentSessionId)
+    const starterContext = consumeStarterAssistantContext(get, set, targetSessionId)
     const sendAdditionalParts = withStarterAssistantContext(additionalParts, starterContext)
 
     try {
       const contextConsumed = await routeMessage({
-        sessionId: currentSessionId || "",
+        sessionId: targetSessionId,
         content,
         providerID: effectiveProviderID,
         modelID: effectiveModelID,
         agent: effectiveAgent,
         variant: effectiveVariant,
         inputMode,
-        directory: currentSessionDirectory,
+        directory: targetSessionDirectory,
         files,
         planMode: resolvedPlanMode,
         additionalParts: sendAdditionalParts?.map((p) => ({
@@ -1914,6 +2057,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const map = new Map(get().pendingChangesBarDismissed)
     map.delete(sessionId)
     set({ pendingChangesBarDismissed: map })
+    get().clearSessionTurnCompletion(sessionId)
 
     const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
     const sendSelection = resolveSessionSendConfig(sessionId, {
@@ -2351,13 +2495,20 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     set((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextEntry = nextPlanIndicatorEntry(current, "proposed", sourceMessageId)
-      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true) return state
+      const hasCompletion = state.sessionCompletionIndicator.has(sessionId)
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !hasCompletion) return state
 
       const nextIndicator = new Map(state.sessionPlanIndicator)
       if (nextEntry) nextIndicator.set(sessionId, nextEntry)
       const nextAvailable = new Map(state.sessionPlanAvailable)
       nextAvailable.set(sessionId, true)
-      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable }
+      const nextCompletion = hasCompletion ? new Map(state.sessionCompletionIndicator) : state.sessionCompletionIndicator
+      if (hasCompletion) nextCompletion.delete(sessionId)
+      return {
+        sessionPlanIndicator: nextIndicator,
+        sessionPlanAvailable: nextAvailable,
+        ...(hasCompletion ? { sessionCompletionIndicator: nextCompletion } : {}),
+      }
     })
   },
 
@@ -2367,14 +2518,22 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const nextEntry = nextPlanIndicatorEntry(current, "implementing", sourceMessageId, implementationMessageId)
       const nextBySession = new Map(state.planModeUserMessagesBySession)
       const removedPendingPlanMessage = nextBySession.delete(sessionId)
-      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !removedPendingPlanMessage) return state
+      const hasCompletion = state.sessionCompletionIndicator.has(sessionId)
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !removedPendingPlanMessage && !hasCompletion) return state
 
       const nextIndicator = new Map(state.sessionPlanIndicator)
       if (nextEntry) nextIndicator.set(sessionId, nextEntry)
       const nextAvailable = new Map(state.sessionPlanAvailable)
       nextAvailable.set(sessionId, true)
+      const nextCompletion = hasCompletion ? new Map(state.sessionCompletionIndicator) : state.sessionCompletionIndicator
+      if (hasCompletion) nextCompletion.delete(sessionId)
       if (removedPendingPlanMessage) persistPlanMessageState(state.planModeUserMessages, state.implementedPlanRequests, nextBySession)
-      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable, planModeUserMessagesBySession: nextBySession }
+      return {
+        sessionPlanIndicator: nextIndicator,
+        sessionPlanAvailable: nextAvailable,
+        planModeUserMessagesBySession: nextBySession,
+        ...(hasCompletion ? { sessionCompletionIndicator: nextCompletion } : {}),
+      }
     })
   },
 
@@ -2402,6 +2561,57 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       next.add(planKey)
       persistPlanMessageState(state.planModeUserMessages, next, state.planModeUserMessagesBySession)
       return { implementedPlanRequests: next }
+    })
+  },
+
+  markSessionTurnCompleted: (sessionId, messageId, completedAt) => {
+    set((state) => {
+      const nextCompletedAt = typeof completedAt === "number" && completedAt > 0 ? completedAt : Date.now()
+      const current = state.sessionCompletionIndicator.get(sessionId)
+      if (current?.messageId === messageId && current.completedAt === nextCompletedAt) return state
+
+      const next = new Map(state.sessionCompletionIndicator)
+      next.set(sessionId, { messageId, completedAt: nextCompletedAt })
+      return { sessionCompletionIndicator: next }
+    })
+  },
+
+  clearSessionTurnCompletion: (sessionId) => {
+    set((state) => {
+      if (!state.sessionCompletionIndicator.has(sessionId)) return state
+      const next = new Map(state.sessionCompletionIndicator)
+      next.delete(sessionId)
+      return { sessionCompletionIndicator: next }
+    })
+  },
+
+  clearReadCompletionIndicators: (sessionIds) => {
+    set((state) => {
+      const ids = Array.from(new Set(sessionIds.filter(Boolean)))
+      if (ids.length === 0) return state
+
+      let nextCompletion: Map<string, SessionCompletionIndicatorEntry> | null = null
+      let nextPlanIndicator: Map<string, PlanIndicatorEntry> | null = null
+
+      for (const sessionId of ids) {
+        if (state.sessionCompletionIndicator.has(sessionId)) {
+          nextCompletion ??= new Map(state.sessionCompletionIndicator)
+          nextCompletion.delete(sessionId)
+        }
+
+        const planEntry = state.sessionPlanIndicator.get(sessionId)
+        if (planEntry?.state === "completed") {
+          nextPlanIndicator ??= new Map(state.sessionPlanIndicator)
+          nextPlanIndicator.delete(sessionId)
+        }
+      }
+
+      if (!nextCompletion && !nextPlanIndicator) return state
+
+      return {
+        ...(nextCompletion ? { sessionCompletionIndicator: nextCompletion } : {}),
+        ...(nextPlanIndicator ? { sessionPlanIndicator: nextPlanIndicator } : {}),
+      }
     })
   },
 

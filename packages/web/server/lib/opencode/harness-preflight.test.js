@@ -58,6 +58,35 @@ describe('harness preflight', () => {
     ]));
   });
 
+  it('accepts DevRyan tool aliases and MCP wildcard permission keys', () => {
+    const findings = lintAgentHarness({
+      agents: [
+        {
+          name: 'librarian',
+          path: '/agents/librarian.md',
+          frontmatter: {
+            permission: {
+              webfetch: 'allow',
+              apply_patch: 'deny',
+              'supabase_*': 'deny',
+            },
+          },
+        },
+      ],
+      skills: [],
+      hiddenSkills: [],
+      staleOverrides: [],
+      toolManifest: {
+        aliases: {
+          edit: ['edit', 'write', 'patch', 'apply_patch'],
+          webfetch: ['webfetch'],
+        },
+      },
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it('reports hidden allowed skills, stale overrides, duplicate skill names, malformed skills, and warmup state', () => {
     const findings = lintAgentHarness({
       agents: [

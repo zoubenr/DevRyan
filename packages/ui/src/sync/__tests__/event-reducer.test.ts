@@ -616,4 +616,57 @@ describe("applyDirectoryEvent", () => {
 
     expect(draft.session.map((session) => session.id)).toEqual(["ses_1", "ses_2"])
   })
+
+  test("defers assistant text normalization while the session is busy", () => {
+    const diagnosticSuffix = '\nSkipped malformed tool call "edit": Invalid arguments for tool "edit": missing required: old_string.'
+    const draft = state({
+      session: [testSession("ses_1")],
+      message: {
+        ses_1: [testMessage("msg_1", "ses_1", "assistant", 1)],
+      },
+      part: {
+        msg_1: [{
+          id: "prt_1",
+          messageID: "msg_1",
+          sessionID: "ses_1",
+          type: "text",
+          text: "before",
+        } as Part],
+      },
+      session_status: { ses_1: { type: "busy" } as SessionStatus },
+    })
+
+    const result = applyDirectoryEvent(draft, partUpdatedEvent(`before${diagnosticSuffix}`))
+
+    expect(result).toBe(true)
+    expect((draft.part.msg_1[0] as { text?: string }).text).toBe(`before${diagnosticSuffix}`)
+  })
+
+  test("normalizes assistant text after the assistant message completes", () => {
+    const diagnosticSuffix = '\nSkipped malformed tool call "edit": Invalid arguments for tool "edit": missing required: old_string.'
+    const draft = state({
+      session: [testSession("ses_1")],
+      message: {
+        ses_1: [testMessage("msg_1", "ses_1", "assistant", 1)],
+      },
+      part: {
+        msg_1: [{
+          id: "prt_1",
+          messageID: "msg_1",
+          sessionID: "ses_1",
+          type: "text",
+          text: `before${diagnosticSuffix}`,
+        } as Part],
+      },
+      session_status: { ses_1: { type: "idle" } as SessionStatus },
+    })
+
+    applyDirectoryEvent(draft, messageUpdatedEvent({
+      ...testMessage("msg_1", "ses_1", "assistant", 1),
+      finish: "stop",
+      time: { created: 1, completed: 2 },
+    } as Message))
+
+    expect((draft.part.msg_1[0] as { text?: string }).text).toBe("before")
+  })
 })

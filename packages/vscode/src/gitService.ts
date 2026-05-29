@@ -610,7 +610,7 @@ export async function getGitBranches(directory: string): Promise<GitBranchResult
   // Get remote branches
   const remoteRefs = await repo.getBranches({ remote: true });
   for (const ref of remoteRefs) {
-    if (ref.name) {
+    if (ref.name && !/^[^/]+\/HEAD$/.test(ref.name)) {
       const remoteBranchName = `remotes/${ref.name}`;
       all.push(remoteBranchName);
       branches[remoteBranchName] = {
@@ -652,7 +652,7 @@ async function getGitBranchesRaw(directory: string): Promise<GitBranchResult> {
 
   for (const line of lines) {
     const [name, commit, tracking, head] = line.split('|');
-    if (name) {
+    if (name && !/^remotes\/[^/]+\/HEAD$/.test(name)) {
       all.push(name);
       const isCurrent = head === '*';
       if (isCurrent) current = name;
@@ -3146,7 +3146,7 @@ export async function canonicalizeWorktreeState(
     };
   }
 
-  const cwd = await canonicalizePath(directoryPath);
+  let cwd = await canonicalizePath(directoryPath);
 
   let worktreeRoot: string | null = null;
   let worktreeStatus: 'ready' | 'missing' | 'invalid' = 'ready';
@@ -3157,9 +3157,18 @@ export async function canonicalizeWorktreeState(
   // Resolve worktree project context (worktreeRoot)
   try {
     const context = await resolveWorktreeProjectContext(directoryPath);
-    worktreeRoot = await canonicalizePath(context.worktreeRoot);
+    const topLevel = await canonicalizePath(context.sandbox);
+    worktreeRoot = topLevel;
+    cwd = topLevel;
   } catch {
     worktreeStatus = 'invalid';
+    const topLevelResult = await execGit(['rev-parse', '--show-toplevel'], directoryPath);
+    const topLevel = topLevelResult.exitCode === 0 ? topLevelResult.stdout.trim() : '';
+    if (topLevel) {
+      const canonicalTopLevel = await canonicalizePath(path.resolve(directoryPath, topLevel));
+      worktreeRoot = canonicalTopLevel;
+      cwd = canonicalTopLevel;
+    }
   }
 
   // Resolve head state and branch

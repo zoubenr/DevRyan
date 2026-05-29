@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { createEventPipeline } from '../event-pipeline';
+import { createEventPipeline, isStreamingPartEvent } from '../event-pipeline';
 import {
   getResponsivenessPerfSnapshot,
   resetStreamPerf,
@@ -1100,5 +1100,75 @@ describe('createEventPipeline — delta coalescing (Option C)', () => {
 
     expect(received).toHaveLength(1);
     expect(received[0].payload.properties.status.type).toBe('idle');
+  });
+});
+
+describe('isStreamingPartEvent', () => {
+  it('treats assistant text and reasoning part updates as streaming events', () => {
+    expect(isStreamingPartEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part-1', messageID: 'msg-1', type: 'text', text: 'hello' },
+      },
+    })).toBe(true);
+
+    expect(isStreamingPartEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part-1', messageID: 'msg-1', type: 'reasoning', text: 'thinking' },
+      },
+    })).toBe(true);
+
+    expect(isStreamingPartEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part-1', messageID: 'msg-1', type: 'tool', tool: 'read' },
+      },
+    })).toBe(false);
+  });
+
+  it('treats message.part.delta as a streaming event', () => {
+    expect(isStreamingPartEvent({
+      type: 'message.part.delta',
+      properties: {
+        messageID: 'msg-1',
+        partID: 'part-1',
+        field: 'text',
+        delta: 'hello',
+      },
+    })).toBe(true);
+  });
+});
+
+describe('createEventPipeline — streaming fast flush', () => {
+  it('flushes immediately when streaming queue depth exceeds threshold', async () => {
+    installDomStubs();
+
+    const received = [];
+    const sdk = createSdkWithEvents([], new Promise(() => {}));
+    const { cleanup, enqueueEvent } = createEventPipeline({
+      sdk,
+      onEvent: (directory, payload) => {
+        received.push({ directory, payload });
+      },
+    });
+
+    for (let index = 0; index < 8; index += 1) {
+      enqueueEvent('dir-a', {
+        type: 'message.part.delta',
+        properties: {
+          messageID: 'msg-1',
+          partID: `part-${index}`,
+          field: 'text',
+          delta: `chunk-${index}`,
+        },
+      });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cleanup();
+
+    expect(received.length).toBeGreaterThan(0);
+    expect(received[0].payload.type).toBe('message.part.delta');
   });
 });

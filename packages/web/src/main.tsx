@@ -1,5 +1,9 @@
 import { createWebAPIs } from './api';
 import { registerSW } from 'virtual:pwa-register';
+import {
+  getPwaServiceWorkerStartupAction,
+  isDesktopRuntimeWindow,
+} from './pwa-service-worker';
 
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
 import '@openchamber/ui/index.css';
@@ -8,6 +12,13 @@ import '@openchamber/ui/styles/fonts';
 declare global {
   interface Window {
     __OPENCHAMBER_RUNTIME_APIS__?: RuntimeAPIs;
+    __OPENCHAMBER_DESKTOP_SERVER__?: {
+      origin: string;
+      opencodePort: number | null;
+      apiPrefix: string;
+      cliAvailable: boolean;
+    };
+    __OPENCHAMBER_ELECTRON__?: unknown;
   }
 }
 
@@ -80,7 +91,12 @@ const unregisterDevelopmentServiceWorkers = (): void => {
 
 void import('@openchamber/ui/main');
 
-if (import.meta.env.PROD) {
+const serviceWorkerAction = getPwaServiceWorkerStartupAction({
+  isProduction: import.meta.env.PROD,
+  isDesktopRuntime: isDesktopRuntimeWindow(window),
+});
+
+if (serviceWorkerAction === 'register') {
   registerPwaServiceWorker();
 } else {
   unregisterDevelopmentServiceWorkers();

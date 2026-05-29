@@ -1,14 +1,39 @@
+import { resolveThinkingVariant } from '@/lib/providers/variantControls';
+
+interface MessageHeaderVariantDisplayInput {
+    recordedVariant: string | undefined;
+    modelVariantOptions: string[];
+    fastEnabled: boolean;
+}
+
+export interface MessageHeaderVariantDisplay {
+    variant: string | undefined;
+    fastEnabled: boolean;
+}
+
+const isFastOnlyVariant = (variant: string | undefined) => variant?.trim().toLowerCase() === 'fast';
+
 export const resolveMessageHeaderVariant = (
     recordedVariant: string | undefined,
     modelVariantOptions: string[],
 ): string | undefined => {
-    if (modelVariantOptions.length === 0) {
-        return undefined;
-    }
+    return resolveMessageHeaderVariantDisplay({
+        recordedVariant,
+        modelVariantOptions,
+        fastEnabled: false,
+    }).variant;
+};
 
-    if (recordedVariant && modelVariantOptions.includes(recordedVariant)) {
-        return recordedVariant;
-    }
-
-    return modelVariantOptions.find((variant) => variant.toLowerCase() === 'medium') ?? modelVariantOptions[0];
+export const resolveMessageHeaderVariantDisplay = ({
+    recordedVariant,
+    modelVariantOptions,
+    fastEnabled,
+}: MessageHeaderVariantDisplayInput): MessageHeaderVariantDisplay => {
+    return {
+        variant: resolveThinkingVariant(
+            isFastOnlyVariant(recordedVariant) ? undefined : recordedVariant,
+            modelVariantOptions,
+        ),
+        fastEnabled,
+    };
 };

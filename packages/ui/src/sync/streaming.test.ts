@@ -3,9 +3,17 @@ import type { Message, SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { INITIAL_STATE, type State } from "./types"
 import { updateStreamingState, useStreamingStore } from "./streaming"
 
-const message = (id: string, role: "user" | "assistant"): Message => ({
+const message = (id: string, role: "user" | "assistant", completed?: number): Message => ({
   id,
   role,
+  time: completed === undefined ? { created: 1 } : { created: 1, completed },
+} as unknown as Message)
+
+const terminalAssistantMessage = (id: string, finish: string): Message => ({
+  id,
+  role: "assistant",
+  finish,
+  time: { created: 1 },
 } as unknown as Message)
 
 const stateWithMessages = (messages: Message[], status: SessionStatus = { type: "busy" } as SessionStatus): State => ({
@@ -65,7 +73,7 @@ describe("updateStreamingState", () => {
     expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_2")
   })
 
-  test("completes the streaming message when the session becomes idle", () => {
+  test("keeps an active streaming message through a premature idle status", () => {
     updateStreamingState(stateWithMessages([
       message("msg_user_1", "user"),
       message("msg_assistant_1", "assistant"),
@@ -76,6 +84,38 @@ describe("updateStreamingState", () => {
       message("msg_user_1", "user"),
       message("msg_assistant_1", "assistant"),
     ], { type: "idle" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
+  })
+
+  test("completes the streaming message when idle arrives after message completion", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant", 2),
+    ], { type: "idle" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBeNull()
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("completed")
+  })
+
+  test("completes the streaming message when delayed busy status points at a terminal assistant message", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      terminalAssistantMessage("msg_assistant_1", "cancelled"),
+    ], { type: "busy" } as SessionStatus))
 
     expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBeNull()
     expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("completed")

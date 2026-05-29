@@ -12,6 +12,7 @@ export type SettingsPageSlug =
   | 'mcp'
   | 'skills.installed'
   | 'skills.catalog'
+  | 'plugins'
   | 'git'
   | 'appearance'
   | 'chat'
@@ -138,6 +139,13 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'skills',
     kind: 'single',
     keywords: ['install', 'catalog', 'external', 'repository', 'skills catalog'],
+  },
+  {
+    slug: 'plugins',
+    title: 'Plugins',
+    group: 'opencode',
+    kind: 'split',
+    keywords: ['plugin', 'plugins', 'opencode plugin', 'npm plugin', 'local plugin'],
   },
   {
     slug: 'git',

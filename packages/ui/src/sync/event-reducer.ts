@@ -28,8 +28,10 @@ import {
 } from "./session-user-activity"
 import {
   hasActiveRevertTransactions,
+  isCommittedRevertResendInFlight,
   isMessageHiddenByAnyActiveRevert,
   isMessageHiddenByRevert,
+  getSessionRevertMessageID,
 } from "./revert-transactions"
 import { isFinalToolStatus } from "../lib/toolStatus"
 
@@ -219,6 +221,13 @@ function applyMessageSummaryToSession(draft: State, sessionID: string): boolean 
 }
 
 function normalizeIncomingSessionSummary(draft: State, session: Session): Session {
+  const revertMessageID = getSessionRevertMessageID(session)
+  if (isCommittedRevertResendInFlight(session.id, revertMessageID)) {
+    const nextSession = { ...session } as Session & { revert?: unknown }
+    delete nextSession.revert
+    session = nextSession as Session
+  }
+
   const messages = draft.message[session.id]
   if (messages) {
     return memoizedNormalizeChatOwnedDiffSummary(session, messages)
@@ -289,6 +298,28 @@ function findMessage(draft: State, sessionID: string | undefined, messageID: str
 
 function isAssistantMessage(draft: State, sessionID: string | undefined, messageID: string): boolean {
   return findMessage(draft, sessionID, messageID)?.role === "assistant"
+}
+
+function isAssistantMessageActivelyStreaming(draft: State, sessionID: string | undefined, messageID: string): boolean {
+  if (!isAssistantMessage(draft, sessionID, messageID)) {
+    return false
+  }
+
+  const message = findMessage(draft, sessionID, messageID)
+  const completed = (message?.time as { completed?: number } | undefined)?.completed
+  if (typeof completed === "number" && Number.isFinite(completed) && completed > 0) {
+    return false
+  }
+
+  return sessionID !== undefined && draft.session_status?.[sessionID]?.type === "busy"
+}
+
+function shouldNormalizeAssistantPartDuringUpdate(
+  draft: State,
+  sessionID: string | undefined,
+  messageID: string,
+): boolean {
+  return !isAssistantMessageActivelyStreaming(draft, sessionID, messageID)
 }
 
 function normalizeAssistantTextPart(part: Part): Part {
@@ -569,6 +600,7 @@ export function applyDirectoryEvent(
       }
       const missingOwningMessage = !hasMessage(draft, sessionID, messageID)
       const incomingPart = isAssistantMessage(draft, sessionID, messageID)
+        && shouldNormalizeAssistantPartDuringUpdate(draft, sessionID, messageID)
         ? normalizeAssistantTextPart(part)
         : part
       const parts = draft.part[messageID]
@@ -670,7 +702,9 @@ export function applyDirectoryEvent(
       const existingValue = existing[props.field] as string | undefined
       const dedupeFields = (existing as DedupeMetadata).__dedupeNextDeltaFields ?? []
       const shouldDedupe = dedupeFields.includes(props.field)
-      const shouldSanitizeAssistantText = props.field === "text" && isAssistantMessage(draft, sessionID, props.messageID)
+      const shouldSanitizeAssistantText = props.field === "text"
+        && isAssistantMessage(draft, sessionID, props.messageID)
+        && shouldNormalizeAssistantPartDuringUpdate(draft, sessionID, props.messageID)
       // Create new Part object + new array so React detects the change
       const next = [...parts]
       const appendedValue = shouldDedupe

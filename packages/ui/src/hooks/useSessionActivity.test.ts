@@ -8,6 +8,13 @@ const incompleteAssistant = {
   time: { created: 1 },
 } as Message
 
+const cancelledAssistant = {
+  id: "msg_assistant_cancelled",
+  role: "assistant",
+  finish: "cancelled",
+  time: { created: 1 },
+} as unknown as Message
+
 describe("resolveSessionActivityState", () => {
   test("returns busy for a directory-specific busy status", () => {
     const result = resolveSessionActivityState({
@@ -40,6 +47,19 @@ describe("resolveSessionActivityState", () => {
       status: { type: "idle" } as SessionStatus,
       messages: [incompleteAssistant],
       permissions: [],
+    })
+
+    expect(result.phase).toBe("idle")
+    expect(result.isWorking).toBe(false)
+  })
+
+  test("terminal assistant finish clears delayed busy status", () => {
+    const result = resolveSessionActivityState({
+      sessionId: "session-child",
+      status: { type: "busy" } as SessionStatus,
+      messages: [cancelledAssistant],
+      permissions: [],
+      liveStreamingMessageId: "msg_assistant_cancelled",
     })
 
     expect(result.phase).toBe("idle")
