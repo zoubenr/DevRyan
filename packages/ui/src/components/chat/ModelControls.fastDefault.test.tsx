@@ -37,4 +37,11 @@ describe('ModelControls Cursor fast-only controls', () => {
         expect(code).toContain('inline-flex h-3.5 w-3.5');
         expect(code).toContain('RiFlashlightFill className="h-3.5 w-3.5 text-[var(--status-warning)]"');
     });
+
+    test('does not render compact price text in model picker rows', () => {
+        const code = source();
+
+        expect(code).not.toContain('formatCompactPrice(metadata)');
+        expect(code).not.toContain('key="price"');
+    });
 });

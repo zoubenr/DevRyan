@@ -23,7 +23,8 @@ export const runCliEntryIfMain = (dependencies) => {
     managedLocalMode,
   });
 
-  setExitOnShutdown(true);
+  const isDevMode = process.env.OPENCHAMBER_DEV_MODE === 'true';
+  setExitOnShutdown(!isDevMode);
   startServer({
     port: cliOptions.port,
     host: cliOptions.host,
@@ -33,8 +34,8 @@ export const runCliEntryIfMain = (dependencies) => {
     tunnelConfigPath: cliOptions.tunnelConfigPath,
     tunnelToken: cliOptions.tunnelToken,
     tunnelHostname: cliOptions.tunnelHostname,
-    attachSignals: true,
-    exitOnShutdown: true,
+    attachSignals: !isDevMode,
+    exitOnShutdown: !isDevMode,
     uiPassword: cliOptions.uiPassword,
   }).catch((error) => {
     console.error('Failed to start server:', error);

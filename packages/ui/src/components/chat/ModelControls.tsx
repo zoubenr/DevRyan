@@ -80,7 +80,6 @@ import {
     CURSOR_ACP_FAST_SUFFIX,
     CURSOR_ACP_PROVIDER_ID,
     getCursorAcpBaseModelId,
-    shouldHideCursorAcpFastModel,
 } from '@/lib/providers/cursorAcp';
 import {
     getModelVariantDisplayState,
@@ -89,6 +88,7 @@ import {
     resolveModelVariantSelection as resolveGenericModelVariantSelection,
     resolveProviderModelVariant,
     resolveThinkingVariant,
+    shouldHidePairedFastModel,
 } from '@/lib/providers/variantControls';
 import { sortProviderTreeForPicker } from '@/lib/providers/sorting';
 import { useIsTextTruncated } from '@/hooks/useIsTextTruncated';
@@ -322,28 +322,6 @@ const formatCost = (value?: number | null) => {
     }
 
     return CURRENCY_FORMATTER.format(value);
-};
-
-const formatCompactPrice = (metadata?: ModelMetadata): string | null => {
-    if (!metadata?.cost) {
-        return null;
-    }
-
-    const inputCost = metadata.cost.input;
-    const outputCost = metadata.cost.output;
-    const hasInput = typeof inputCost === 'number' && Number.isFinite(inputCost);
-    const hasOutput = typeof outputCost === 'number' && Number.isFinite(outputCost);
-
-    if (hasInput && hasOutput) {
-        return `In ${formatCost(inputCost)} · Out ${formatCost(outputCost)}`;
-    }
-    if (hasInput) {
-        return `In ${formatCost(inputCost)}`;
-    }
-    if (hasOutput) {
-        return `Out ${formatCost(outputCost)}`;
-    }
-    return null;
 };
 
 const getCapabilityIcons = (metadata?: ModelMetadata) => {
@@ -684,7 +662,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         const filtered = filterHiddenProviderModels(
             providers,
             hiddenModels,
-            (provider, _model, modelId) => !shouldHideCursorAcpFastModel(
+            (provider, _model, modelId) => !shouldHidePairedFastModel(
                 provider as { id?: string; models?: ProviderModel[] },
                 modelId,
             ),
@@ -1915,7 +1893,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         const normalizedQuery = mobileModelQuery.trim();
         const filteredFavorites = favoriteModelsList.filter(({ model, providerID }) => {
             const provider = providers.find((entry) => entry.id === providerID);
-            if (shouldHideCursorAcpFastModel(provider, model.id as string | undefined)) {
+            if (shouldHidePairedFastModel(provider, model.id as string | undefined)) {
                 return false;
             }
             const displayProviderId = getDisplayProviderId(providerID, model);
@@ -2700,19 +2678,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             );
         }
 
-        // Build animated metadata slides for desktop (price/capabilities) - only shown when not showing thinking
-        const priceText = formatCompactPrice(metadata);
-        const hasPrice = priceText !== null;
+        // Build compact metadata for desktop rows. Detailed pricing remains in the model tooltip.
         const hasCapabilities = indicatorIcons.length > 0;
 
         const slides: React.ReactNode[] = [];
-        if (hasPrice) {
-            slides.push(
-                <span key="price" className="typography-micro text-muted-foreground whitespace-nowrap">
-                    {priceText}
-                </span>
-            );
-        }
         if (hasCapabilities) {
             slides.push(
                 <div key="capabilities" className="flex items-center gap-0.5">
@@ -2734,8 +2703,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         const supportsRotatingMetadata = !isVSCodeRuntime;
         const shouldShowThinking = hasThinkingVariants && wasAdjusted;
         const shouldAnimate = supportsRotatingMetadata && slides.length > 1 && (isHighlighted || isSelected) && !shouldShowThinking;
-        const staticSlideIndex = !supportsRotatingMetadata && hasCapabilities && hasPrice ? 1 : 0;
-        const staticMetadataSlide = slides[staticSlideIndex];
+        const staticMetadataSlide = slides[0];
 
         const handlePointerActivity = (event: React.MouseEvent) => {
             const nextPosition = { x: event.clientX, y: event.clientY };
@@ -2800,7 +2768,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     ) : null}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                    {/* Metadata slot: thinking variant for adjusted models, otherwise price/capabilities carousel */}
+                    {/* Metadata slot: thinking variant for adjusted models, otherwise compact capabilities */}
                     {shouldShowThinking && (isHighlighted || isSelected) ? (
                         <div className="flex w-[140px] justify-end items-center">
                             {thinkingDisplay}
@@ -2816,7 +2784,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 </TextLoop>
                             ) : (
                                 <>
-                                    {/* In static runtimes (VS Code), prefer capabilities over price when both exist. */}
                                     {staticMetadataSlide}
                                 </>
                             )}
@@ -2869,7 +2836,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
         const filteredFavorites = favoriteModelsList.filter(({ model, providerID }) => {
             const provider = providers.find(p => p.id === providerID);
-            if (shouldHideCursorAcpFastModel(provider, model.id as string | undefined)) {
+            if (shouldHidePairedFastModel(provider, model.id as string | undefined)) {
                 return false;
             }
             const displayProviderId = getDisplayProviderId(providerID, model);
@@ -2882,7 +2849,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         const filteredProviders = visibleProviders
             .map((provider) => {
                 const providerModels = Array.isArray(provider.models) ? provider.models : [];
-                const visibleModels = providerModels.filter((model: ProviderModel) => !shouldHideCursorAcpFastModel(provider as { id?: string; models?: ProviderModel[] }, model.id));
+                const visibleModels = providerModels.filter((model: ProviderModel) => !shouldHidePairedFastModel(provider as { id?: string; models?: ProviderModel[] }, model.id));
                 const filteredModels = visibleModels.filter((model: ProviderModel) => {
                     const modelName = getModelDisplayName(model);
                     return filterByQuery(modelName, provider.name || provider.id || '', desktopModelQuery);
@@ -3806,7 +3773,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                                         'model-controls__agent-label',
                                                         agentTriggerTextSize,
                                                         'font-medium min-w-0 truncate text-foreground',
-                                                        isDesktop ? 'max-w-[220px]' : undefined
+                                                        isDesktop ? 'max-w-[198px]' : undefined
                                                     )}
                                                 >
                                                     {getAgentDisplayName()}
@@ -3826,7 +3793,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             <DropdownMenuContent
                                 align="end"
                                 alignOffset={-40}
-                                className="w-[min(280px,calc(100vw-2rem))] p-0 flex flex-col"
+                                className="w-[min(252px,calc(100vw-2rem))] p-0 flex flex-col"
                             >
                                 <ScrollableOverlay outerClassName="max-h-[min(400px,calc(100dvh-12rem))] flex-1">
                                     <div className="p-1">
@@ -3867,20 +3834,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                             </div>
                                         </div>
                                         <DropdownMenuSeparator />
-                                        {!agentSearchQuery.trim() && defaultAgentName && (
-                                            <>
-                                                <DropdownMenuItem
-                                                    className="typography-meta"
-                                                    onSelect={() => handleAgentChange(defaultAgentName)}
-                                                >
-                                                    <div className="flex items-center gap-1.5">
-                                                        <RiArrowGoBackLine className="h-3.5 w-3.5 text-muted-foreground" />
-                                                        <span className="font-medium">{t('chat.modelControls.resetToDefault')}</span>
-                                                    </div>
-                                                </DropdownMenuItem>
-                                                <DropdownMenuSeparator />
-                                            </>
-                                        )}
                                         {sortedAndFilteredAgents.length === 0 ? (
                                             <div className="px-2 py-4 text-center typography-meta text-muted-foreground">
                                                 No agents found

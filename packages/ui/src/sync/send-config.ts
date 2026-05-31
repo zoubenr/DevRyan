@@ -79,7 +79,7 @@ function resolveVariantForModel(
 ): string | undefined {
   const cleanedVariant = clean(variant)
   const providerModel = findProviderModel(providers, providerID, modelID)
-  if (!providerModel) return cleanedVariant
+  if (!providerModel) return undefined
 
   return resolveProviderModelVariant(providerModel.provider, modelID, cleanedVariant)
 }

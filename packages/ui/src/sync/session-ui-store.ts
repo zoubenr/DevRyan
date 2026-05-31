@@ -97,6 +97,73 @@ const CURSOR_ACP_PROVIDER_ID = "cursor-acp"
 const CROSS_RUNTIME_HANDOFF_MAX_MESSAGES = 8
 const CROSS_RUNTIME_HANDOFF_MAX_CHARS = 6000
 const CROSS_RUNTIME_HANDOFF_MAX_TEXT_CHARS = 1400
+export const SESSION_COMPLETION_INDICATOR_SETTLE_MS = 250
+
+const pendingSessionCompletionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const pendingPlanCompletionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+const clearPendingSessionCompletionTimer = (sessionId: string) => {
+  const timer = pendingSessionCompletionTimers.get(sessionId)
+  if (timer) clearTimeout(timer)
+  pendingSessionCompletionTimers.delete(sessionId)
+}
+
+const clearPendingPlanCompletionTimer = (sessionId: string) => {
+  const timer = pendingPlanCompletionTimers.get(sessionId)
+  if (timer) clearTimeout(timer)
+  pendingPlanCompletionTimers.delete(sessionId)
+}
+
+const clearPendingCompletionTimers = (sessionId: string) => {
+  clearPendingSessionCompletionTimer(sessionId)
+  clearPendingPlanCompletionTimer(sessionId)
+}
+
+const scheduleSessionCompletionIndicator = (
+  sessionId: string,
+  entry: SessionCompletionIndicatorEntry,
+) => {
+  clearPendingSessionCompletionTimer(sessionId)
+  const timer = setTimeout(() => {
+    pendingSessionCompletionTimers.delete(sessionId)
+    useSessionUIStore.setState((state) => {
+      const current = state.sessionCompletionIndicator.get(sessionId)
+      if (current?.messageId === entry.messageId && current.completedAt === entry.completedAt) return state
+
+      const next = new Map(state.sessionCompletionIndicator)
+      next.set(sessionId, entry)
+      return { sessionCompletionIndicator: next }
+    })
+  }, SESSION_COMPLETION_INDICATOR_SETTLE_MS)
+  pendingSessionCompletionTimers.set(sessionId, timer)
+}
+
+const schedulePlanCompletionIndicator = (
+  sessionId: string,
+  entry: PlanIndicatorEntry,
+) => {
+  clearPendingPlanCompletionTimer(sessionId)
+  const timer = setTimeout(() => {
+    pendingPlanCompletionTimers.delete(sessionId)
+    useSessionUIStore.setState((state) => {
+      const current = state.sessionPlanIndicator.get(sessionId)
+      const nextEntry = nextPlanIndicatorEntry(
+        current,
+        "completed",
+        entry.sourceMessageId,
+        entry.implementationMessageId,
+      )
+      if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true) return state
+
+      const nextIndicator = new Map(state.sessionPlanIndicator)
+      if (nextEntry) nextIndicator.set(sessionId, nextEntry)
+      const nextAvailable = new Map(state.sessionPlanAvailable)
+      nextAvailable.set(sessionId, true)
+      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable }
+    })
+  }, SESSION_COMPLETION_INDICATOR_SETTLE_MS)
+  pendingPlanCompletionTimers.set(sessionId, timer)
+}
 
 function createAbortError(): Error {
   if (typeof DOMException !== "undefined") {
@@ -549,6 +616,7 @@ export type SessionUIState = {
   hasPendingSendAbort: (key: string) => boolean
   markSessionTurnCompleted: (sessionId: string, messageId: string, completedAt?: number) => void
   clearSessionTurnCompletion: (sessionId: string) => void
+  clearViewedPlanCompletion: (sessionId: string) => void
   clearReadCompletionIndicators: (sessionIds: string[]) => void
   rollbackPlanImplementation: (
     sessionId: string,
@@ -1076,6 +1144,8 @@ const applyCurrentSessionSideEffects = (
     markSessionsViewed(viewedSessionIds)
     get().clearReadCompletionIndicators(viewedSessionIds)
     setActiveSession(resolvedDir ?? "", id)
+  } else {
+    setActiveSession("", "")
   }
 }
 
@@ -1347,6 +1417,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     })
 
     useInputStore.getState().clearAttachedFiles()
+    setActiveSession("", "")
 
     if (options?.initialPrompt) {
       useInputStore.getState().setPendingInputText(options.initialPrompt)
@@ -1366,6 +1437,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (!draft) return
     persistDraftTarget({ projectId: draft.selectedProjectId ?? null, directory: normalizePath(draft.directoryOverride ?? null) })
     set({ currentSessionId: null, currentDraftId: draftId, newSessionDraft: toNewSessionDraftState(draft), error: null })
+    setActiveSession("", "")
     void activateConfigForDirectory(draft.directoryOverride ?? null)
   },
 
@@ -2492,6 +2564,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   markPlanProposed: (sessionId, sourceMessageId) => {
+    clearPendingCompletionTimers(sessionId)
     set((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextEntry = nextPlanIndicatorEntry(current, "proposed", sourceMessageId)
@@ -2513,6 +2586,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   markPlanImplementing: (sessionId, sourceMessageId, implementationMessageId) => {
+    clearPendingCompletionTimers(sessionId)
     set((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextEntry = nextPlanIndicatorEntry(current, "implementing", sourceMessageId, implementationMessageId)
@@ -2538,6 +2612,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   markPlanCompleted: (sessionId, sourceMessageId) => {
+    clearPendingSessionCompletionTimer(sessionId)
     set((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextEntry = nextPlanIndicatorEntry(current, "completed", sourceMessageId)
@@ -2545,12 +2620,13 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const removedPendingPlanMessage = nextBySession.delete(sessionId)
       if (nextEntry === current && state.sessionPlanAvailable.get(sessionId) === true && !removedPendingPlanMessage) return state
 
-      const nextIndicator = new Map(state.sessionPlanIndicator)
-      if (nextEntry) nextIndicator.set(sessionId, nextEntry)
+      if (nextEntry && nextEntry !== current) {
+        schedulePlanCompletionIndicator(sessionId, nextEntry)
+      }
       const nextAvailable = new Map(state.sessionPlanAvailable)
       nextAvailable.set(sessionId, true)
       if (removedPendingPlanMessage) persistPlanMessageState(state.planModeUserMessages, state.implementedPlanRequests, nextBySession)
-      return { sessionPlanIndicator: nextIndicator, sessionPlanAvailable: nextAvailable, planModeUserMessagesBySession: nextBySession }
+      return { sessionPlanAvailable: nextAvailable, planModeUserMessagesBySession: nextBySession }
     })
   },
 
@@ -2565,23 +2641,48 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   markSessionTurnCompleted: (sessionId, messageId, completedAt) => {
-    set((state) => {
-      const nextCompletedAt = typeof completedAt === "number" && completedAt > 0 ? completedAt : Date.now()
-      const current = state.sessionCompletionIndicator.get(sessionId)
-      if (current?.messageId === messageId && current.completedAt === nextCompletedAt) return state
+    const nextCompletedAt = typeof completedAt === "number" && completedAt > 0 ? completedAt : Date.now()
+    const current = get().sessionCompletionIndicator.get(sessionId)
+    if (current?.messageId === messageId && current.completedAt === nextCompletedAt) return
 
-      const next = new Map(state.sessionCompletionIndicator)
-      next.set(sessionId, { messageId, completedAt: nextCompletedAt })
-      return { sessionCompletionIndicator: next }
-    })
+    scheduleSessionCompletionIndicator(sessionId, { messageId, completedAt: nextCompletedAt })
   },
 
   clearSessionTurnCompletion: (sessionId) => {
+    clearPendingCompletionTimers(sessionId)
     set((state) => {
-      if (!state.sessionCompletionIndicator.has(sessionId)) return state
-      const next = new Map(state.sessionCompletionIndicator)
-      next.delete(sessionId)
-      return { sessionCompletionIndicator: next }
+      let nextCompletion: Map<string, SessionCompletionIndicatorEntry> | null = null
+      let nextPlanIndicator: Map<string, PlanIndicatorEntry> | null = null
+
+      if (state.sessionCompletionIndicator.has(sessionId)) {
+        nextCompletion = new Map(state.sessionCompletionIndicator)
+        nextCompletion.delete(sessionId)
+      }
+
+      const planEntry = state.sessionPlanIndicator.get(sessionId)
+      if (planEntry?.state === "completed") {
+        nextPlanIndicator = new Map(state.sessionPlanIndicator)
+        nextPlanIndicator.delete(sessionId)
+      }
+
+      if (!nextCompletion && !nextPlanIndicator) return state
+
+      return {
+        ...(nextCompletion ? { sessionCompletionIndicator: nextCompletion } : {}),
+        ...(nextPlanIndicator ? { sessionPlanIndicator: nextPlanIndicator } : {}),
+      }
+    })
+  },
+
+  clearViewedPlanCompletion: (sessionId) => {
+    clearPendingPlanCompletionTimer(sessionId)
+    set((state) => {
+      const planEntry = state.sessionPlanIndicator.get(sessionId)
+      if (!planEntry || planEntry.state === "proposed") return state
+
+      const nextPlanIndicator = new Map(state.sessionPlanIndicator)
+      nextPlanIndicator.delete(sessionId)
+      return { sessionPlanIndicator: nextPlanIndicator }
     })
   },
 
@@ -2594,6 +2695,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       let nextPlanIndicator: Map<string, PlanIndicatorEntry> | null = null
 
       for (const sessionId of ids) {
+        clearPendingCompletionTimers(sessionId)
+
         if (state.sessionCompletionIndicator.has(sessionId)) {
           nextCompletion ??= new Map(state.sessionCompletionIndicator)
           nextCompletion.delete(sessionId)
@@ -2616,6 +2719,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   rollbackPlanImplementation: (sessionId, sourceMessageId, implementationKey, implementationMessageId) => {
+    clearPendingPlanCompletionTimer(sessionId)
     set((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextRequests = new Set(state.implementedPlanRequests)

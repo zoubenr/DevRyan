@@ -19,7 +19,9 @@ import { normalizeParts } from './message/partUtils';
 import { normalizeToolName } from './message/parts/toolRenderUtils';
 import { normalizeToolStatus } from '@/lib/toolStatus';
 import { useDirectorySync, useEnsureSessionChildren } from '@/sync/sync-context';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { isPlanModeUserMessage } from '@/lib/messages/actionablePlan';
 import { projectSubtaskBridgeMessage } from './lib/subtaskBridge';
 import {
     buildTaskInvocationSignature,
@@ -606,6 +608,20 @@ const TurnBlock = React.memo(({
             .filter((segment): segment is NonNullable<typeof segment> => segment !== null);
     }, [chatRenderMode, visibleActivityMessageIdSet, turn.activitySegments, turn.assistantMessages.length]);
 
+    const recordedTurnPlanMode = useSessionUIStore(
+        React.useCallback((state) => (
+            state.isUserMessagePlanMode(turn.userMessageId)
+        ), [turn.userMessageId])
+    );
+
+    const isPlanModeSourceTurn = React.useMemo(() => (
+        isPlanModeUserMessage(
+            turn.userMessage.info,
+            turn.userMessage.parts,
+            recordedTurnPlanMode,
+        )
+    ), [recordedTurnPlanMode, turn.userMessage.info, turn.userMessage.parts]);
+
     const turnGroupingContextBase = React.useMemo(() => {
         const userCreatedAt = (turn.userMessage.info.time as { created?: number } | undefined)?.created;
         // OpenCode 1.4.0 moved variant from top-level to model.variant on UserMessage.
@@ -628,8 +644,9 @@ const TurnBlock = React.memo(({
             diffStats: turn.diffStats,
             userMessageCreatedAt: typeof userCreatedAt === 'number' ? userCreatedAt : undefined,
             userMessageVariant,
+            isPlanModeSource: isPlanModeSourceTurn,
         };
-    }, [turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summary.sourceMessageId, turn.summary.sourcePartId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
+    }, [isPlanModeSourceTurn, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summary.sourceMessageId, turn.summary.sourcePartId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
 
     const renderMessage = React.useCallback(
         (message: ChatMessageEntry) => {
@@ -668,6 +685,7 @@ const TurnBlock = React.memo(({
                     isTurnWorking,
                     hasTools: turn.hasTools,
                     hasReasoning: turn.hasReasoning,
+                    isPlanModeSource: turnGroupingContextBase.isPlanModeSource,
                     ...(shouldAttachFullTurnContext ? {
                         summaryBody: turnGroupingContextBase.summaryBody,
                         summarySourceMessageId: turnGroupingContextBase.summarySourceMessageId,

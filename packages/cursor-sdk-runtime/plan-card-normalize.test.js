@@ -56,6 +56,31 @@ describe('normalizePlanModeAssistantParts', () => {
     );
   });
 
+  test('drops assistant chatter after promoted reasoning plan content', () => {
+    const parts = normalizePlanModeAssistantParts([
+      {
+        id: 'msg_assistant_text_intro',
+        type: 'text',
+        text: 'I inspected the repo first.',
+      },
+      {
+        id: 'msg_assistant_reasoning',
+        type: 'reasoning',
+        text: structuredPlanBody,
+      },
+      {
+        id: 'msg_assistant_text_tail',
+        type: 'text',
+        text: 'tests pass.',
+      },
+    ], { isPlanModePrompt: true });
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.text).toBe(
+      `I inspected the repo first.\n${PLAN_CARD_SENTINEL}\n${structuredPlanBody}`,
+    );
+  });
+
   test('normalizes the last text part when Cursor emits plan text after tools', () => {
     const parts = normalizePlanModeAssistantParts([
       {

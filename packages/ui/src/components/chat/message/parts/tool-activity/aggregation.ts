@@ -1,6 +1,7 @@
 import type { ToolPart } from '@opencode-ai/sdk/v2';
 import {
     getToolActivityGroupInfo,
+    isHiddenTool,
     isPassiveRollupGroupKind,
     isToolActivityGroupingBoundary,
     type ToolActivityAggregation,
@@ -271,6 +272,11 @@ export const collectToolActivityBurst = <T>(
         }
 
         const toolName = getToolName(item);
+        if (isHiddenTool(toolName)) {
+            index += 1;
+            continue;
+        }
+
         if (isToolActivityGroupingBoundary(toolName)) {
             break;
         }
@@ -356,6 +362,10 @@ export const collectToolActivityRows = <T>(
         }
 
         const toolName = options.getToolName(item);
+        if (isHiddenTool(toolName)) {
+            continue;
+        }
+
         const isStandalone = options.isStandalone?.(item) === true;
         if (isToolActivityGroupingBoundary(toolName) || isStandalone) {
             closeBurstGroups();

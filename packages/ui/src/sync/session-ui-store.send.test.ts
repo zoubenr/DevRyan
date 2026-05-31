@@ -15,6 +15,7 @@ const updateSessionTitleCalls: Array<{ sessionId: string; title: string }> = []
 const createSessionCalls: Array<{ title?: string; directory?: string | null; parentID?: string | null }> = []
 const waitForWorktreeBootstrapCalls: string[] = []
 const pendingAnimationCalls: string[] = []
+const activeSessionCalls: Array<{ directory: string; sessionId: string }> = []
 const savedSessionAgents: Array<{ sessionId: string; agent: string }> = []
 const savedSessionModels: Array<{ sessionId: string; providerID: string; modelID: string }> = []
 const savedAgentModels: Array<{ sessionId: string; agent: string; providerID: string; modelID: string }> = []
@@ -214,6 +215,7 @@ mock.module("@/stores/useConfigStore", () => ({
       agents: [],
       providers: [],
       activateDirectory: mock(() => Promise.resolve()),
+      applyDefaultsToCurrent: mock(() => {}),
       ...mockConfigState,
     }),
   },
@@ -344,7 +346,16 @@ mock.module("./sync-refs", () => ({
   getDirectoryState: () => mockDirectoryState,
 }))
 
-const { buildPlanModeSyntheticInstruction, useSessionUIStore } = await import("./session-ui-store")
+mock.module("./sync-context", () => ({
+  setActiveSession: mock((directory: string, sessionId: string) => {
+    activeSessionCalls.push({ directory, sessionId })
+  }),
+}))
+
+const {
+  buildPlanModeSyntheticInstruction,
+  useSessionUIStore,
+} = await import("./session-ui-store")
 const {
   CHAT_DRAFTS_STORAGE_KEY,
   LEGACY_NEW_INPUT_DRAFT_KEY,
@@ -355,6 +366,12 @@ const { useMessageQueueStore } = await import("@/stores/messageQueueStore")
 const { useInputStore } = await import("./input-store")
 const { useProjectsStore } = await import("@/stores/useProjectsStore")
 const { getSafeStorage } = await import("@/stores/utils/safeStorage")
+
+const SESSION_COMPLETION_INDICATOR_SETTLE_MS = 250
+
+const waitForCompletionIndicatorSettlement = async () => {
+  await new Promise((resolve) => setTimeout(resolve, SESSION_COMPLETION_INDICATOR_SETTLE_MS + 20))
+}
 
 const expectPlanModeInstructionContract = (text: string) => {
   expect(text.startsWith("User has requested to enter plan mode.")).toBe(true)
@@ -394,6 +411,7 @@ describe("session-ui-store send routing", () => {
     createSessionCalls.length = 0
     waitForWorktreeBootstrapCalls.length = 0
     pendingAnimationCalls.length = 0
+    activeSessionCalls.length = 0
     savedSessionAgents.length = 0
     savedSessionModels.length = 0
     savedAgentModels.length = 0
@@ -490,6 +508,31 @@ describe("session-ui-store send routing", () => {
     expect(useSessionUIStore.getState().sessionPlanIndicator.has("session-a")).toBe(false)
   })
 
+  test("opening a new draft clears the active session tracker", () => {
+    useSessionUIStore.getState().setCurrentSession("session-a", "/repo/a")
+    activeSessionCalls.length = 0
+
+    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: "/repo" })
+
+    expect(useSessionUIStore.getState().currentSessionId).toBe(null)
+    expect(activeSessionCalls).toEqual([{ directory: "", sessionId: "" }])
+  })
+
+  test("selecting an existing draft clears the active session tracker", () => {
+    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: "/repo" })
+    const draftId = useSessionUIStore.getState().currentDraftId
+    expect(draftId).toBeTruthy()
+
+    useSessionUIStore.getState().setCurrentSession("session-a", "/repo/a")
+    activeSessionCalls.length = 0
+
+    useSessionUIStore.getState().selectNewSessionDraft(draftId ?? "")
+
+    expect(useSessionUIStore.getState().currentSessionId).toBe(null)
+    expect(useSessionUIStore.getState().currentDraftId).toBe(draftId)
+    expect(activeSessionCalls).toEqual([{ directory: "", sessionId: "" }])
+  })
+
   test("clears recorded plan-mode session ownership once implementation starts", () => {
     useSessionUIStore.getState().recordUserMessagePlanMode("session-a", "msg_1_user", true)
 
@@ -513,6 +556,24 @@ describe("session-ui-store send routing", () => {
     useSessionUIStore.getState().clearReadCompletionIndicators(["session-a"])
 
     expect(useSessionUIStore.getState().sessionCompletionIndicator.has("session-a")).toBe(false)
+  })
+
+  test("settles normal completion indicators before showing them", async () => {
+    useSessionUIStore.setState({
+      sessionCompletionIndicator: new Map(),
+      sessionPlanIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().markSessionTurnCompleted("session-a", "msg-a", 123)
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has("session-a")).toBe(false)
+
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.get("session-a")).toEqual({
+      messageId: "msg-a",
+      completedAt: 123,
+    })
   })
 
   test("clears completed plan indicators when a session is read without hiding plan availability", () => {
@@ -545,6 +606,36 @@ describe("session-ui-store send routing", () => {
     expect(useSessionUIStore.getState().sessionPlanIndicator.get("session-a")).toEqual({
       state: "proposed",
       sourceMessageId: "msg-plan",
+    })
+  })
+
+  test("settles completed plan indicators before showing them", async () => {
+    useSessionUIStore.setState({
+      sessionPlanAvailable: new Map([["session-a", true]]),
+      sessionPlanIndicator: new Map([
+        ["session-a", {
+          state: "implementing",
+          sourceMessageId: "msg-plan",
+          implementationMessageId: "msg-implementation-user",
+        }],
+      ]),
+      sessionCompletionIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().markPlanCompleted("session-a", "msg-plan")
+
+    expect(useSessionUIStore.getState().sessionPlanIndicator.get("session-a")).toEqual({
+      state: "implementing",
+      sourceMessageId: "msg-plan",
+      implementationMessageId: "msg-implementation-user",
+    })
+
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionPlanIndicator.get("session-a")).toEqual({
+      state: "completed",
+      sourceMessageId: "msg-plan",
+      implementationMessageId: "msg-implementation-user",
     })
   })
 
@@ -943,6 +1034,21 @@ describe("session-ui-store send routing", () => {
 
   test("sendMessageToSession sends to the queued session even when another session is current", async () => {
     useSessionUIStore.setState({ currentSessionId: "session-b" })
+    mockConfigState = {
+      providers: [
+        {
+          id: "provider-a",
+          models: [
+            {
+              id: "model-a",
+              variants: {
+                "variant-a": {},
+              },
+            },
+          ],
+        },
+      ],
+    }
 
     await useSessionUIStore.getState().sendMessageToSession(
       "session-a",
@@ -2320,6 +2426,19 @@ describe("session-ui-store send routing", () => {
       currentProviderId: "openai",
       currentModelId: "gpt-5.5",
       currentVariant: "medium",
+      providers: [
+        {
+          id: "openai",
+          models: [
+            {
+              id: "gpt-5.5",
+              variants: {
+                medium: {},
+              },
+            },
+          ],
+        },
+      ],
     }
 
     await useSessionUIStore.getState().sendMessage(

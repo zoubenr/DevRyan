@@ -81,6 +81,7 @@ describe("splitPlanCardSentinel", () => {
     expect(splitPlanCardSentinel("intro\n<!--plan-->\n# Plan")).toEqual({
       preambleText: "intro\n",
       planText: "# Plan",
+      source: "sentinel",
     })
   })
 
@@ -88,6 +89,7 @@ describe("splitPlanCardSentinel", () => {
     expect(splitPlanCardSentinel("intro\r\n \t <!--plan--> \t \r\n# Plan")).toEqual({
       preambleText: "intro\r\n",
       planText: "# Plan",
+      source: "sentinel",
     })
   })
 
@@ -99,6 +101,7 @@ describe("splitPlanCardSentinel", () => {
     expect(splitPlanCardSentinel("intro\n<!--plan-->\n# Plan\n<!--plan-->\nextra")).toEqual({
       preambleText: "intro\n",
       planText: "# Plan\n<!--plan-->\nextra",
+      source: "sentinel",
     })
   })
 
@@ -127,6 +130,7 @@ describe("splitPlanCardSentinel", () => {
     expect(splitPlanCardSentinel(`preamble\n<!--plan-->\n${planBody}`)).toEqual({
       preambleText: "preamble\n",
       planText: planBody,
+      source: "sentinel",
     })
   })
 })
@@ -152,6 +156,7 @@ describe("resolvePlanCardSplit", () => {
     expect(resolvePlanCardSplit("intro\n<!--plan-->\n# Plan")).toEqual({
       preambleText: "intro\n",
       planText: "# Plan",
+      source: "sentinel",
     })
   })
 
@@ -159,6 +164,7 @@ describe("resolvePlanCardSplit", () => {
     expect(resolvePlanCardSplit(`intro\n${structuredPlanBody}`, { isPlanModeSource: true })).toEqual({
       preambleText: "intro\n",
       planText: structuredPlanBody,
+      source: "structured",
     })
   })
 
@@ -194,6 +200,7 @@ describe("resolveMessagePlanCard", () => {
     ], { isPlanModeSource: false })).toEqual({
       preambleText: "intro\n",
       planText: structuredPlanBody,
+      source: "sentinel",
     })
   })
 
@@ -205,6 +212,7 @@ describe("resolveMessagePlanCard", () => {
     ], { isPlanModeSource: true })).toEqual({
       preambleText: "intro\n",
       planText: structuredPlanBody,
+      source: "sentinel",
     })
   })
 
@@ -215,6 +223,7 @@ describe("resolveMessagePlanCard", () => {
     ], { isPlanModeSource: true })).toEqual({
       preambleText: "I'll inspect the repo first.\n",
       planText: structuredPlanBody,
+      source: "reasoning",
     })
   })
 })

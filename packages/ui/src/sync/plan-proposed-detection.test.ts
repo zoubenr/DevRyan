@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part, PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { INITIAL_STATE, type State } from "./types"
 import { detectPlanProposedCandidate } from "./plan-proposed-detection"
 
@@ -28,6 +28,15 @@ const textPart = (messageID: string, text: string, synthetic = false): Part => (
   type: "text",
   text,
   synthetic,
+} as Part)
+
+const toolPart = (messageID: string, status: "pending" | "running" | "completed"): Part => ({
+  id: `${messageID}_tool`,
+  sessionID: SESSION_ID,
+  messageID,
+  type: "tool",
+  tool: "read",
+  state: { status },
 } as Part)
 
 const buildState = (overrides: Partial<State>): State => ({
@@ -256,6 +265,42 @@ describe("detectPlanProposedCandidate", () => {
     expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
   })
 
+  test("does not mark a plan while permissions are pending", () => {
+    const state = buildState({
+      permission: { [SESSION_ID]: [{} as PermissionRequest] },
+      message: {
+        [SESSION_ID]: [
+          userMessage("msg_1_user"),
+          assistantMessage("msg_2_assistant"),
+        ],
+      },
+      part: {
+        msg_2_assistant: [textPart("msg_2_assistant", "<!--plan-->\n# Plan")],
+      },
+    })
+
+    expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
+  })
+
+  test("does not mark a plan while assistant tools are still running", () => {
+    const state = buildState({
+      message: {
+        [SESSION_ID]: [
+          userMessage("msg_1_user"),
+          assistantMessage("msg_2_assistant"),
+        ],
+      },
+      part: {
+        msg_2_assistant: [
+          textPart("msg_2_assistant", "<!--plan-->\n# Plan"),
+          toolPart("msg_2_assistant", "running"),
+        ],
+      },
+    })
+
+    expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
+  })
+
   test("does not mark a plan from an assistant turn that has not completed", () => {
     const state = buildState({
       message: {
@@ -272,7 +317,7 @@ describe("detectPlanProposedCandidate", () => {
     expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
   })
 
-  test("skips newer non-plan turns and finds the latest earlier plan turn", () => {
+  test("does not resurrect an older plan after a newer non-plan turn completes", () => {
     const state = buildState({
       message: {
         [SESSION_ID]: [
@@ -287,7 +332,24 @@ describe("detectPlanProposedCandidate", () => {
       },
     })
 
-    expect(detect(state, { recorded: new Set(["msg_1_user"]) })?.sourceMessageId).toBe("msg_2_assistant")
+    expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
+  })
+
+  test("does not resurrect an older plan after a newer user message is sent", () => {
+    const state = buildState({
+      message: {
+        [SESSION_ID]: [
+          userMessage("msg_1_user"),
+          assistantMessage("msg_2_assistant"),
+          userMessage("msg_3_user"),
+        ],
+      },
+      part: {
+        msg_2_assistant: [textPart("msg_2_assistant", "<!--plan-->\n# Plan")],
+      },
+    })
+
+    expect(detect(state, { recorded: new Set(["msg_1_user"]) })).toBeNull()
   })
 
   test("ignores messages hidden behind the session revert boundary", () => {

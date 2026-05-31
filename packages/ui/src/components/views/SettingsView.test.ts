@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { getSettingsNavButtonClassName, getSettingsPageSidebarClassName } from './SettingsView.styles';
+import {
+  getSettingsBackButtonClassName,
+  getSettingsFullPageOverlayClassName,
+  getSettingsNavButtonClassName,
+  getSettingsPageSidebarClassName,
+} from './SettingsView.styles';
 import { resolveSettingsSlug } from '@/lib/settings/metadata';
 import { SETTINGS_NAV_SECTIONS } from '@/lib/settings/navigation';
 
@@ -9,6 +14,39 @@ describe('SettingsView navigation', () => {
 
     expect(className.split(/\s+/)).toContain('w-full');
     expect(className.split(/\s+/)).toContain('text-left');
+  });
+
+  test('settings full-page overlay covers the app shell without dialog styling', () => {
+    const className = getSettingsFullPageOverlayClassName();
+    const classes = className.split(/\s+/);
+
+    expect(classes).toContain('absolute');
+    expect(classes).toContain('inset-0');
+    expect(classes).toContain('z-20');
+    expect(classes).toContain('bg-background');
+    expect(classes).not.toContain('rounded-xl');
+    expect(classes).not.toContain('shadow-none');
+  });
+
+  test('settings back button is positioned as the full-page top-left control', () => {
+    const className = getSettingsBackButtonClassName();
+    const classes = className.split(/\s+/);
+
+    expect(classes).toContain('absolute');
+    expect(classes).toContain('left-3');
+    expect(classes).toContain('top-3');
+    expect(classes).toContain('z-50');
+  });
+
+  test('settings back button avoids macOS desktop traffic lights', () => {
+    const className = getSettingsBackButtonClassName({ avoidMacTrafficLights: true });
+    const classes = className.split(/\s+/);
+
+    expect(classes).toContain('absolute');
+    expect(classes).toContain('left-[5.5rem]');
+    expect(classes).not.toContain('left-3');
+    expect(classes).toContain('top-3');
+    expect(classes).toContain('z-50');
   });
 
   test('skills settings list is wider than other split lists', () => {

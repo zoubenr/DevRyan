@@ -7,7 +7,8 @@ export type SessionIndicator = {
     | 'sessions.sidebar.session.status.completed'
     | 'sessions.sidebar.session.status.questionRequired'
     | 'sessions.sidebar.session.status.planReady'
-    | 'sessions.sidebar.session.status.planCompleted';
+    | 'sessions.sidebar.session.status.planCompleted'
+    | 'sessions.sidebar.session.status.error';
 };
 
 type ResolveSidebarIndicatorOptions = {
@@ -16,6 +17,7 @@ type ResolveSidebarIndicatorOptions = {
   hasUnreadStatus: boolean;
   hasUnreadCompletion: boolean;
   hasCompletedStatus: boolean;
+  hasErrorStatus: boolean;
   pendingQuestionCount: number;
   planState: PlanIndicatorState | null;
 };
@@ -23,6 +25,15 @@ type ResolveSidebarIndicatorOptions = {
 type ResolveSidebarWorkingStatusOptions = {
   isWorking: boolean;
   pendingQuestionCount: number;
+};
+
+type ResolveSubtaskSidebarIndicatorOptions = {
+  isRootSession: boolean;
+  notifyOnSubtasks: boolean;
+  isWorking: boolean;
+  isActive: boolean;
+  hasUnreadCompletion: boolean;
+  hasUnreadError: boolean;
 };
 
 type ResolveLeadingIndicatorPositionOptions = {
@@ -46,6 +57,11 @@ const PLAN_COMPLETED_INDICATOR: SessionIndicator = {
   labelKey: 'sessions.sidebar.session.status.planCompleted',
 };
 
+const ERROR_INDICATOR: SessionIndicator = {
+  className: 'bg-status-error',
+  labelKey: 'sessions.sidebar.session.status.error',
+};
+
 const SESSION_COMPLETED_INDICATOR: SessionIndicator = {
   className: 'bg-status-success',
   labelKey: 'sessions.sidebar.session.status.completed',
@@ -62,9 +78,8 @@ export function resolveSidebarWorkingStatus({
 export function resolveSidebarIndicator({
   isRootSession,
   isWorking,
-  hasUnreadStatus,
-  hasUnreadCompletion,
   hasCompletedStatus,
+  hasErrorStatus,
   pendingQuestionCount,
   planState,
 }: ResolveSidebarIndicatorOptions): SessionIndicator | null {
@@ -76,6 +91,10 @@ export function resolveSidebarIndicator({
 
   if (isWorking) return null;
 
+  if (hasErrorStatus) {
+    return ERROR_INDICATOR;
+  }
+
   if (planState === 'proposed') {
     return PLAN_READY_INDICATOR;
   }
@@ -84,10 +103,24 @@ export function resolveSidebarIndicator({
     return PLAN_COMPLETED_INDICATOR;
   }
 
-  if (hasCompletedStatus || (hasUnreadStatus && hasUnreadCompletion)) {
+  if (hasCompletedStatus) {
     return SESSION_COMPLETED_INDICATOR;
   }
 
+  return null;
+}
+
+export function resolveSubtaskSidebarIndicator({
+  isRootSession,
+  notifyOnSubtasks,
+  isWorking,
+  isActive,
+  hasUnreadCompletion,
+  hasUnreadError,
+}: ResolveSubtaskSidebarIndicatorOptions): SessionIndicator | null {
+  if (isRootSession || !notifyOnSubtasks || isWorking || isActive) return null;
+  if (hasUnreadError) return ERROR_INDICATOR;
+  if (hasUnreadCompletion) return SESSION_COMPLETED_INDICATOR;
   return null;
 }
 

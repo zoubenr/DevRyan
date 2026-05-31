@@ -103,6 +103,7 @@ interface NotificationStore {
   append: (notification: Notification) => void
   markSessionViewed: (sessionId: string) => void
   markSessionsViewed: (sessionIds: string[]) => void
+  markSessionCompletionsViewed: (sessionId: string) => void
   markProjectViewed: (directory: string) => void
 
   // Selectors
@@ -157,6 +158,16 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     set({ list: next, index: buildIndex(next) })
   },
 
+  markSessionCompletionsViewed: (sessionId) => {
+    const current = get()
+    if (!sessionId || !current.index.session.unseenHasCompletion[sessionId]) return
+
+    const next = current.list.map((n) =>
+      n.session === sessionId && n.type === "turn-complete" && !n.viewed ? { ...n, viewed: true } : n,
+    )
+    set({ list: next, index: buildIndex(next) })
+  },
+
   markProjectViewed: (directory) => {
     const current = get()
     const count = current.index.project.unseenCount[directory] ?? 0
@@ -189,6 +200,10 @@ export function markSessionViewed(sessionId: string) {
 
 export function markSessionsViewed(sessionIds: string[]) {
   useNotificationStore.getState().markSessionsViewed(sessionIds)
+}
+
+export function markSessionCompletionsViewed(sessionId: string) {
+  useNotificationStore.getState().markSessionCompletionsViewed(sessionId)
 }
 
 // ---------------------------------------------------------------------------

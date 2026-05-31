@@ -59,7 +59,7 @@ import {
   streamDebugMark,
 } from "@/stores/utils/streamDebug"
 import { toast } from "@/components/ui"
-import { appendNotification } from "./notification-store"
+import { appendNotification, markSessionCompletionsViewed } from "./notification-store"
 import type { State } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import type { PermissionRequest } from "@/types/permission"
@@ -71,7 +71,11 @@ import { getEffectiveSessionRevertMessageID } from "./revert-transactions"
 import { markArchived, markUnarchived, setSessionMaterializerChildStores } from "./session-materializer"
 import { detectPlanCompletedCandidate } from "./plan-completion-detection"
 import { detectPlanProposedCandidate } from "./plan-proposed-detection"
-import { shouldSettlePlanProposalStatus } from "./plan-idle-settlement"
+import {
+  isSessionTurnSettledForCompletion,
+  shouldSettlePlanProposalStatus,
+  shouldSettleTerminalSessionStatus,
+} from "./plan-idle-settlement"
 import { detectTurnCompletedCandidate } from "./turn-completion-detection"
 import {
   getTerminalSessionIdForParentMaterialization,
@@ -531,6 +535,11 @@ function isIdleOrTerminalSessionStatus(status: SessionStatus | undefined): boole
   return status.type === "idle"
 }
 
+function shouldDetectPlanLifecycleAfterPartDelta(state: State, sessionID: string): boolean {
+  if (isIdleOrTerminalSessionStatus(state.session_status?.[sessionID])) return true
+  return shouldSettleTerminalSessionStatus({ sessionID, state })
+}
+
 function bufferPendingPartDelta(directory: string, payload: Event) {
   const pending = readPendingPartDeltaFromEvent(payload)
   if (!pending) return
@@ -752,14 +761,32 @@ async function detectAndMarkPlanLifecycle(
 
   const isViewed = isViewedInCurrentSession(directory, sessionID)
   const turnCandidateMatchesTrigger = turnCandidate && (!completionMessageId || turnCandidate.completedMessageId === completionMessageId)
+  const settledTurnCandidate = turnCandidate && turnCandidateMatchesTrigger
+    && isSessionTurnSettledForCompletion({
+      sessionID,
+      state,
+      completedMessageId: turnCandidate.completedMessageId,
+    })
+    ? turnCandidate
+    : null
+  const planCompletionMatchesTrigger = completedCandidate
+    && (!completionMessageId || completedCandidate.completedMessageId === completionMessageId)
+  const settledPlanCandidate = completedCandidate && planCompletionMatchesTrigger
+    && isSessionTurnSettledForCompletion({
+      sessionID,
+      state,
+      completedMessageId: completedCandidate.completedMessageId,
+    })
+    ? completedCandidate
+    : null
 
-  if (turnCandidateMatchesTrigger && !isViewed) {
+  if (settledTurnCandidate && !isViewed) {
     sessionUI.markSessionTurnCompleted(
       sessionID,
-      turnCandidate.completedMessageId,
-      getMessageCompletedAt(state, sessionID, turnCandidate.completedMessageId),
+      settledTurnCandidate.completedMessageId,
+      getMessageCompletedAt(state, sessionID, settledTurnCandidate.completedMessageId),
     )
-  } else if (turnCandidateMatchesTrigger && isViewed) {
+  } else if (settledTurnCandidate && isViewed) {
     sessionUI.clearReadCompletionIndicators([sessionID])
   }
 
@@ -768,37 +795,46 @@ async function detectAndMarkPlanLifecycle(
     const isSubtask = Boolean((session as (Session & { parentID?: string | null }) | undefined)?.parentID)
     const shouldRecordCompletion = !isSubtask || useUIStore.getState().notifyOnSubtasks
 
-    const planCompletionMatchesTrigger = completedCandidate
-      && (!completionMessageId || completedCandidate.completedMessageId === completionMessageId)
-
-    if (shouldRecordCompletion && planCompletionMatchesTrigger) {
+    if (shouldRecordCompletion && settledPlanCandidate) {
       appendNotification({
         directory,
         session: sessionID,
-        messageId: completedCandidate.completedMessageId,
+        messageId: settledPlanCandidate.completedMessageId,
         time: Date.now(),
         viewed: false,
         type: "turn-complete",
       })
-    } else if (shouldRecordCompletion && turnCandidate) {
-      if (turnCandidate && (!completionMessageId || turnCandidate.completedMessageId === completionMessageId)) {
-        appendNotification({
-          directory,
-          session: sessionID,
-          messageId: turnCandidate.completedMessageId,
-          time: Date.now(),
-          viewed: false,
-          type: "turn-complete",
-        })
-      }
+    } else if (shouldRecordCompletion && settledTurnCandidate) {
+      appendNotification({
+        directory,
+        session: sessionID,
+        messageId: settledTurnCandidate.completedMessageId,
+        time: Date.now(),
+        viewed: false,
+        type: "turn-complete",
+      })
     }
   }
 
-  if (completedCandidate) {
-    sessionUI.markPlanCompleted(sessionID, completedCandidate.sourceMessageId)
+  if (settledPlanCandidate) {
     if (isViewed) {
+      useSessionUIStore.getState().clearViewedPlanCompletion(sessionID)
       useSessionUIStore.getState().clearReadCompletionIndicators([sessionID])
+    } else {
+      sessionUI.markPlanCompleted(sessionID, settledPlanCandidate.sourceMessageId)
     }
+  }
+
+  if (shouldSettleTerminalSessionStatus({ sessionID, state: store.getState() })) {
+    store.setState((current) => {
+      if (current.session_status[sessionID]?.type !== "busy") return current
+      return {
+        session_status: {
+          ...current.session_status,
+          [sessionID]: { type: "idle" as const },
+        },
+      }
+    })
   }
 
   const candidate = detectPlanProposedCandidate({
@@ -1939,6 +1975,7 @@ function handleEvent(
     void import("./session-ui-store")
       .then(({ useSessionUIStore }) => {
         useSessionUIStore.getState().clearSessionTurnCompletion(activeStatusSessionId)
+        markSessionCompletionsViewed(activeStatusSessionId)
       })
       .catch(() => undefined)
   }
@@ -1976,9 +2013,10 @@ function handleEvent(
     }
   } else if (payload.type === "message.part.delta" && reducerChanged) {
     const lifecycleSessionId = resolveLifecycleSessionIdFromPartDelta(store.getState(), routingIndex, payload)
+    const latestState = store.getState()
     if (
       lifecycleSessionId
-      && isIdleOrTerminalSessionStatus(store.getState().session_status?.[lifecycleSessionId])
+      && shouldDetectPlanLifecycleAfterPartDelta(latestState, lifecycleSessionId)
     ) {
       void detectAndMarkPlanLifecycle(
         lifecycleSessionId,

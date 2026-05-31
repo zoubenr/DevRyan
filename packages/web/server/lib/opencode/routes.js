@@ -507,10 +507,35 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
   };
 
   const mergeCursorProvider = async (payload) => {
-    if (!cursorSdkRuntime || typeof cursorSdkRuntime.getVirtualProvider !== 'function') {
+    if (
+      !cursorSdkRuntime
+      || (
+        typeof cursorSdkRuntime.getCachedVirtualProvider !== 'function'
+        && typeof cursorSdkRuntime.getVirtualProvider !== 'function'
+      )
+    ) {
       return payload;
     }
-    const virtualProvider = await cursorSdkRuntime.getVirtualProvider();
+    const virtualProvider = (() => {
+      if (typeof cursorSdkRuntime.getCachedVirtualProvider === 'function') {
+        if (typeof cursorSdkRuntime.refreshVirtualProvider === 'function') {
+          cursorSdkRuntime.refreshVirtualProvider({ reason: 'providers_route' }).catch((error) => {
+            console.warn('[CursorSDK] Failed to refresh Cursor provider metadata:', error);
+          });
+        }
+        return cursorSdkRuntime.getCachedVirtualProvider();
+      }
+      return null;
+    })() || (typeof cursorSdkRuntime.getVirtualProvider === 'function' ? await Promise.race([
+      cursorSdkRuntime.getVirtualProvider(),
+      new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve(null), 250);
+        timeout.unref?.();
+      }),
+    ]) : null);
+    if (!virtualProvider || typeof virtualProvider !== 'object') {
+      return payload;
+    }
     const providers = Array.isArray(payload?.providers) ? payload.providers : [];
     const nextProviders = providers.filter((provider) => provider?.id !== CURSOR_ACP_PROVIDER_ID);
     nextProviders.push(virtualProvider);

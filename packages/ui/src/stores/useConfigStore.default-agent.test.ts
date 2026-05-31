@@ -158,6 +158,38 @@ describe("useConfigStore default agent selection", () => {
     ])
   })
 
+  test("clears stale variants when activating a directory with no snapshot", async () => {
+    useConfigStore.setState({
+      isConnected: false,
+      activeDirectoryKey: "__global__",
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentVariant: "medium",
+      directoryScoped: {},
+    })
+
+    await useConfigStore.getState().activateDirectory("/tmp/other-project")
+
+    expect(useConfigStore.getState().currentProviderId).toBe("")
+    expect(useConfigStore.getState().currentModelId).toBe("")
+    expect(useConfigStore.getState().currentVariant).toBe(undefined)
+  })
+
+  test("keeps the current variant in directory snapshots when only selected provider changes", () => {
+    useConfigStore.setState({
+      activeDirectoryKey: "__global__",
+      currentProviderId: "opencode",
+      currentModelId: "builder-model",
+      currentVariant: "high",
+      selectedProviderId: "opencode",
+      directoryScoped: {},
+    })
+
+    useConfigStore.getState().setSelectedProvider("anthropic")
+
+    expect(useConfigStore.getState().directoryScoped.__global__?.currentVariant).toBe("high")
+  })
+
   test("cycles through concrete thinking variants without wrapping to default", () => {
     useConfigStore.setState({
       currentProviderId: "opencode",

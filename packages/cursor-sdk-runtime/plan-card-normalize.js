@@ -124,33 +124,35 @@ export const normalizePlanModeAssistantParts = (parts, { isPlanModePrompt = fals
     ));
   }
 
-  const textPartIndex = parts.findIndex((part) => part?.type === 'text');
-  const textPart = textPartIndex >= 0 ? parts[textPartIndex] : null;
-  const existingText = getPartText(textPart);
+  const reasoningEntries = parts
+    .map((part, index) => ({ part, index, text: getPartText(part).trim() }))
+    .filter((entry) => entry.part?.type === 'reasoning' && entry.text.length > 0);
 
-  const reasoningParts = parts
-    .filter((part) => part?.type === 'reasoning')
-    .map((part) => getPartText(part).trim())
-    .filter(Boolean);
+  if (reasoningEntries.length === 0) return parts;
 
-  if (reasoningParts.length === 0) return parts;
-
-  for (let index = reasoningParts.length - 1; index >= 0; index -= 1) {
-    const reasoningSplit = splitStructuredPlanFallback(reasoningParts[index]);
+  for (let index = reasoningEntries.length - 1; index >= 0; index -= 1) {
+    const reasoningEntry = reasoningEntries[index];
+    const reasoningSplit = splitStructuredPlanFallback(reasoningEntry.text);
     if (!reasoningSplit?.planText?.trim()) continue;
 
+    const partsBeforePlan = parts.slice(0, reasoningEntry.index);
+    const textPart = partsBeforePlan.find((part) => part?.type === 'text') ?? null;
+    const existingText = getPartText(textPart);
+    const earlierReasoningText = reasoningEntries
+      .filter((entry) => entry.index < reasoningEntry.index)
+      .map((entry) => entry.text);
     const preamble = [
       existingText.trim(),
-      ...reasoningParts.slice(0, index),
+      ...earlierReasoningText,
     ].filter(Boolean).join('\n');
     const promotedText = preamble.length > 0
       ? `${preamble}\n${PLAN_CARD_SENTINEL}\n${reasoningSplit.planText.trimStart()}`
       : `${PLAN_CARD_SENTINEL}\n${reasoningSplit.planText.trimStart()}`;
 
-    const nextParts = parts.filter((part) => part?.type !== 'reasoning');
-    if (textPartIndex >= 0) {
-      return nextParts.map((part, partIndex) => (
-        partIndex === textPartIndex
+    const nextParts = partsBeforePlan.filter((part) => part?.type !== 'reasoning');
+    if (textPart) {
+      return nextParts.map((part) => (
+        part === textPart
           ? { ...part, text: promotedText }
           : part
       ));

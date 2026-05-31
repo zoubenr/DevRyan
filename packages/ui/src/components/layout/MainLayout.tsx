@@ -23,6 +23,7 @@ import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { isDesktopShell } from '@/lib/desktop';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
+import { getSettingsFullPageOverlayClassName } from '@/components/views/SettingsView.styles';
 
 import { ChatView } from '@/components/views/ChatView';
 import {
@@ -38,7 +39,6 @@ const DiffView = lazyWithChunkRecovery(() => import('@/components/views/DiffView
 const TerminalView = lazyWithChunkRecovery(() => import('@/components/views/TerminalView').then(m => ({ default: m.TerminalView })));
 const FilesView = lazyWithChunkRecovery(() => import('@/components/views/FilesView').then(m => ({ default: m.FilesView })));
 const SettingsView = lazyWithChunkRecovery(() => import('@/components/views/SettingsView').then(m => ({ default: m.SettingsView })));
-const SettingsWindow = lazyWithChunkRecovery(() => import('@/components/views/SettingsWindow').then(m => ({ default: m.SettingsWindow })));
 const MultiRunWindow = lazyWithChunkRecovery(() => import('@/components/views/MultiRunWindow').then(m => ({ default: m.MultiRunWindow })));
 
 // Mobile drawer width as screen percentage
@@ -351,7 +351,7 @@ export const MainLayout: React.FC = () => {
             <div
                 data-page-scroll-lock="true"
                 className={cn(
-                    'main-content-safe-area h-[100dvh]',
+                    'main-content-safe-area relative h-[100dvh] overflow-hidden',
                     isMobile ? 'flex flex-col' : 'flex',
                     'bg-background'
                 )}
@@ -546,20 +546,6 @@ export const MainLayout: React.FC = () => {
                             )}
                         </main>
                     </div>
-
-                    {/* Mobile settings: full screen */}
-                    {isSettingsDialogOpen && (
-                        <div
-                            className="absolute inset-0 z-10 bg-background"
-                            style={{ paddingTop: 'var(--oc-safe-area-top, 0px)' }}
-                        >
-                            <ErrorBoundary>
-                                <React.Suspense fallback={null}>
-                                    <SettingsView onClose={() => setSettingsDialogOpen(false)} />
-                                </React.Suspense>
-                            </ErrorBoundary>
-                        </div>
-                    )}
                 </DrawerProvider>
             ) : (
                 <>
@@ -686,14 +672,6 @@ export const MainLayout: React.FC = () => {
                         </div>
 
                     </div>
-
-                    {/* Desktop settings: windowed dialog with blur */}
-                    <React.Suspense fallback={null}>
-                        <SettingsWindow
-                            open={isSettingsDialogOpen}
-                            onOpenChange={setSettingsDialogOpen}
-                        />
-                    </React.Suspense>
                     <React.Suspense fallback={null}>
                         <MultiRunWindow
                             open={isMultiRunLauncherOpen}
@@ -703,6 +681,19 @@ export const MainLayout: React.FC = () => {
                     </React.Suspense>
                 </>
             )}
+
+                {isSettingsDialogOpen && (
+                    <div
+                        className={getSettingsFullPageOverlayClassName()}
+                        style={isMobile ? { paddingTop: 'var(--oc-safe-area-top, 0px)' } : undefined}
+                    >
+                        <ErrorBoundary>
+                            <React.Suspense fallback={null}>
+                                <SettingsView onClose={() => setSettingsDialogOpen(false)} />
+                            </React.Suspense>
+                        </ErrorBoundary>
+                    </div>
+                )}
 
         </div>
     </DiffWorkerProvider>

@@ -533,6 +533,7 @@ const cursorSdkRuntime = createCursorSdkRuntime({
   readAuth: readAuthFile,
   env: process.env,
   emitEvent: emitSyntheticOpenCodeEvent,
+  recordTimingMark: (input) => turnTimingRuntime.recordClientMark(input),
   logger: console,
   resolveAgentPrompt: async ({ agent, directory }) => {
     const result = getAgentConfig(agent, directory);

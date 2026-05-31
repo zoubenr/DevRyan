@@ -148,6 +148,51 @@ describe("detectPlanCompletedCandidate", () => {
     })
   })
 
+  test("reconstructs completed plan state from structured plan cards without explicit sentinel", () => {
+    const structuredPlanBody = [
+      "# Cursor Plan Card Fix",
+      "",
+      "## Context",
+      "",
+      "Cursor models omit the sentinel.",
+      "",
+      "## Implementation",
+      "",
+      "1. Add fallback detection.",
+      "",
+      "## Verification",
+      "",
+      "1. Run tests.",
+    ].join("\n")
+    const state = buildState({
+      message: {
+        [SESSION_ID]: [
+          userMessage("msg_plan_user", 1),
+          assistantMessage("msg_plan_assistant", 2, 3),
+          userMessage("msg_impl_user", 4),
+          assistantMessage("msg_impl_assistant", 5, 6),
+        ],
+      },
+      part: {
+        msg_plan_user: [textPart("msg_plan_user", "User has requested to enter plan mode.")],
+        msg_plan_assistant: [textPart("msg_plan_assistant", structuredPlanBody)],
+      },
+    })
+
+    expect(detectPlanCompletedCandidate({
+      sessionID: SESSION_ID,
+      state,
+      planEntry: null,
+      isRecordedPlanModeUserMessage: (messageId) => messageId === "msg_plan_user",
+      implementedPlanRequests: new Set([`${SESSION_ID}:msg_plan_assistant:plan:0`]),
+    })).toEqual({
+      sessionID: SESSION_ID,
+      sourceMessageId: "msg_plan_assistant",
+      implementationMessageId: "msg_impl_user",
+      completedMessageId: "msg_impl_assistant",
+    })
+  })
+
   test("does not reconstruct completed plan state until implementation output completes", () => {
     const state = buildState({
       message: {

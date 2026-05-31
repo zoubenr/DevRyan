@@ -6,6 +6,24 @@ export type CursorRuntimeStatus = {
   activeRuns: number;
   modelsSource: 'sdk' | 'fallback' | 'unavailable';
   modelCount?: number;
+  modelsRefreshing?: boolean;
+  lastModelRefreshStartedAt?: number | null;
+  lastModelRefreshCompletedAt?: number | null;
+  lastModelRefreshDurationMs?: number | null;
+  lastModelRefreshReason?: string | null;
+  lastModelRefreshTimedOut?: boolean;
+  lastModelRefreshError?: string | null;
+  lastWorkerTiming?: {
+    sessionID?: string;
+    messageID?: string | null;
+    runtime?: 'node-worker';
+    spawnedAt?: number;
+    firstEventAt?: number | null;
+    startupDurationMs?: number | null;
+    exitAt?: number | null;
+    exitCode?: number | null;
+    signal?: string | null;
+  } | null;
   lastError?: string | null;
   lastCancellation?: {
     sessionID: string;
@@ -57,6 +75,8 @@ export type CursorSdkRuntime = {
   getRuntimeStatus(): CursorRuntimeStatus;
   verifyConnection(): Promise<CursorRuntimeStatus & { ok: boolean; configured: boolean }>;
   getVirtualProvider(): Promise<{ id: string; name: string; models: Record<string, CursorModelRecord> }>;
+  getCachedVirtualProvider(): { id: string; name: string; models: Record<string, CursorModelRecord> };
+  refreshVirtualProvider(options?: { force?: boolean; reason?: string; timeoutMs?: number }): Promise<{ id: string; name: string; models: Record<string, CursorModelRecord> }>;
   handlePromptAsync(input: {
     sessionID: string;
     body: Record<string, unknown>;

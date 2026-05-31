@@ -339,6 +339,16 @@ describe("send config resolution", () => {
       currentModelId: "gpt-5.5",
       currentAgentName: "builder",
       currentVariant: "medium",
+      providers: [{
+        id: "openai",
+        name: "OpenAI",
+        source: "custom",
+        options: {},
+        env: [],
+        models: [
+          createStoreModel("openai", "gpt-5.5", { medium: {}, high: {} }),
+        ],
+      }],
     })
     useSelectionStore.getState().setPlanModeSelection(null, true)
 
@@ -351,7 +361,43 @@ describe("send config resolution", () => {
     })
   })
 
-  test("preserves implicit OpenAI fast mode for current draft sends", () => {
+  test("drops stale current variants when provider metadata is unavailable", () => {
+    useConfigStore.setState({
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentAgentName: "builder",
+      currentVariant: "medium",
+      providers: [],
+    })
+
+    expect(resolveCurrentSendConfig(null)).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      agent: "builder",
+      variant: undefined,
+      planMode: false,
+    })
+  })
+
+  test("drops stale session variants when provider metadata is unavailable", () => {
+    const result = resolveSessionSendConfigSnapshot(snapshot({
+      currentProviderId: "openai",
+      currentModelId: "gpt-5.5",
+      currentVariant: "medium",
+      providers: [],
+      agents: [{ name: "builder", mode: "primary" }],
+    }))
+
+    expect(result).toEqual({
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      agent: "builder",
+      variant: undefined,
+      planMode: false,
+    })
+  })
+
+  test("drops unadvertised OpenAI fast mode for current draft sends", () => {
     useConfigStore.setState({
       currentProviderId: "openai",
       currentModelId: "gpt-5.5",
@@ -373,12 +419,12 @@ describe("send config resolution", () => {
       providerID: "openai",
       modelID: "gpt-5.5",
       agent: "builder",
-      variant: "fast",
+      variant: undefined,
       planMode: false,
     })
   })
 
-  test("preserves persisted draft fast send config for implicit OpenAI fast models", () => {
+  test("drops persisted draft fast send config for unadvertised OpenAI fast models", () => {
     const result = resolveDraftSendSelection({
       requestedAgent: undefined,
       currentAgent: "builder",
@@ -406,11 +452,11 @@ describe("send config resolution", () => {
       agent: "builder",
       providerID: "openai",
       modelID: "gpt-5.5",
-      variant: "fast",
+      variant: undefined,
     })
   })
 
-  test("preserves session fast selections for implicit OpenAI fast models", () => {
+  test("drops session fast selections for unadvertised OpenAI fast models", () => {
     const result = resolveSessionSendConfigSnapshot(snapshot({
       currentProviderId: "openai",
       currentModelId: "gpt-5.5",
@@ -429,7 +475,7 @@ describe("send config resolution", () => {
       providerID: "openai",
       modelID: "gpt-5.5",
       agent: "builder",
-      variant: "fast",
+      variant: undefined,
       planMode: false,
     })
   })
@@ -491,7 +537,29 @@ describe("send config resolution", () => {
       currentAgentName: "reviewer",
       currentVariant: "medium",
       agents: [],
-      providers: [],
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          source: "custom",
+          options: {},
+          env: [],
+          models: [
+            createStoreModel("openai", "gpt-5.5", { medium: {}, high: {} }),
+            createStoreModel("openai", "gpt-5.2", { low: {}, medium: {} }),
+          ],
+        },
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          source: "custom",
+          options: {},
+          env: [],
+          models: [
+            createStoreModel("anthropic", "claude-sonnet-4-5", { high: {}, medium: {} }),
+          ],
+        },
+      ],
     })
     const selection = useSelectionStore.getState()
     selection.saveSessionAgentSelection("session-live", "builder")

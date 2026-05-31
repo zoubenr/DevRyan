@@ -32,10 +32,13 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   };
 
+  const isDevMode = () => process.env.OPENCHAMBER_DEV_MODE === 'true';
+
   const isDevShutdownAllowed = () => {
-    // Dev-only escape hatch: allow terminating the whole dev process group.
-    // This should never be enabled in production runtimes.
-    return process.env.OPENCHAMBER_DEV_SHUTDOWN === 'true';
+    // Dev-only escape hatch: allow terminating the dev stack from the UI.
+    // Requires explicit opt-in so default dev sessions are not group-killed accidentally.
+    return process.env.OPENCHAMBER_DEV_SHUTDOWN === 'true'
+      && process.env.OPENCHAMBER_ALLOW_DEV_SHUTDOWN === 'true';
   };
 
   const isSameOriginRequest = (req) => {
@@ -155,6 +158,10 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       return res.status(403).json({ ok: false, error: 'Invalid origin' });
     }
 
+    if (isDevMode()) {
+      return res.status(403).json({ ok: false, error: 'Shutdown is disabled in dev mode' });
+    }
+
     res.json({ ok: true });
     gracefulShutdown({ exitProcess: true }).catch((error) => {
       console.error('Shutdown request failed:', error?.message || error);
@@ -171,8 +178,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
 
     res.json({ ok: true });
 
-    // Terminate the entire dev process group so `bun run dev` leaves no orphans.
-    // We still run graceful shutdown to clean up OpenCode, terminals, websockets.
+    // Terminate the server process group; the dev orchestrator owns the full stack.
     try {
       const rawPreviewUrls = Array.isArray(req.body?.previewUrls) ? req.body.previewUrls : [];
       const previewPorts = Array.from(new Set(
@@ -185,13 +191,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       await Promise.all(previewPorts.map((port) => killListenPort(port)));
 
       const pgid = await resolveProcessGroupId(process.pid);
-      const ppid = typeof process.ppid === 'number' ? process.ppid : null;
-      const parentPgid = ppid ? await resolveProcessGroupId(ppid) : null;
+      const orchestratorPid = Number.parseInt(process.env.OPENCHAMBER_DEV_ORCHESTRATOR_PID || '', 10);
 
       // Kick off shutdown cleanup first.
       void gracefulShutdown({ exitProcess: false });
 
-      const pgidsToKill = Array.from(new Set([pgid, parentPgid].filter(Boolean)));
+      const pgidsToKill = pgid ? [pgid] : [];
       for (const id of pgidsToKill) {
         try {
           process.kill(-id, 'SIGTERM');
@@ -208,13 +213,22 @@ export const registerServerStatusRoutes = (app, dependencies) => {
         }
       }, 1500).unref?.();
 
-      // Ensure the server process itself exits even if the group kill fails.
-      setTimeout(() => {
-        try {
-          process.exit(0);
-        } catch {
-        }
-      }, 2500).unref?.();
+      // Signal the dev orchestrator so the full `npm run dev` stack stops intentionally.
+      if (Number.isFinite(orchestratorPid) && orchestratorPid > 0 && orchestratorPid !== process.pid) {
+        setTimeout(() => {
+          try {
+            process.kill(orchestratorPid, 'SIGTERM');
+          } catch {
+          }
+        }, 200).unref?.();
+      } else {
+        setTimeout(() => {
+          try {
+            process.exit(0);
+          } catch {
+          }
+        }, 2500).unref?.();
+      }
     } catch (error) {
       console.error('Dev shutdown request failed:', error?.message || error);
       // As a last resort, exit.
@@ -231,6 +245,8 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       runtime: runtimeName,
       pid: process.pid,
       startedAt: serverStartedAt,
+      devMode: isDevMode(),
+      devShutdownAllowed: isDevShutdownAllowed(),
     });
   });
 

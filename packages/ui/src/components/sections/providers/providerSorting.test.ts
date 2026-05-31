@@ -27,17 +27,31 @@ describe('getProviderModelsForDisplay', () => {
     expect(getProviderModelsForDisplay({})).toEqual([]);
   });
 
-  test('keeps fast model rows for non-Cursor providers', () => {
+  test('hides paired fast model rows for any provider', () => {
     const sorted = getProviderModelsForDisplay({
       id: 'anthropic',
       models: [
         { id: 'claude-sonnet-4-fast', name: 'Claude Sonnet 4 Fast' },
         { id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
       ],
-    }, { hideCursorAcpFastDuplicates: true });
+    }, { hidePairedFastModels: true });
 
     expect(sorted.map((model) => model.id)).toEqual([
       'claude-sonnet-4',
+    ]);
+  });
+
+  test('keeps unpaired fast model rows visible', () => {
+    const sorted = getProviderModelsForDisplay({
+      id: 'anthropic',
+      models: [
+        { id: 'claude-sonnet-4-fast', name: 'Claude Sonnet 4 Fast' },
+        { id: 'claude-opus-4', name: 'Claude Opus 4' },
+      ],
+    }, { hidePairedFastModels: true });
+
+    expect(sorted.map((model) => model.id)).toEqual([
+      'claude-opus-4',
       'claude-sonnet-4-fast',
     ]);
   });
@@ -50,7 +64,7 @@ describe('getProviderModelsForDisplay', () => {
         { id: 'claude-sonnet-4-fast', name: 'Claude Sonnet 4 Fast' },
         { id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
       ],
-    }, { hideCursorAcpFastDuplicates: true });
+    }, { hidePairedFastModels: true });
 
     expect(sorted.map((model) => model.id)).toEqual([
       'claude-sonnet-4',

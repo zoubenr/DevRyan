@@ -7,6 +7,7 @@ import {
   resolveProviderModelVariant,
   resolveModelVariantSelection,
   resolveThinkingVariant,
+  shouldHidePairedFastModel,
 } from './variantControls';
 
 describe('provider variant controls', () => {
@@ -75,7 +76,7 @@ describe('provider variant controls', () => {
     expect(state?.fastModelId).toBe(undefined);
   });
 
-  test('derives an implicit fast toggle for regular OpenAI GPT models without advertised variants', () => {
+  test('does not derive an implicit fast toggle for regular OpenAI GPT models without advertised variants', () => {
     const provider = {
       id: 'openai',
       models: [
@@ -85,24 +86,16 @@ describe('provider variant controls', () => {
 
     const state = getModelVariantControlState(provider, 'gpt-5.5', undefined);
 
-    expect(state).toEqual({
-      modelId: 'gpt-5.5',
-      baseModelId: 'gpt-5.5',
-      fastModelId: undefined,
-      fastEnabled: false,
-      canToggleFast: true,
-      selectedVariant: undefined,
-      visibleVariantOptions: [],
-    });
+    expect(state).toBeNull();
     expect(resolveModelVariantSelection(provider, 'gpt-5.5', undefined, { fastEnabled: true })).toEqual({
-      modelId: 'gpt-5.5',
-      variant: 'fast',
-    });
-    expect(resolveModelVariantSelection(provider, 'gpt-5.5', 'fast', { fastEnabled: false })).toEqual({
       modelId: 'gpt-5.5',
       variant: undefined,
     });
-    expect(resolveProviderModelVariant(provider, 'gpt-5.5', 'fast')).toBe('fast');
+    expect(resolveModelVariantSelection(provider, 'gpt-5.5', 'fast', { fastEnabled: false })).toEqual({
+      modelId: 'gpt-5.5',
+      variant: 'fast',
+    });
+    expect(resolveProviderModelVariant(provider, 'gpt-5.5', 'fast')).toBe(undefined);
   });
 
   test('does not derive implicit OpenAI fast toggles for mini or nano model families', () => {
@@ -161,6 +154,21 @@ describe('provider variant controls', () => {
     });
     expect(resolveProviderModelVariant(provider, 'agent-model', 'fast')).toBe('medium');
     expect(resolveProviderModelVariant(provider, 'agent-model-fast', 'fast')).toBe('medium');
+  });
+
+  test('hides paired fast models only when the base model exists', () => {
+    const provider = {
+      id: 'custom',
+      models: [
+        { id: 'agent-model', variants: { low: {}, medium: {} } },
+        { id: 'agent-model-fast', variants: { low: {}, medium: {} } },
+        { id: 'standalone-fast', variants: { low: {}, medium: {} } },
+      ],
+    };
+
+    expect(shouldHidePairedFastModel(provider, 'agent-model-fast')).toBe(true);
+    expect(shouldHidePairedFastModel(provider, 'agent-model')).toBe(false);
+    expect(shouldHidePairedFastModel(provider, 'standalone-fast')).toBe(false);
   });
 
   test('drops unsupported fast variants for providers without fast metadata', () => {

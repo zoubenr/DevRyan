@@ -10,7 +10,7 @@ import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { useI18n } from '@/lib/i18n';
 import { splitAntigravityProviderForDisplay } from '@/lib/providers/antigravity';
 import { getProviderDisplayName } from '@/lib/providers/display';
-import { sortProvidersByDisplayName } from './providerSorting';
+import { getProviderModelsForDisplay, sortProvidersByDisplayName } from './providerSorting';
 
 const ADD_PROVIDER_ID = '__add_provider__';
 
@@ -201,7 +201,10 @@ const ProviderListItem: React.FC<{
   onDisconnect?: () => void;
 }> = ({ provider, selectedProviderId, sources, canDisconnect = false, isDisconnecting = false, onSelect, onDisconnect }) => {
   const { t } = useI18n();
-  const modelCount = Array.isArray(provider.models) ? provider.models.length : 0;
+  const modelCount = getProviderModelsForDisplay(
+    provider as { id?: string; models?: Array<{ id?: string; name?: string }> },
+    { hidePairedFastModels: true },
+  ).length;
   const isSelected = provider.id === selectedProviderId;
   const providerName = getProviderDisplayName(provider, sources);
 

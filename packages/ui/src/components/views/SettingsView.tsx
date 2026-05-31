@@ -1,5 +1,5 @@
 import React from 'react';
-import { cn, getModifierLabel } from '@/lib/utils';
+import { cn, isMacOS } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useAgentsStore } from '@/stores/useAgentsStore';
@@ -17,7 +17,6 @@ import {
   RiBookOpenLine,
   RiChatAi3Line,
   RiChatHistoryLine,
-  RiCloseLine,
   RiCommandLine,
   RiCloudLine,
   RiFoldersLine,
@@ -75,7 +74,11 @@ import {
   type SettingsPageMeta,
 } from '@/lib/settings/metadata';
 import { SETTINGS_NAV_SECTIONS } from '@/lib/settings/navigation';
-import { getSettingsNavButtonClassName, getSettingsPageSidebarClassName } from './SettingsView.styles';
+import {
+  getSettingsBackButtonClassName,
+  getSettingsNavButtonClassName,
+  getSettingsPageSidebarClassName,
+} from './SettingsView.styles';
 
 // Same constraints as main sidebar
 const SETTINGS_NAV_MIN_WIDTH = 176;
@@ -92,8 +95,6 @@ interface SettingsViewProps {
   onClose?: () => void;
   /** Force mobile layout regardless of device detection */
   forceMobile?: boolean;
-  /** Rendered inside a window/dialog (skip traffic light padding) */
-  isWindowed?: boolean;
 }
 
 function buildRuntimeContext(isDesktop: boolean): SettingsRuntimeContext {
@@ -239,7 +240,7 @@ const SettingsHome: React.FC<{ onOpen: (slug: SettingsPageSlug) => void }> = ({ 
   );
 };
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile, isWindowed }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile }) => {
   const { t } = useI18n();
   const deviceInfo = useDeviceInfo();
   const isMobile = forceMobile ?? deviceInfo.isMobile;
@@ -263,6 +264,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   const isDesktopApp = React.useMemo(() => {
     return isDesktopShell();
   }, []);
+  const isMacPlatform = React.useMemo(() => isMacOS(), []);
+  const shouldAvoidMacTrafficLights = isDesktopApp && isMacPlatform;
 
   // keep platform check available for future window chrome tweaks
 
@@ -578,7 +581,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   }, [isBehaviorAliasPage, isMobile, mobileStage, settingsSlug]);
 
   const showBackButton = isMobile && mobileStage !== 'nav';
-  const shortcutKey = getModifierLabel();
+  const showFullPageBackButton = !isMobile && Boolean(onClose);
 
   const handleBack = React.useCallback(() => {
     setMobileStage('nav');
@@ -593,7 +596,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       <div className="flex h-full flex-col overflow-hidden">
         {/* Scrollable nav items */}
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          <div className="flex flex-col gap-3 pt-4 pb-2 px-2">
+          <div className={cn('flex flex-col gap-3 pb-2 px-2', showFullPageBackButton ? 'pt-14' : 'pt-4')}>
             {groupedVisiblePages.map((section) => (
               <div key={section.labelKey} className="space-y-0.5">
                 <div className="px-2 pb-1 typography-micro text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground/70">
@@ -763,46 +766,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
             </button>
           )}
 
-          {onClose && (
+        </div>
+      ) : (
+        <>
+          {showFullPageBackButton && (
             <button
               type="button"
               onClick={onClose}
               aria-label={t('settings.view.actions.closeSettings')}
-              title={t('settings.view.actions.closeSettingsWithShortcut', { shortcut: shortcutKey })}
-              className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg p-2 text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className={getSettingsBackButtonClassName({ avoidMacTrafficLights: shouldAvoidMacTrafficLights })}
             >
-              <RiCloseLine className="h-5 w-5" />
+              <RiArrowLeftSLine className="h-5 w-5" />
             </button>
           )}
-        </div>
-      ) : (
-        <>
-          {showBackButton && (
-            <div className={cn('absolute left-3 z-50', isWindowed ? 'top-2' : 'top-3')}>
-              <button
-                type="button"
-                onClick={handleBack}
-                aria-label={t('settings.view.actions.back')}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg p-2 text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <RiArrowLeftSLine className="h-5 w-5" />
-              </button>
-            </div>
-          )}
-
-      {onClose && (
-        <div className={cn('absolute right-0.5 z-50', isWindowed ? 'top-0.5' : 'top-1')}>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t('settings.view.actions.closeSettings')}
-            title={t('settings.view.actions.closeSettingsWithShortcut', { shortcut: shortcutKey })}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md p-0.5 text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <RiCloseLine className="h-5 w-5" />
-          </button>
-        </div>
-      )}
         </>
       )}
 
