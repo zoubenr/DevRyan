@@ -21,9 +21,9 @@ import {
     getDisplayProviderId,
     getExecutionProviderId,
     getModelDisplayName,
-    splitAntigravityProviderForDisplay,
 } from '@/lib/providers/antigravity';
-import { filterHiddenProviderModels } from '@/lib/providers/modelVisibility';
+import { filterVisibleProviderModelsForPicker } from '@/lib/providers/modelVisibility';
+import { shouldHidePairedFastModel } from '@/lib/providers/variantControls';
 import { sortProviderTreeForPicker } from '@/lib/providers/sorting';
 import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
@@ -102,8 +102,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             ? providers.filter((provider) => allowedProviderSet.has(String(provider.id)))
             : providers;
 
-        const filtered = filterHiddenProviderModels(baseProviders, hiddenModels);
-        return sortProviderTreeForPicker(splitAntigravityProviderForDisplay(filtered));
+        const filtered = filterVisibleProviderModelsForPicker(
+            baseProviders,
+            hiddenModels,
+            (provider, _model, modelID) => !shouldHidePairedFastModel(
+                provider as { id?: string; models?: ProviderModel[] },
+                modelID,
+            ),
+        );
+        return sortProviderTreeForPicker(filtered);
     }, [providers, allowedProviderSet, hiddenModels]);
 
     const closeMobilePanel = () => setIsMobilePanelOpen(false);

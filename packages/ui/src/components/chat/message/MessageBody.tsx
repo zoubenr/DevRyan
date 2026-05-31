@@ -25,7 +25,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { flattenAssistantTextParts, suggestPlanTitleFromText } from '@/lib/messages/messageText';
 import { resolveMessagePlanCard } from '@/lib/messages/actionablePlan';
-import { buildPlanCardRenderSegments } from '@/lib/messages/planCardRender';
+import { buildPlanCardRenderSegments, shouldSuppressPostPlanText } from '@/lib/messages/planCardRender';
 import { useMessageTTS } from '@/hooks/useMessageTTS';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -1441,17 +1441,23 @@ const AssistantMessageBody = React.memo(({
                 hasSeenTextGroup = true;
 
                 if (messagePlan && sessionId != null) {
+                    const suppressPostPlanText = shouldSuppressPostPlanText(messagePlan, isPlanModeSource);
                     const { segments, planCardRendered } = buildPlanCardRenderSegments({
                         groupText: renderPartText,
                         groupStart,
                         groupEnd,
                         messagePlan,
                         planCardRendered: hasRenderedPlanCard,
+                        suppressPostPlanText,
                     });
                     hasRenderedPlanCard = planCardRendered;
 
                     segments.forEach((segment, segmentIndex) => {
-                        if (segment.kind === 'preamble') {
+                        if (segment.kind === 'consumed-plan-text') {
+                            return;
+                        }
+
+                        if (segment.kind === 'preserved-text') {
                             const preamblePart = {
                                 ...renderPart,
                                 id: `${(renderPart as { id?: string }).id ?? 'text'}__pre-${i}-${segmentIndex}`,

@@ -5,6 +5,8 @@ Shared Cursor SDK runtime for DevRyan hosts. It keeps Cursor model execution, SD
 
 ## Design
 - `index.js`: ESM runtime and credential helpers.
+- `persistent-worker.mjs`: long-lived Node/Electron-as-Node prompt worker that keeps `@cursor/sdk` imported, caches Cursor agents per session/directory, and multiplexes prompt/cancel events by request id.
+- `node-worker.mjs`: one-shot fallback prompt worker retained for startup failures and compatibility tests.
 - `plan-card-normalize.js`: normalizes Cursor plan-mode assistant parts so structured plans are promoted into the shared `<!--plan-->` card marker format.
 - `index.d.ts`: Type declarations consumed by TypeScript packages.
 - SDK auth uses `CURSOR_API_KEY`, then `cursor-acp.key`, then `cursor-acp.token`.

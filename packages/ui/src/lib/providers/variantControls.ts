@@ -126,20 +126,6 @@ const findVariantKey = (
     return Object.keys(variants).find((key) => normalizeVariantKey(key) === normalizedVariant);
 };
 
-const hasImplicitOpenAIFastVariant = (
-    provider: ProviderLike | undefined,
-    model: ProviderModelLike | undefined,
-): boolean => {
-    const providerId = typeof provider?.id === 'string' ? provider.id.trim().toLowerCase() : '';
-    const modelId = typeof model?.id === 'string' ? model.id.trim().toLowerCase() : '';
-    if (providerId !== 'openai' || !modelId || !modelId.startsWith('gpt-')) {
-        return false;
-    }
-    return !modelId.endsWith(FAST_MODEL_SUFFIX)
-        && !modelId.endsWith('-mini')
-        && !modelId.endsWith('-nano');
-};
-
 const getModelVariants = (model: ProviderModelLike | undefined): string[] => (
     getOrderedThinkingVariants(model?.variants)
 );
@@ -152,6 +138,16 @@ export const findProviderModel = <Model extends ProviderModelLike>(
         return undefined;
     }
     return provider.models.find((model) => model.id === modelId);
+};
+
+export const shouldHidePairedFastModel = <Model extends ProviderModelLike>(
+    provider: ProviderLike<Model> | undefined,
+    modelId: string | undefined,
+): boolean => {
+    if (!provider || !modelId?.endsWith(FAST_MODEL_SUFFIX)) {
+        return false;
+    }
+    return Boolean(findProviderModel(provider, getFastModelBaseId(modelId)));
 };
 
 export const getModelVariantControlState = (
@@ -177,13 +173,12 @@ export const getModelVariantControlState = (
         ? Boolean(baseModel)
         : Boolean(pairedFastModel && pairedFastModel.id !== modelId);
     const canUseFastVariant = hasFastVariant(model);
-    const canUseImplicitFastVariant = hasImplicitOpenAIFastVariant(provider, model);
     const visibleVariantOptions = getModelVariants(model);
     const selectedVariant = resolveThinkingVariant(
         normalizeVariantKey(variant ?? '') === FAST_VARIANT_KEY ? undefined : variant,
         visibleVariantOptions,
     );
-    const canToggleFast = canUsePairedFastModel || canUseFastVariant || canUseImplicitFastVariant;
+    const canToggleFast = canUsePairedFastModel || canUseFastVariant;
 
     if (visibleVariantOptions.length === 0 && !canToggleFast) {
         return null;
@@ -231,10 +226,6 @@ export const resolveProviderModelVariant = (
         const explicitFastVariant = findVariantKey(model.variants, cleanedVariant);
         if (explicitFastVariant && normalizeVariantKey(explicitFastVariant) === FAST_VARIANT_KEY) {
             return explicitFastVariant;
-        }
-
-        if (hasImplicitOpenAIFastVariant(provider, model)) {
-            return FAST_VARIANT_KEY;
         }
 
         return resolveThinkingVariant(undefined, thinkingVariants);

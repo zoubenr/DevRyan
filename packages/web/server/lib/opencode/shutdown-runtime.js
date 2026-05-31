@@ -15,6 +15,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     setTerminalRuntime,
     getMessageStreamRuntime,
     setMessageStreamRuntime,
+    getCursorSdkRuntime,
     shouldSkipOpenCodeStop,
     getOpenCodePort,
     getOpenCodeProcess,
@@ -63,6 +64,14 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       } catch {
       } finally {
         setMessageStreamRuntime(null);
+      }
+    }
+
+    const cursorSdkRuntime = typeof getCursorSdkRuntime === 'function' ? getCursorSdkRuntime() : null;
+    if (cursorSdkRuntime && typeof cursorSdkRuntime.dispose === 'function') {
+      try {
+        await cursorSdkRuntime.dispose();
+      } catch {
       }
     }
 

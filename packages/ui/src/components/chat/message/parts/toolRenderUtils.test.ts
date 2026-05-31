@@ -544,6 +544,26 @@ describe('tool activity grouping', () => {
         }
     });
 
+    test('hides raw mkdir tool activity without hiding shell commands that create directories', () => {
+        const rows = collectToolActivityRowsFromToolParts([
+            toolPart('mkdir', { input: { path: '__tests__' } }, 'mkdir-1'),
+            toolPart('bash', { input: { command: 'mkdir -p __tests__' } }, 'bash-1'),
+            toolPart('read', { input: { filePath: 'src/a.ts' } }, 'read-1'),
+        ]);
+
+        expect(rows).toHaveLength(2);
+        expect(rows.some((row) => row.type === 'item' && row.item.tool === 'mkdir')).toBe(false);
+        expect(rows[0]?.type).toBe('group');
+        if (rows[0]?.type === 'group') {
+            expect(rows[0].groupInfo.kind).toBe('shell');
+            expect(rows[0].items.map((part) => part.tool)).toEqual(['bash']);
+        }
+        expect(rows[1]?.type).toBe('group');
+        if (rows[1]?.type === 'group') {
+            expect(rows[1].groupInfo.kind).toBe('read');
+        }
+    });
+
     test('labels shell rollups as command counts', () => {
         expect(getToolActivityGroupInfo('bash')?.kind).toBe('shell');
         expect(getToolActivityGroupInfo('shellCommandToolCall')?.kind).toBe('shell');

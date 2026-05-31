@@ -134,6 +134,7 @@ const CURSOR_CURRENT_PERIOD_USAGE_URL = 'https://cursor.com/api/dashboard/get-cu
 const CURSOR_DASHBOARD_URL = 'https://cursor.com/dashboard?tab=spending';
 const CURSOR_AUTO_COMPOSER_DESCRIPTION = 'Additional usage beyond limits consumes API quota or on-demand spend.';
 const CURSOR_API_DESCRIPTION = 'Additional usage beyond limits consumes on-demand spend.';
+const COPILOT_AI_CREDITS_DESCRIPTION = 'GitHub AI Credits are consumed from token usage, including input, output, and cached tokens.';
 
 
 const ANTIGRAVITY_ACCOUNTS_PATHS = [
@@ -1129,38 +1130,72 @@ export const fetchClaudeQuota = async (): Promise<ProviderResult> => {
   }
 };
 
+const isCopilotTokenBasedBillingPayload = (payload: Record<string, unknown>) => (
+  typeof payload.token_based_billing !== 'undefined'
+  || payload.billing_model === 'usage_based'
+  || payload.billing_model === 'token_based'
+  || payload.usage_based_billing === true
+);
+
+const resolveCopilotResetAt = (payload: Record<string, unknown>) => (
+  toTimestamp(payload.quota_reset_date_utc)
+  ?? toTimestamp(payload.quota_reset_date)
+);
+
 const buildCopilotWindows = (payload: Record<string, unknown>) => {
   const quota = (payload.quota_snapshots as Record<string, unknown>) ?? {};
-  const resetAt = toTimestamp(payload.quota_reset_date);
+  const resetAt = resolveCopilotResetAt(payload);
+  const isTokenBasedBilling = isCopilotTokenBasedBillingPayload(payload);
   const windows: Record<string, UsageWindow> = {};
 
-  const addWindow = (label: string, snapshot?: Record<string, unknown>) => {
+  const addWindow = (
+    label: string,
+    snapshot?: Record<string, unknown>,
+    options: { unit?: 'credits' | 'requests'; description?: string } = {},
+  ) => {
     if (!snapshot) return;
     const entitlement = toNumber(snapshot.entitlement);
-    const remaining = toNumber(snapshot.remaining);
+    const remaining = toNumber(snapshot.remaining) ?? toNumber(snapshot.quota_remaining);
+    const percentRemaining = toNumber(snapshot.percent_remaining);
     const usedPercent = entitlement && remaining !== null
       ? Math.max(0, Math.min(100, 100 - (remaining / entitlement) * 100))
+      : percentRemaining !== null
+        ? Math.max(0, Math.min(100, 100 - percentRemaining))
       : null;
-    const valueLabel = entitlement !== null && remaining !== null
-      ? `${remaining.toFixed(0)} / ${entitlement.toFixed(0)} left`
+    const valueLabel = entitlement !== null && remaining !== null && options.unit
+      ? `${remaining.toFixed(0)} / ${entitlement.toFixed(0)} ${options.unit} left`
+      : entitlement !== null && remaining !== null
+        ? `${remaining.toFixed(0)} / ${entitlement.toFixed(0)} left`
       : null;
     windows[label] = toUsageWindow({
       usedPercent,
       windowSeconds: null,
       resetAt,
       valueLabel,
+      description: options.description,
     });
   };
 
-  addWindow('chat', quota.chat as Record<string, unknown> | undefined);
-  addWindow('completions', quota.completions as Record<string, unknown> | undefined);
-  addWindow('premium', quota.premium_interactions as Record<string, unknown> | undefined);
+  if (isTokenBasedBilling) {
+    addWindow(
+      'ai-credits',
+      (quota.premium_interactions ?? quota.ai_credits ?? quota.credits) as Record<string, unknown> | undefined,
+      { unit: 'credits', description: COPILOT_AI_CREDITS_DESCRIPTION },
+    );
+    return windows;
+  }
+
+  addWindow('chat', quota.chat as Record<string, unknown> | undefined, { unit: 'requests' });
+  addWindow('completions', quota.completions as Record<string, unknown> | undefined, { unit: 'requests' });
+  addWindow('premium', quota.premium_interactions as Record<string, unknown> | undefined, { unit: 'requests' });
 
   return windows;
 };
 
-export const fetchCopilotQuota = async (): Promise<ProviderResult> => {
-  const auth = readAuthFile();
+export const fetchCopilotQuota = async (options: FetchQuotaOptions = {}): Promise<ProviderResult> => {
+  const readAuth = options.readAuth ?? readAuthFile;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const auth = readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
   const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
 
@@ -1175,7 +1210,7 @@ export const fetchCopilotQuota = async (): Promise<ProviderResult> => {
   }
 
   try {
-    const response = await fetch('https://api.github.com/copilot_internal/user', {
+    const response = await fetchImpl('https://api.github.com/copilot_internal/user', {
       method: 'GET',
       headers: {
         Authorization: `token ${accessToken}`,
@@ -1214,8 +1249,10 @@ export const fetchCopilotQuota = async (): Promise<ProviderResult> => {
   }
 };
 
-export const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
-  const auth = readAuthFile();
+export const fetchCopilotAddonQuota = async (options: FetchQuotaOptions = {}): Promise<ProviderResult> => {
+  const readAuth = options.readAuth ?? readAuthFile;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const auth = readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
   const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
 
@@ -1230,7 +1267,7 @@ export const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
   }
 
   try {
-    const response = await fetch('https://api.github.com/copilot_internal/user', {
+    const response = await fetchImpl('https://api.github.com/copilot_internal/user', {
       method: 'GET',
       headers: {
         Authorization: `token ${accessToken}`,
@@ -1252,7 +1289,11 @@ export const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
 
     const payload = await response.json() as Record<string, unknown>;
     const windows = buildCopilotWindows(payload);
-    const premium = windows.premium ? { premium: windows.premium } : windows;
+    const premium = windows['ai-credits']
+      ? { 'ai-credits': windows['ai-credits'] }
+      : windows.premium
+        ? { premium: windows.premium }
+        : windows;
 
     return buildResult({
       providerId: 'github-copilot-addon',
@@ -1951,9 +1992,9 @@ export const fetchQuotaForProvider = async (providerId: string, options: FetchQu
     case 'cursor-acp':
       return fetchCursorAcpQuota(options);
     case 'github-copilot':
-      return fetchCopilotQuota();
+      return fetchCopilotQuota(options);
     case 'github-copilot-addon':
-      return fetchCopilotAddonQuota();
+      return fetchCopilotAddonQuota(options);
     case 'google':
       return fetchGoogleQuota();
     case 'antigravity':

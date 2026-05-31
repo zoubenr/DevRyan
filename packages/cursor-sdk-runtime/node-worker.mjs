@@ -164,8 +164,19 @@ const main = async () => {
   const prompt = trimString(input.prompt);
   const images = Array.isArray(input.images)
     ? input.images
-      .filter((image) => isPlainObject(image) && trimString(image.url))
-      .map((image) => ({ url: trimString(image.url) }))
+      .filter((image) => (
+        isPlainObject(image)
+        && (
+          (trimString(image.data) && trimString(image.mimeType))
+          || trimString(image.url)
+        )
+      ))
+      .map((image) => {
+        const data = trimString(image.data);
+        const mimeType = trimString(image.mimeType);
+        if (data && mimeType) return { data, mimeType };
+        return { url: trimString(image.url) };
+      })
     : [];
   const directory = trimString(input.directory);
   const agentID = trimString(input.agentID);
@@ -214,6 +225,15 @@ const main = async () => {
     if (shouldSkipDuplicateMessage(source, sdkMessage)) return;
     writeEvent({ type: 'message', message: sdkMessage });
   }
+  const streamIterator = run.stream()[Symbol.asyncIterator]();
+  let streamIteratorClosed = false;
+  const closeStreamIterator = async () => {
+    if (streamIteratorClosed) return;
+    streamIteratorClosed = true;
+    if (typeof streamIterator.return === 'function') {
+      await streamIterator.return();
+    }
+  };
   const writeDone = (status) => {
     if (doneEmitted) return;
     doneEmitted = true;
@@ -245,21 +265,41 @@ const main = async () => {
 
   const waitPromise = run.wait()
     .then((result) => {
-      if (trimString(result?.result)) {
+      const finalText = trimString(result?.result);
+      const finalStatus = finalStatusFromSdkStatus(sdkStatusFromRunStatus(result?.status || run.status));
+      writeEvent({
+        type: 'final-result',
+        result: {
+          ok: true,
+          finalStatus,
+          finalText,
+        },
+      });
+      if (finalText) {
         writeSdkMessage({
           type: 'assistant',
           agent_id: run.agentId,
           run_id: run.id,
           message: {
             role: 'assistant',
-            content: [{ type: 'text', text: result.result }],
+            content: [{ type: 'text', text: finalText }],
           },
         }, 'wait');
       }
       writeDone(result?.status || run.status);
+      void closeStreamIterator();
       setTimeout(() => process.exit(0), 25).unref?.();
     })
     .catch((error) => {
+      writeEvent({
+        type: 'final-result',
+        result: {
+          ok: false,
+          finalStatus: 'error',
+          finalText: '',
+          error: error instanceof Error ? error.message : 'Cursor SDK run failed.',
+        },
+      });
       writeEvent({
         type: 'error',
         error: error instanceof Error ? error.message : 'Cursor SDK run failed.',
@@ -291,8 +331,10 @@ const main = async () => {
     void cancel();
   });
 
-  for await (const message of run.stream()) {
-    writeSdkMessage(message, 'stream');
+  for (;;) {
+    const next = await streamIterator.next();
+    if (next.done) break;
+    writeSdkMessage(next.value, 'stream');
   }
 
   await waitPromise;

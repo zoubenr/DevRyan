@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
   filterHiddenProviderModels,
+  filterVisibleProviderModelsForPicker,
   isHiddenModelRef,
+  isHiddenProviderModelRef,
   type HiddenModelRef,
 } from './modelVisibility';
 
@@ -74,5 +76,62 @@ describe('model visibility helpers', () => {
     ], hiddenModels, (_provider, _model, modelID) => !modelID.endsWith('-fast'));
 
     expect(filtered[0]?.models.map((model) => model.id)).toEqual(['claude-visible']);
+  });
+
+  test('hides Google-backed Antigravity models by display provider id', () => {
+    const filtered = filterHiddenProviderModels([
+      {
+        id: 'google',
+        name: 'Google',
+        models: [
+          { id: 'gemini-3-pro', providerID: 'google', name: 'Gemini 3 Pro' },
+          { id: 'antigravity-claude-sonnet-4-6', providerID: 'google', name: 'Claude Sonnet 4.6 (Antigravity)' },
+        ],
+      },
+    ], [
+      { providerID: 'antigravity', modelID: 'antigravity-claude-sonnet-4-6' },
+    ]);
+
+    expect(filtered.map((provider) => ({
+      id: provider.id,
+      models: provider.models.map((model) => model.id),
+    }))).toEqual([
+      { id: 'google', models: ['gemini-3-pro'] },
+    ]);
+  });
+
+  test('detects hidden Google-backed Antigravity models by display provider id', () => {
+    expect(isHiddenProviderModelRef([
+      { providerID: 'antigravity', modelID: 'antigravity-claude-sonnet-4-6' },
+    ], 'google', {
+      id: 'antigravity-claude-sonnet-4-6',
+      providerID: 'google',
+      name: 'Claude Sonnet 4.6 (Antigravity)',
+    })).toBe(true);
+  });
+
+  test('builds picker providers by splitting Antigravity before hidden filtering', () => {
+    const filtered = filterVisibleProviderModelsForPicker([
+      {
+        id: 'google',
+        name: 'Google',
+        models: [
+          { id: 'gemini-3-pro', providerID: 'google', name: 'Gemini 3 Pro' },
+          { id: 'antigravity-claude-sonnet-4-6', providerID: 'google', name: 'Claude Sonnet 4.6 (Antigravity)' },
+          { id: 'antigravity-gemini-3-pro', providerID: 'google', name: 'Gemini 3 Pro (Antigravity)' },
+        ],
+      },
+    ], [
+      { providerID: 'antigravity', modelID: 'antigravity-claude-sonnet-4-6' },
+      { providerID: 'antigravity', modelID: 'antigravity-gemini-3-pro' },
+    ]);
+
+    expect(filtered.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      models: provider.models.map((model) => model.id),
+    }))).toEqual([
+      { id: 'google', name: 'Google', models: ['gemini-3-pro'] },
+    ]);
   });
 });

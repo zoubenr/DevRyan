@@ -60,6 +60,122 @@ const createFakeWorkerSpawn = (capture) => (command, args, options) => {
   return child;
 };
 
+const createFinalResultBeforeStreamWorkerSpawn = (capture) => (command, args, options) => {
+  const child = new EventEmitter();
+  let rawInput = '';
+
+  capture.calls.push({ command, args, options });
+  child.exitCode = null;
+  child.killed = false;
+  child.stdout = new Readable({ read() {} });
+  child.stderr = new Readable({ read() {} });
+  child.stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      rawInput += chunk.toString();
+      callback();
+    },
+    final(callback) {
+      capture.input = JSON.parse(rawInput);
+      queueMicrotask(() => {
+        child.stdout.push(`${JSON.stringify({
+          type: 'final-result',
+          result: {
+            ok: true,
+            finalStatus: 'success',
+            finalText: 'worker final text before stream completion',
+          },
+        })}\n`);
+      });
+      callback();
+    },
+  });
+  child.kill = (signal) => {
+    child.killed = true;
+    child.exitCode = signal === 'SIGKILL' ? 137 : 130;
+    queueMicrotask(() => child.emit('close', child.exitCode, signal));
+    return true;
+  };
+
+  return child;
+};
+
+const createFakePersistentWorkerSpawn = (capture, options = {}) => (command, args, spawnOptions) => {
+  const child = new EventEmitter();
+  let pendingInput = '';
+
+  capture.calls.push({ command, args, options: spawnOptions });
+  capture.children.push(child);
+  child.exitCode = null;
+  child.killed = false;
+  child.stdout = new Readable({ read() {} });
+  child.stderr = new Readable({ read() {} });
+  child.stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      pendingInput += chunk.toString();
+      const lines = pendingInput.split('\n');
+      pendingInput = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const commandPayload = JSON.parse(line);
+        capture.commands.push(commandPayload);
+        if (commandPayload.type === 'prompt' && options.autoRespond !== false) {
+          queueMicrotask(() => {
+            child.stdout.push(`${JSON.stringify({
+              requestID: commandPayload.requestID,
+              type: 'message',
+              message: {
+                type: 'assistant',
+                message: { content: [{ type: 'text', text: `persistent ${capture.commands.filter((entry) => entry.type === 'prompt').length}` }] },
+              },
+            })}\n`);
+            child.stdout.push(`${JSON.stringify({
+              requestID: commandPayload.requestID,
+              type: 'final-result',
+              result: { ok: true, finalStatus: 'success', finalText: '' },
+            })}\n`);
+            child.stdout.push(`${JSON.stringify({
+              requestID: commandPayload.requestID,
+              type: 'done',
+              status: 'finished',
+            })}\n`);
+          });
+        }
+      }
+      callback();
+    },
+  });
+  child.kill = (signal) => {
+    child.killed = true;
+    child.exitCode = signal === 'SIGKILL' ? 137 : 130;
+    queueMicrotask(() => {
+      child.stdout.push(null);
+      child.emit('close', child.exitCode, signal);
+    });
+    return true;
+  };
+  child.emitWorkerEvent = (payload) => {
+    child.stdout.push(`${JSON.stringify(payload)}\n`);
+  };
+
+  queueMicrotask(() => {
+    child.stdout.push(`${JSON.stringify({ type: 'ready' })}\n`);
+  });
+
+  return child;
+};
+
+const waitFor = async (predicate, timeoutMs = 500) => {
+  const started = Date.now();
+  for (;;) {
+    const value = await predicate();
+    if (value) return value;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
 describe('Cursor SDK worker runtime config', () => {
   test('runs desktop Electron prompt work in an Electron-as-Node worker', () => {
     const config = resolveCursorSdkWorkerRuntimeConfig({
@@ -91,6 +207,7 @@ describe('Cursor SDK worker runtime config', () => {
       readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
       env: { OPENCHAMBER_RUNTIME: 'desktop' },
       useNodeWorkerForPrompts: true,
+      usePersistentWorkerForPrompts: false,
       nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
       workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
       workerCwd: '/Applications/DevRyan.app/Contents/Resources',
@@ -115,6 +232,500 @@ describe('Cursor SDK worker runtime config', () => {
     ]);
     expect(capture.calls[0].options.cwd).toBe('/Applications/DevRyan.app/Contents/Resources');
     expect(capture.calls[0].options.env.ELECTRON_RUN_AS_NODE).toBe('1');
-    expect(capture.input.modelSelection).toEqual({ id: 'composer-2.5' });
+    expect(capture.input.modelSelection).toEqual({
+      id: 'composer-2.5',
+      params: [{ id: 'fast', value: 'false' }],
+    });
+  });
+
+  test('applies worker final result while stdout stream remains open', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-worker-'));
+    const capture = { calls: [], input: null };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      usePersistentWorkerForPrompts: false,
+      nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
+      workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      workerCwd: '/Applications/DevRyan.app/Contents/Resources',
+      workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      spawnImpl: createFinalResultBeforeStreamWorkerSpawn(capture),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_worker_final',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_worker_final_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    let records = [];
+    for (let index = 0; index < 25; index += 1) {
+      records = await runtime.getSessionMessages('ses_worker_final');
+      if (records.some((record) => record.info?.role === 'assistant' && record.info?.finish)) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('worker final text before stream completion');
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
+  });
+
+  test('passes data URL image attachments to prompt workers as Cursor data images', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-worker-'));
+    const capture = { calls: [], input: null };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      usePersistentWorkerForPrompts: false,
+      nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
+      workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      workerCwd: '/Applications/DevRyan.app/Contents/Resources',
+      workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      spawnImpl: createFakeWorkerSpawn(capture),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_worker_image',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_worker_image_user',
+        parts: [
+          { type: 'text', text: 'describe this' },
+          {
+            type: 'file',
+            mime: 'image/png',
+            filename: 'sample.png',
+            url: 'data:image/png;base64,aGVsbG8=',
+          },
+        ],
+      },
+    });
+
+    expect(capture.input.images).toEqual([
+      { data: 'aGVsbG8=', mimeType: 'image/png' },
+    ]);
+  });
+
+  test('encodes non-base64 data URL image attachments for prompt workers', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-worker-'));
+    const capture = { calls: [], input: null };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      usePersistentWorkerForPrompts: false,
+      nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
+      workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      workerCwd: '/Applications/DevRyan.app/Contents/Resources',
+      workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      spawnImpl: createFakeWorkerSpawn(capture),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_worker_plain_image',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_worker_plain_image_user',
+        parts: [
+          { type: 'text', text: 'describe this' },
+          {
+            type: 'file',
+            mime: 'image/svg+xml',
+            filename: 'sample.svg',
+            url: 'data:image/svg+xml,%3Csvg%3E%3C%2Fsvg%3E',
+          },
+        ],
+      },
+    });
+
+    expect(capture.input.images).toEqual([
+      { data: 'PHN2Zz48L3N2Zz4=', mimeType: 'image/svg+xml' },
+    ]);
+  });
+
+  test('direct Cursor SDK runs send data URL image attachments as Cursor data images', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-direct-'));
+    let sentMessage = null;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      useNodeWorkerForPrompts: false,
+      loadSdk: async () => ({
+        Agent: {
+          create: async () => ({
+            agentId: 'agent_direct_image',
+            send: async (message) => {
+              sentMessage = message;
+              return {
+                status: 'finished',
+                stream: async function* stream() {},
+                wait: async () => ({ status: 'finished', result: 'ok' }),
+              };
+            },
+          }),
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_direct_image',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_direct_image_user',
+        parts: [
+          { type: 'text', text: 'describe this' },
+          {
+            type: 'file',
+            mime: 'image/png',
+            filename: 'sample.png',
+            url: 'data:image/png;base64,aGVsbG8=',
+          },
+        ],
+      },
+    });
+
+    expect(sentMessage.images).toEqual([{ data: 'aGVsbG8=', mimeType: 'image/png' }]);
+    expect(sentMessage.text).toContain('describe this');
+  });
+
+  test('non-data image URLs are rejected before calling the Cursor SDK', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-url-image-'));
+    let promptRunCalled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      createPromptRun: async () => {
+        promptRunCalled = true;
+        throw new Error('should not call Cursor SDK');
+      },
+    });
+
+    const result = await runtime.handlePromptAsync({
+      sessionID: 'ses_url_image',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_url_image_user',
+        parts: [
+          { type: 'text', text: 'describe this' },
+          {
+            type: 'file',
+            mime: 'image/png',
+            filename: 'remote.png',
+            url: 'https://example.com/remote.png',
+          },
+        ],
+      },
+    });
+
+    const records = await runtime.getSessionMessages('ses_url_image');
+    const assistantText = records
+      .find((record) => record.info.role === 'assistant')
+      ?.parts
+      ?.filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n') || '';
+
+    expect(promptRunCalled).toBe(false);
+    expect(result).toEqual({ handled: true, status: 204, body: null });
+    expect(assistantText).toContain('Cursor SDK provider sessions support data-backed image attachments only.');
+    expect(assistantText).not.toContain('Cursor SDK error: URL images');
+  });
+
+  test('non-image attachments still produce the unsupported Cursor attachment message', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-pdf-'));
+    let promptRunCalled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      createPromptRun: async () => {
+        promptRunCalled = true;
+        throw new Error('should not call Cursor SDK');
+      },
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_pdf_attachment',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_pdf_attachment_user',
+        parts: [
+          { type: 'text', text: 'read this' },
+          {
+            type: 'file',
+            mime: 'application/pdf',
+            filename: 'document.pdf',
+            url: 'data:application/pdf;base64,JVBERi0xLjQ=',
+          },
+        ],
+      },
+    });
+
+    const records = await runtime.getSessionMessages('ses_pdf_attachment');
+    const assistantText = records
+      .find((record) => record.info.role === 'assistant')
+      ?.parts
+      ?.filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n') || '';
+
+    expect(promptRunCalled).toBe(false);
+    expect(assistantText).toContain('Cursor SDK provider sessions support image attachments only.');
+    expect(assistantText).toContain('document.pdf (application/pdf)');
+  });
+
+  test('reuses one persistent worker across sequential Composer 2.5 prompts', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-persistent-worker-'));
+    const capture = { calls: [], children: [], commands: [] };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
+      workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      workerCwd: '/Applications/DevRyan.app/Contents/Resources',
+      workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      spawnImpl: createFakePersistentWorkerSpawn(capture),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_persistent',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_persistent_1_user',
+        parts: [{ type: 'text', text: 'hello one' }],
+      },
+    });
+    await waitFor(async () => {
+      const records = await runtime.getSessionMessages('ses_persistent');
+      return records.some((record) => record.info?.id === 'msg_persistent_1_user_assistant' && record.info?.finish);
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_persistent',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_persistent_2_user',
+        parts: [{ type: 'text', text: 'hello two' }],
+      },
+    });
+    await waitFor(async () => {
+      const records = await runtime.getSessionMessages('ses_persistent');
+      return records.some((record) => record.info?.id === 'msg_persistent_2_user_assistant' && record.info?.finish);
+    });
+
+    const promptCommands = capture.commands.filter((entry) => entry.type === 'prompt');
+    expect(capture.calls).toHaveLength(1);
+    expect(capture.calls[0].args).toEqual([
+      '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/persistent-worker.mjs',
+    ]);
+    expect(promptCommands).toHaveLength(2);
+    expect(promptCommands[0].modelSelection).toEqual({
+      id: 'composer-2.5',
+      params: [{ id: 'fast', value: 'false' }],
+    });
+    expect(runtime.getRuntimeStatus()).toMatchObject({
+      workerMode: 'persistent-node-worker',
+      workerReady: true,
+      workerRestarts: 0,
+    });
+
+    await runtime.dispose();
+    expect(capture.children[0].killed).toBe(true);
+  });
+
+  test('routes interleaved persistent worker events by request id', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-persistent-routing-'));
+    const capture = { calls: [], children: [], commands: [] };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      spawnImpl: createFakePersistentWorkerSpawn(capture, { autoRespond: false }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_route_one',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_route_one_user',
+        parts: [{ type: 'text', text: 'one' }],
+      },
+    });
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_route_two',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_route_two_user',
+        parts: [{ type: 'text', text: 'two' }],
+      },
+    });
+
+    const promptCommands = await waitFor(() => (
+      capture.commands.filter((entry) => entry.type === 'prompt').length === 2
+        ? capture.commands.filter((entry) => entry.type === 'prompt')
+        : null
+    ));
+    const child = capture.children[0];
+    child.emitWorkerEvent({
+      requestID: promptCommands[1].requestID,
+      type: 'message',
+      message: {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'second response' }] },
+      },
+    });
+    child.emitWorkerEvent({ requestID: promptCommands[1].requestID, type: 'done', status: 'finished' });
+    child.emitWorkerEvent({
+      requestID: promptCommands[0].requestID,
+      type: 'message',
+      message: {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'first response' }] },
+      },
+    });
+    child.emitWorkerEvent({ requestID: promptCommands[0].requestID, type: 'done', status: 'finished' });
+
+    const firstRecords = await waitFor(async () => {
+      const records = await runtime.getSessionMessages('ses_route_one');
+      return records.some((record) => record.info?.role === 'assistant' && record.info?.finish) ? records : null;
+    });
+    const secondRecords = await waitFor(async () => {
+      const records = await runtime.getSessionMessages('ses_route_two');
+      return records.some((record) => record.info?.role === 'assistant' && record.info?.finish) ? records : null;
+    });
+
+    expect(firstRecords[1].parts.find((part) => part.type === 'text')?.text).toBe('first response');
+    expect(secondRecords[1].parts.find((part) => part.type === 'text')?.text).toBe('second response');
+    await runtime.dispose();
+  });
+
+  test('sends persistent worker cancel commands for active prompts', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-persistent-cancel-'));
+    const capture = { calls: [], children: [], commands: [] };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      spawnImpl: createFakePersistentWorkerSpawn(capture, { autoRespond: false }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_cancel',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_cancel_user',
+        parts: [{ type: 'text', text: 'cancel me' }],
+      },
+    });
+
+    const promptCommand = await waitFor(() => capture.commands.find((entry) => entry.type === 'prompt'));
+    await runtime.abortSession('ses_cancel');
+
+    const cancelCommand = capture.commands.find((entry) => entry.type === 'cancel');
+    expect(cancelCommand).toEqual({
+      type: 'cancel',
+      requestID: promptCommand.requestID,
+    });
+    await runtime.dispose();
+  });
+
+  test('falls back to the one-shot worker when persistent worker startup fails before prompt submission', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-persistent-fallback-'));
+    const capture = { calls: [], input: null };
+    const spawnImpl = (command, args, options) => {
+      if (capture.calls.length === 0) {
+        const child = new EventEmitter();
+        capture.calls.push({ command, args, options });
+        child.exitCode = null;
+        child.killed = false;
+        child.stdout = new Readable({ read() {} });
+        child.stderr = new Readable({ read() {} });
+        child.stdin = new Writable({
+          write(_chunk, _encoding, callback) {
+            callback();
+          },
+        });
+        child.kill = (signal) => {
+          child.killed = true;
+          child.exitCode = signal === 'SIGKILL' ? 137 : 130;
+          queueMicrotask(() => child.emit('close', child.exitCode, signal));
+          return true;
+        };
+        queueMicrotask(() => {
+          child.emit('error', new Error('persistent worker failed before ready'));
+          child.exitCode = 1;
+          child.stdout.push(null);
+          child.emit('close', 1, null);
+        });
+        return child;
+      }
+      return createFakeWorkerSpawn(capture)(command, args, options);
+    };
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: { OPENCHAMBER_RUNTIME: 'desktop' },
+      useNodeWorkerForPrompts: true,
+      nodeBinary: '/Applications/DevRyan.app/Contents/MacOS/DevRyan',
+      workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      workerCwd: '/Applications/DevRyan.app/Contents/Resources',
+      workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      spawnImpl,
+      logger: { warn: () => {}, error: () => {} },
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_fallback',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_fallback_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_fallback');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(capture.calls).toHaveLength(2);
+    expect(capture.calls[0].args).toEqual([
+      '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/persistent-worker.mjs',
+    ]);
+    expect(capture.calls[1].args).toEqual([
+      '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+    ]);
+    expect(records[1].parts.find((part) => part.type === 'text')?.text).toBe('worker ok');
+    await runtime.dispose();
   });
 });

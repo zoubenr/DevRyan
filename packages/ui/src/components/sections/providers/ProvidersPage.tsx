@@ -1406,7 +1406,7 @@ export const ProvidersPage: React.FC = () => {
   }
 
   const providerModels = getProviderModelsForDisplay(selectedProvider, {
-    hideCursorAcpFastDuplicates: selectedProviderIsCursor,
+    hidePairedFastModels: true,
   });
   const providerAuthMethods = authMethodsByProvider[selectedProvider.id] ?? [];
   const oauthAuthMethods = providerAuthMethods.filter((method) => normalizeAuthType(method) === 'oauth');

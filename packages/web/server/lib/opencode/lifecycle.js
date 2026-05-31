@@ -550,11 +550,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     if (conflicts.length > 0) {
       const message = formatPackagedAgentSyncConflicts(conflicts)
         || 'Packaged agent sync conflict';
-      state.lastOpenCodeError = message;
-      syncToHmrState();
-      const error = new Error(message);
-      error.code = 'PACKAGED_AGENT_SYNC_CONFLICT';
-      throw error;
+      console.warn(`[OpenCode] ${message} Continuing with existing runtime agent files.`);
     }
     const overlayResult = await syncRuntimeAgentOverlays({
       workingDirectory: state.openCodeWorkingDirectory,

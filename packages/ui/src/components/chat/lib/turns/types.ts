@@ -119,6 +119,7 @@ export interface TurnGroupingContext {
     diffStats?: TurnDiffStats;
     userMessageCreatedAt?: number;
     userMessageVariant?: string;
+    isPlanModeSource?: boolean;
     isWorking: boolean;
     isTurnWorking: boolean;
     isGroupExpanded?: boolean;

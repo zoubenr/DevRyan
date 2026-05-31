@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import type { SessionMemoryState } from '@/sync/viewport-store';
 import {
     CHAT_FORCE_SCROLL_BOTTOM_EVENT,
+    getPinnedFollowWriteMode,
     getPinnedContentFollowAction,
     requestChatScrollToBottom,
     shouldRestoreSavedScrollPosition,
@@ -143,6 +144,36 @@ describe('getPinnedContentFollowAction', () => {
             state: 'following',
             sessionIsWorking: false,
             anchorPreservationActive: true,
+        })).toBe('none');
+    });
+});
+
+describe('getPinnedFollowWriteMode', () => {
+    test('locks pinned working content to the bottom instantly', () => {
+        expect(getPinnedFollowWriteMode({
+            action: 'continuous-follow',
+            explicitSmoothRequest: false,
+        })).toBe('instant');
+    });
+
+    test('preserves explicit smooth follow requests', () => {
+        expect(getPinnedFollowWriteMode({
+            action: 'continuous-follow',
+            explicitSmoothRequest: true,
+        })).toBe('animated');
+    });
+
+    test('keeps idle settle as an instant bottom correction', () => {
+        expect(getPinnedFollowWriteMode({
+            action: 'idle-settle',
+            explicitSmoothRequest: false,
+        })).toBe('instant');
+    });
+
+    test('does not write scroll when pinned follow is suppressed', () => {
+        expect(getPinnedFollowWriteMode({
+            action: 'none',
+            explicitSmoothRequest: false,
         })).toBe('none');
     });
 });

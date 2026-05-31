@@ -266,6 +266,7 @@ export const areRelevantTurnGroupingContextsEqual = (
   if (left.isTurnWorking !== right.isTurnWorking) return false;
   if (left.hasTools !== right.hasTools) return false;
   if (left.hasReasoning !== right.hasReasoning) return false;
+  if (left.isPlanModeSource !== right.isPlanModeSource) return false;
   if (left.userMessageCreatedAt !== right.userMessageCreatedAt) return false;
   if (left.userMessageVariant !== right.userMessageVariant) return false;
   if (left.summarySourceMessageId !== right.summarySourceMessageId) return false;

@@ -1,3 +1,8 @@
+import {
+  getDisplayProviderId,
+  splitAntigravityProviderForDisplay,
+} from './antigravity';
+
 export type HiddenModelRef = {
   providerID: string;
   modelID: string;
@@ -5,6 +10,8 @@ export type HiddenModelRef = {
 
 type ProviderModelLike = Record<string, unknown> & {
   id?: string;
+  providerID?: string;
+  providerId?: string;
 };
 
 type ProviderLike<TModel extends ProviderModelLike = ProviderModelLike> = Record<string, unknown> & {
@@ -29,6 +36,32 @@ export const isHiddenModelRef = (
   );
 };
 
+export const isHiddenProviderModelRef = (
+  hiddenModels: HiddenModelRef[],
+  providerID: string | null | undefined,
+  model: ProviderModelLike | null | undefined,
+): boolean => {
+  if (!model) {
+    return false;
+  }
+
+  const modelID = typeof model.id === 'string' ? model.id : '';
+  if (!modelID) {
+    return false;
+  }
+
+  const executionProviderID = typeof providerID === 'string' ? providerID : '';
+  const displayProviderID = executionProviderID
+    ? getDisplayProviderId(executionProviderID, model)
+    : executionProviderID;
+
+  return isHiddenModelRef(hiddenModels, executionProviderID, modelID)
+    || (
+      displayProviderID !== executionProviderID
+      && isHiddenModelRef(hiddenModels, displayProviderID, modelID)
+    );
+};
+
 export const filterHiddenProviderModels = <
   TModel extends ProviderModelLike,
   TProvider extends ProviderLike<TModel>,
@@ -42,10 +75,23 @@ export const filterHiddenProviderModels = <
     const providerModels = Array.isArray(provider.models) ? provider.models : [];
     const visibleModels = providerModels.filter((model) => {
       const modelID = typeof model?.id === 'string' ? model.id : '';
-      return !isHiddenModelRef(hiddenModels, providerID, modelID)
+      return !isHiddenProviderModelRef(hiddenModels, providerID, model)
         && (shouldKeepModel ? shouldKeepModel(provider, model, modelID) : true);
     });
 
     return { ...provider, models: visibleModels };
   })
   .filter((provider) => provider.models.length > 0);
+
+export const filterVisibleProviderModelsForPicker = <
+  TModel extends ProviderModelLike,
+  TProvider extends ProviderLike<TModel>,
+>(
+  providers: TProvider[],
+  hiddenModels: HiddenModelRef[],
+  shouldKeepModel?: (provider: TProvider, model: TModel, modelID: string) => boolean,
+): TProvider[] => filterHiddenProviderModels(
+  splitAntigravityProviderForDisplay(providers),
+  hiddenModels,
+  shouldKeepModel,
+);

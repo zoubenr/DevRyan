@@ -17,6 +17,14 @@ const KNOWN_TURN_MARKS = new Set([
   'cursor_workspace_repair_completed',
   'prompt_request_started',
   'prompt_accepted',
+  'cursor_worker_spawned',
+  'cursor_worker_first_event',
+  'cursor_worker_ready',
+  'cursor_run_create_started',
+  'cursor_run_created',
+  'cursor_first_sdk_delta',
+  'cursor_first_stream_event',
+  'cursor_first_emitted_text_delta',
   'session_status_busy',
   'assistant_message_created',
   'first_part_updated',
@@ -41,6 +49,23 @@ const DURATION_PAIRS = [
   ['cursor_workspace_repair_started', 'cursor_workspace_repair_completed'],
   ['cursor_workspace_repair_completed', 'prompt_request_started'],
   ['prompt_request_started', 'prompt_accepted'],
+  ['prompt_accepted', 'cursor_worker_spawned'],
+  ['prompt_accepted', 'cursor_worker_first_event'],
+  ['prompt_accepted', 'cursor_worker_ready'],
+  ['prompt_accepted', 'cursor_run_create_started'],
+  ['prompt_accepted', 'cursor_run_created'],
+  ['prompt_accepted', 'cursor_first_sdk_delta'],
+  ['prompt_accepted', 'cursor_first_stream_event'],
+  ['prompt_accepted', 'cursor_first_emitted_text_delta'],
+  ['cursor_worker_spawned', 'cursor_worker_first_event'],
+  ['cursor_worker_ready', 'cursor_run_create_started'],
+  ['cursor_run_create_started', 'cursor_run_created'],
+  ['cursor_run_created', 'cursor_first_sdk_delta'],
+  ['cursor_run_created', 'cursor_first_stream_event'],
+  ['cursor_first_sdk_delta', 'first_text_delta'],
+  ['cursor_first_stream_event', 'first_text_delta'],
+  ['cursor_first_sdk_delta', 'cursor_first_emitted_text_delta'],
+  ['cursor_first_stream_event', 'cursor_first_emitted_text_delta'],
   ['prompt_accepted', 'session_status_busy'],
   ['prompt_accepted', 'assistant_message_created'],
   ['prompt_accepted', 'first_part_updated'],
@@ -210,6 +235,11 @@ function sanitizeClientMarkMetadata(mark, metadata) {
   if (mark === 'cursor_abort_requested') {
     const source = normalizeString(metadata.source);
     if (source) sanitized.source = source;
+  }
+
+  if (mark === 'cursor_worker_ready') {
+    const workerMode = normalizeString(metadata.workerMode);
+    if (workerMode) sanitized.workerMode = workerMode;
   }
 
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;

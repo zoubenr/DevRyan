@@ -49,7 +49,7 @@ import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore'
 import { useI18n } from '@/lib/i18n';
 import type { PlanIndicatorState } from '@/sync/plan-indicator';
 import { useNotificationStore } from '@/sync/notification-store';
-import { resolveLeadingIndicatorPositionClasses, resolveSidebarIndicator, resolveSidebarWorkingStatus } from './sessionIndicator';
+import { resolveLeadingIndicatorPositionClasses, resolveSidebarIndicator, resolveSidebarWorkingStatus, resolveSubtaskSidebarIndicator } from './sessionIndicator';
 import type { SessionIndicator } from './sessionIndicator';
 import { useSessionLifecycleStatus } from '@/hooks/useSessionLifecycleStatus';
 import { SidebarSpinner } from './SidebarSpinner';
@@ -355,25 +355,13 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     // indicator on the parent/root row only instead of showing child-row dots.
     return [session.id, ...collectNodeDescendantIds(node)];
   }, [collectNodeDescendantIds, isRootSession, node, session.id]);
-  const scopedUnseenCount = useNotificationStore(
-    React.useCallback((state) => {
-      let count = 0;
-      for (const sessionId of questionScopeSessionIds) {
-        count += state.index.session.unseenCount[sessionId] ?? 0;
-      }
-      return count;
-    }, [questionScopeSessionIds]),
-  );
-  const hasUnreadCompletion = useNotificationStore(
+  const hasUnreadError = useNotificationStore(
     React.useCallback((state) => {
       if (questionScopeSessionIds.length === 0) return false;
 
       const scopedSessionIds = new Set(questionScopeSessionIds);
-      return state.list.some((notification) => (
-        !notification.viewed
-        && notification.type === 'turn-complete'
-        && Boolean(notification.session && scopedSessionIds.has(notification.session))
-      ));
+      return Object.entries(state.index.session.unseenHasError)
+        .some(([sessionId, hasError]) => hasError && scopedSessionIds.has(sessionId));
     }, [questionScopeSessionIds]),
   );
   const pendingQuestionCount = useDirectorySync(
@@ -424,11 +412,11 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     isRootSession ? session.id : null,
     sessionDirectory ?? undefined,
   );
-  const sessionUnseenCount = useNotificationStore(
-    React.useCallback((state) => state.index.session.unseenCount[session.id] ?? 0, [session.id]),
-  );
   const sessionHasUnreadCompletion = useNotificationStore(
     React.useCallback((state) => state.index.session.unseenHasCompletion[session.id] ?? false, [session.id]),
+  );
+  const sessionHasUnreadError = useNotificationStore(
+    React.useCallback((state) => state.index.session.unseenHasError[session.id] ?? false, [session.id]),
   );
   const sessionTimestamp = userActivityTimestamp ?? resolvedSession.time?.updated ?? resolvedSession.time?.created ?? Date.now();
   const sessionCompactUpdatedLabel = formatSessionCompactDateLabel(sessionTimestamp);
@@ -578,24 +566,21 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const sidebarStatusIndicator = resolveSidebarIndicator({
     isRootSession,
     isWorking: sidebarIsWorking,
-    hasUnreadStatus: scopedUnseenCount > 0,
-    hasUnreadCompletion,
+    hasUnreadStatus: false,
+    hasUnreadCompletion: false,
     hasCompletedStatus,
+    hasErrorStatus: hasUnreadError,
     pendingQuestionCount,
     planState: effectivePlanIndicatorState,
   });
-  const subtaskStatusIndicator: SessionIndicator | null = !isRootSession
-    && notifyOnSubtasks
-    && !isSessionWorking
-    && !isActive
-    && sessionUnseenCount > 0
-    ? {
-        className: sessionHasUnreadCompletion ? 'bg-status-success' : 'bg-status-info',
-        labelKey: sessionHasUnreadCompletion
-          ? 'sessions.sidebar.session.status.completed'
-          : 'sessions.sidebar.session.status.unread',
-      }
-    : null;
+  const subtaskStatusIndicator: SessionIndicator | null = resolveSubtaskSidebarIndicator({
+    isRootSession,
+    notifyOnSubtasks,
+    isWorking: isSessionWorking,
+    isActive,
+    hasUnreadCompletion: sessionHasUnreadCompletion,
+    hasUnreadError: sessionHasUnreadError,
+  });
   const effectiveSidebarStatusIndicator = sidebarStatusIndicator ?? subtaskStatusIndicator;
   const showLeadingStatus = Boolean(effectiveSidebarStatusIndicator);
   const leadingStatusMarker = effectiveSidebarStatusIndicator ? (

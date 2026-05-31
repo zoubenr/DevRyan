@@ -437,17 +437,28 @@ describe('OpenCode lifecycle', () => {
     await server.close();
   });
 
-  it('does not spawn managed OpenCode when packaged agent sync has conflicts', async () => {
+  it('starts managed OpenCode when packaged agent sync has conflicts', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const child = createMockChild();
     const syncPackagedAgents = vi.fn(async () => ({
       changed: false,
       conflicts: [{ name: 'builder', path: '/tmp/agents/builder.md', reason: 'user-modified' }],
     }));
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', 'opencode server listening on http://127.0.0.1:45678\n');
+      });
+      return child;
+    });
 
     const runtime = createRuntime({ syncPackagedAgents });
 
-    await expect(runtime.startOpenCode()).rejects.toThrow('Packaged agent sync conflict for builder');
+    const server = await runtime.startOpenCode();
+
     expect(syncPackagedAgents).toHaveBeenCalledTimes(1);
-    expect(spawnMock).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    await server.close();
   });
 
   it('restarts a reused managed OpenCode server when packaged agent sync changes files', async () => {

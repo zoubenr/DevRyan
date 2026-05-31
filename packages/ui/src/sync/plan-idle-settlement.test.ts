@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type { Message, Part, PermissionRequest, QuestionRequest, SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { INITIAL_STATE, type State } from "./types"
-import { shouldSettlePlanProposalStatus } from "./plan-idle-settlement"
+import {
+  isSessionTurnSettledForCompletion,
+  shouldSettlePlanProposalStatus,
+  shouldSettleTerminalSessionStatus,
+} from "./plan-idle-settlement"
 
 const SESSION_ID = "ses_1"
 const USER_ID = "msg_1_user"
@@ -137,5 +141,120 @@ describe("shouldSettlePlanProposalStatus", () => {
     expect(shouldSettle(buildState({
       part: { [PLAN_ASSISTANT_ID]: [toolPart(PLAN_ASSISTANT_ID, "completed")] },
     }))).toBe(true)
+  })
+})
+
+describe("shouldSettleTerminalSessionStatus", () => {
+  test("settles stale busy status when the trailing assistant turn is terminal", () => {
+    expect(shouldSettleTerminalSessionStatus({
+      sessionID: SESSION_ID,
+      state: buildState(),
+    })).toBe(true)
+  })
+
+  test("does not settle stale busy status when a question is pending", () => {
+    expect(shouldSettleTerminalSessionStatus({
+      sessionID: SESSION_ID,
+      state: buildState({
+        question: { [SESSION_ID]: [{} as QuestionRequest] },
+      }),
+    })).toBe(false)
+  })
+
+  test("does not settle stale busy status when a newer user message trails the assistant", () => {
+    expect(shouldSettleTerminalSessionStatus({
+      sessionID: SESSION_ID,
+      state: buildState({
+        message: {
+          [SESSION_ID]: [
+            userMessage(USER_ID, 1),
+            assistantMessage(PLAN_ASSISTANT_ID, 2, 3),
+            userMessage("msg_3_user", 4),
+          ],
+        },
+      }),
+    })).toBe(false)
+  })
+})
+
+describe("isSessionTurnSettledForCompletion", () => {
+  test("rejects completion while authoritative status is busy", () => {
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState(),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
+  })
+
+  test("rejects completion with pending or running tool parts", () => {
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: { [SESSION_ID]: { type: "idle" } as SessionStatus },
+        part: { [PLAN_ASSISTANT_ID]: [toolPart(PLAN_ASSISTANT_ID, "pending")] },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
+
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: { [SESSION_ID]: { type: "idle" } as SessionStatus },
+        part: { [PLAN_ASSISTANT_ID]: [toolPart(PLAN_ASSISTANT_ID, "running")] },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
+  })
+
+  test("rejects completion with pending permission or question blockers", () => {
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: { [SESSION_ID]: { type: "idle" } as SessionStatus },
+        permission: { [SESSION_ID]: [{} as PermissionRequest] },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
+
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: { [SESSION_ID]: { type: "idle" } as SessionStatus },
+        question: { [SESSION_ID]: [{} as QuestionRequest] },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
+  })
+
+  test("accepts idle status with a terminal trailing assistant", () => {
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: { [SESSION_ID]: { type: "idle" } as SessionStatus },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(true)
+  })
+
+  test("accepts missing status only for a terminal trailing assistant without blockers", () => {
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({ session_status: {} }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(true)
+
+    expect(isSessionTurnSettledForCompletion({
+      sessionID: SESSION_ID,
+      state: buildState({
+        session_status: {},
+        message: {
+          [SESSION_ID]: [
+            userMessage(USER_ID, 1),
+            assistantMessage(PLAN_ASSISTANT_ID, 2),
+          ],
+        },
+      }),
+      completedMessageId: PLAN_ASSISTANT_ID,
+    })).toBe(false)
   })
 })

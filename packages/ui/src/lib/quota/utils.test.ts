@@ -7,6 +7,7 @@ import {
   calculateUsagePrediction,
   clampPercent,
   formatPercent,
+  formatWindowLabel,
   recordProviderUsageTrends,
   resolveUsageTone,
   type UsageTrendHistory,
@@ -49,6 +50,10 @@ describe('quota usage utils', () => {
     expect(clampPercent(-Infinity)).toBeNull();
     expect(formatPercent(Infinity)).toBe('-');
     expect(formatPercent(-Infinity)).toBe('-');
+  });
+
+  test('formats GitHub Copilot AI Credits quota label', () => {
+    expect(formatWindowLabel('ai-credits')).toBe('GitHub AI Credits');
   });
 
   test('prediction falls back to full-window pace without enough trend samples', () => {

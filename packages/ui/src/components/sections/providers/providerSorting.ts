@@ -1,5 +1,5 @@
 import { sortModelsByDisplayName } from '@/lib/providers/sorting';
-import { shouldHideCursorAcpFastModel } from '@/lib/providers/cursorAcp';
+import { shouldHidePairedFastModel } from '@/lib/providers/variantControls';
 
 export { sortProvidersByDisplayName } from '@/lib/providers/sorting';
 
@@ -14,7 +14,7 @@ interface ProviderWithModels<M> {
 }
 
 interface ProviderModelsDisplayOptions {
-  hideCursorAcpFastDuplicates?: boolean;
+  hidePairedFastModels?: boolean;
 }
 
 export const getProviderModelsForDisplay = <M extends ProviderModelLike>(
@@ -22,8 +22,8 @@ export const getProviderModelsForDisplay = <M extends ProviderModelLike>(
   options: ProviderModelsDisplayOptions = {},
 ): M[] => {
   const models = Array.isArray(provider.models) ? provider.models : [];
-  const visibleModels = options.hideCursorAcpFastDuplicates
-    ? models.filter((model) => !shouldHideCursorAcpFastModel(provider, model.id))
+  const visibleModels = options.hidePairedFastModels
+    ? models.filter((model) => !shouldHidePairedFastModel(provider, model.id))
     : models;
   return sortModelsByDisplayName(visibleModels);
 };

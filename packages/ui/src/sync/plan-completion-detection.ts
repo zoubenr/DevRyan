@@ -1,6 +1,6 @@
 import type { Message } from "@opencode-ai/sdk/v2/client"
 import type { PlanIndicatorEntry } from "./plan-indicator"
-import { getPlanBlockId, getPlanImplementationKey, isPlanModeUserMessage, splitPlanCardSentinel } from "@/lib/messages/actionablePlan"
+import { getPlanBlockId, getPlanImplementationKey, isPlanModeUserMessage, resolveMessagePlanCard } from "@/lib/messages/actionablePlan"
 import { filterMessagesForRevert, getEffectiveSessionRevertMessageID } from "./revert-transactions"
 import type { State } from "./types"
 
@@ -151,23 +151,7 @@ function findImplementationUserIndex(
 
 function hasPresentedPlanCard(state: PlanCompletionDetectionState, assistantMessageId: string): boolean {
   const parts = state.part[assistantMessageId] ?? []
-  const textParts: string[] = []
-  for (const part of parts) {
-    if (part.type !== "text") continue
-
-    const candidate = part as { text?: unknown; content?: unknown; value?: unknown }
-    const text = typeof candidate.text === "string"
-      ? candidate.text
-      : typeof candidate.content === "string"
-        ? candidate.content
-        : typeof candidate.value === "string"
-          ? candidate.value
-          : ""
-    if (text.trim().length > 0) textParts.push(text.trim())
-  }
-
-  if (textParts.length === 0) return false
-  const split = splitPlanCardSentinel(textParts.join("\n"))
+  const split = resolveMessagePlanCard(parts, { isPlanModeSource: true })
   return Boolean(split && split.planText.trim().length > 0)
 }
 

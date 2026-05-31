@@ -53,6 +53,15 @@ describe("isSessionWorkingFromState", () => {
     })).toBe(false)
   })
 
+  test("keeps intermediate tool-call assistant finishes working while status is busy", () => {
+    expect(isSessionWorkingFromState({
+      status: { type: "busy" } as SessionStatus,
+      permissions: [],
+      messages: [terminalAssistantMessage("msg_assistant_1", "tool-calls")],
+      liveStreamingMessageId: "msg_assistant_1",
+    })).toBe(true)
+  })
+
   test("does not treat a stale streaming id for another message as working", () => {
     expect(isSessionWorkingFromState({
       status: { type: "idle" } as SessionStatus,

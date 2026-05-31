@@ -15,6 +15,13 @@ const cancelledAssistant = {
   time: { created: 1 },
 } as unknown as Message
 
+const toolCallsAssistant = {
+  id: "msg_assistant_tool_calls",
+  role: "assistant",
+  finish: "tool-calls",
+  time: { created: 1 },
+} as unknown as Message
+
 describe("resolveSessionActivityState", () => {
   test("returns busy for a directory-specific busy status", () => {
     const result = resolveSessionActivityState({
@@ -64,6 +71,19 @@ describe("resolveSessionActivityState", () => {
 
     expect(result.phase).toBe("idle")
     expect(result.isWorking).toBe(false)
+  })
+
+  test("intermediate tool-call finish remains busy while status is busy", () => {
+    const result = resolveSessionActivityState({
+      sessionId: "session-child",
+      status: { type: "busy" } as SessionStatus,
+      messages: [toolCallsAssistant],
+      permissions: [],
+      liveStreamingMessageId: "msg_assistant_tool_calls",
+    })
+
+    expect(result.phase).toBe("busy")
+    expect(result.isWorking).toBe(true)
   })
 
   test("ignores stale incomplete assistant history when a later assistant message completed", () => {

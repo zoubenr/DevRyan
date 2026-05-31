@@ -676,6 +676,40 @@ interface ConfigStore {
     getVisibleAgents: () => Agent[];
 }
 
+const emptyDirectoryScopedConfig = (): DirectoryScopedConfig => ({
+    providers: [],
+    agents: [],
+    currentProviderId: "",
+    currentModelId: "",
+    currentVariant: undefined,
+    currentAgentName: undefined,
+    selectedProviderId: "",
+    agentModelSelections: {},
+    defaultProviders: {},
+});
+
+const directoryScopedConfigFromActiveState = (state: ConfigStore): DirectoryScopedConfig => ({
+    providers: state.providers,
+    agents: state.agents,
+    currentProviderId: state.currentProviderId,
+    currentModelId: state.currentModelId,
+    currentVariant: state.currentVariant,
+    currentAgentName: state.currentAgentName,
+    selectedProviderId: state.selectedProviderId,
+    agentModelSelections: state.agentModelSelections,
+    defaultProviders: state.defaultProviders,
+});
+
+const getDirectoryScopedConfigBase = (
+    state: ConfigStore,
+    directoryKey: string,
+): DirectoryScopedConfig => (
+    state.directoryScoped[directoryKey]
+    ?? (state.activeDirectoryKey === directoryKey
+        ? directoryScopedConfigFromActiveState(state)
+        : emptyDirectoryScopedConfig())
+);
+
 declare global {
     interface Window {
         __zustand_config_store__?: UseBoundStore<StoreApi<ConfigStore>>;
@@ -964,6 +998,7 @@ export const useConfigStore = create<ConfigStore>()(
                             agents: [],
                             currentProviderId: "",
                             currentModelId: "",
+                            currentVariant: undefined,
                             currentAgentName: undefined,
                             selectedProviderId: "",
                             agentModelSelections: {},
@@ -1019,16 +1054,7 @@ export const useConfigStore = create<ConfigStore>()(
                             });
 
                             set((state) => {
-                                const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                    providers: [],
-                                    agents: [],
-                                    currentProviderId: "",
-                                    currentModelId: "",
-                                    currentAgentName: undefined,
-                                    selectedProviderId: "",
-                                    agentModelSelections: {},
-                                    defaultProviders: {},
-                                };
+                                const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                                 const nextSnapshot: DirectoryScopedConfig = {
                                     ...baseSnapshot,
@@ -1065,16 +1091,7 @@ export const useConfigStore = create<ConfigStore>()(
                     const errorMessage = getErrorMessage(lastError, "Failed to load providers");
 
                     set((state) => {
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: [],
-                            agents: [],
-                            currentProviderId: "",
-                            currentModelId: "",
-                            currentAgentName: undefined,
-                            selectedProviderId: "",
-                            agentModelSelections: {},
-                            defaultProviders: {},
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1117,17 +1134,7 @@ export const useConfigStore = create<ConfigStore>()(
  
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentVariant: state.currentVariant,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1157,17 +1164,7 @@ export const useConfigStore = create<ConfigStore>()(
 
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentVariant: state.currentVariant,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1193,17 +1190,7 @@ export const useConfigStore = create<ConfigStore>()(
                 setModel: (modelId: string) => {
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentVariant: state.currentVariant,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
  
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1227,17 +1214,7 @@ export const useConfigStore = create<ConfigStore>()(
                         }
 
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentVariant: state.currentVariant,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1280,16 +1257,7 @@ export const useConfigStore = create<ConfigStore>()(
                 setSelectedProvider: (providerId: string) => {
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1314,16 +1282,7 @@ export const useConfigStore = create<ConfigStore>()(
                             [agentName]: { providerId, modelId },
                         };
 
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1424,16 +1383,7 @@ export const useConfigStore = create<ConfigStore>()(
                             const resolvedDefaultPlanMode = openChamberDefaults.defaultPlanMode ?? false;
 
                             set((state) => {
-                                const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                    providers,
-                                    agents: previousAgents,
-                                    currentProviderId: "",
-                                    currentModelId: "",
-                                    currentAgentName: undefined,
-                                    selectedProviderId: "",
-                                    agentModelSelections: {},
-                                    defaultProviders: {},
-                                };
+                                const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                                 const nextSnapshot: DirectoryScopedConfig = {
                                     ...baseSnapshot,
@@ -1484,17 +1434,7 @@ export const useConfigStore = create<ConfigStore>()(
 
                             if (safeAgents.length === 0) {
                                 set((state) => {
-                                    const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                        providers,
-                                        agents: [],
-                            currentProviderId: "",
-                            currentModelId: "",
-                            currentVariant: undefined,
-                            currentAgentName: undefined,
-                                        selectedProviderId: "",
-                                        agentModelSelections: {},
-                                        defaultProviders: {},
-                                    };
+                                    const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                                     const nextSnapshot: DirectoryScopedConfig = {
                                         ...baseSnapshot,
@@ -1559,16 +1499,7 @@ export const useConfigStore = create<ConfigStore>()(
                             ? state.providers
                             : (state.directoryScoped[directoryKey]?.providers ?? []);
 
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers,
-                            agents: [],
-                            currentProviderId: "",
-                            currentModelId: "",
-                            currentAgentName: undefined,
-                            selectedProviderId: "",
-                            agentModelSelections: {},
-                            defaultProviders: {},
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1618,16 +1549,7 @@ export const useConfigStore = create<ConfigStore>()(
 
                     set((state) => {
                         const directoryKey = state.activeDirectoryKey;
-                        const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                            providers: state.providers,
-                            agents: state.agents,
-                            currentProviderId: state.currentProviderId,
-                            currentModelId: state.currentModelId,
-                            currentAgentName: state.currentAgentName,
-                            selectedProviderId: state.selectedProviderId,
-                            agentModelSelections: state.agentModelSelections,
-                            defaultProviders: state.defaultProviders,
-                        };
+                        const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                         const nextSnapshot: DirectoryScopedConfig = {
                             ...baseSnapshot,
@@ -1669,17 +1591,7 @@ export const useConfigStore = create<ConfigStore>()(
                         const applyResolvedModelSelection = (providerId: string, modelId: string, variant?: string) => {
                             set((state) => {
                                 const directoryKey = state.activeDirectoryKey;
-                                const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
-                                    providers: state.providers,
-                                    agents: state.agents,
-                                    currentProviderId: state.currentProviderId,
-                                    currentModelId: state.currentModelId,
-                                    currentVariant: state.currentVariant,
-                                    currentAgentName: state.currentAgentName,
-                                    selectedProviderId: state.selectedProviderId,
-                                    agentModelSelections: state.agentModelSelections,
-                                    defaultProviders: state.defaultProviders,
-                                };
+                                const baseSnapshot = getDirectoryScopedConfigBase(state, directoryKey);
 
                                 const nextSnapshot: DirectoryScopedConfig = {
                                     ...baseSnapshot,

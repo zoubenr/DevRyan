@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createGracefulShutdownRuntime } from './shutdown-runtime.js';
 
-const createRuntime = (server) => createGracefulShutdownRuntime({
+const createRuntime = (server, overrides = {}) => createGracefulShutdownRuntime({
   process: { exit: vi.fn() },
   shutdownTimeoutMs: 1000,
   getExitOnShutdown: () => false,
@@ -18,6 +18,7 @@ const createRuntime = (server) => createGracefulShutdownRuntime({
   setTerminalRuntime: vi.fn(),
   getMessageStreamRuntime: () => null,
   setMessageStreamRuntime: vi.fn(),
+  getCursorSdkRuntime: () => null,
   shouldSkipOpenCodeStop: () => true,
   getOpenCodePort: () => null,
   getOpenCodeProcess: () => null,
@@ -30,6 +31,7 @@ const createRuntime = (server) => createGracefulShutdownRuntime({
   getActiveTunnelController: () => null,
   setActiveTunnelController: vi.fn(),
   tunnelAuthController: { clearActiveTunnel: vi.fn() },
+  ...overrides,
 });
 
 describe('graceful shutdown runtime', () => {
@@ -50,9 +52,20 @@ describe('graceful shutdown runtime', () => {
     const runtime = createRuntime(server);
     await runtime.gracefulShutdown({ exitProcess: false });
 
-    await vi.advanceTimersByTimeAsync(1000);
+    vi.advanceTimersByTime(1000);
 
     expect(warnSpy).not.toHaveBeenCalledWith('Server close timeout reached, forcing shutdown');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('disposes the Cursor SDK runtime during graceful shutdown', async () => {
+    const cursorSdkRuntime = { dispose: vi.fn(async () => {}) };
+    const runtime = createRuntime(null, {
+      getCursorSdkRuntime: () => cursorSdkRuntime,
+    });
+
+    await runtime.gracefulShutdown({ exitProcess: false });
+
+    expect(cursorSdkRuntime.dispose).toHaveBeenCalledTimes(1);
   });
 });

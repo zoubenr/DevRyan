@@ -243,6 +243,71 @@ describe('OpenCode provider routes', () => {
     });
   });
 
+  it('merges cached Cursor provider metadata without awaiting slow SDK discovery', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: vi.fn(async () => ({
+        providers: [
+          {
+            id: 'openai',
+            name: 'OpenAI',
+            models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'GPT-5.5' } },
+          },
+        ],
+        default: { openai: 'gpt-5.5' },
+      })),
+    });
+    const getVirtualProvider = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        id: 'cursor-acp',
+        name: 'Cursor',
+        models: { slow: { id: 'slow', name: 'Slow Discovery' } },
+      };
+    });
+    const getCachedVirtualProvider = vi.fn(() => ({
+      id: 'cursor-acp',
+      name: 'Cursor',
+      models: { cached: { id: 'cached', name: 'Cached Cursor' } },
+    }));
+    const refreshVirtualProvider = vi.fn(() => Promise.resolve());
+    const { app } = createApp({
+      buildOpenCodeUrl: vi.fn((requestPath) => `http://opencode.test${requestPath}`),
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider,
+        getCachedVirtualProvider,
+        refreshVirtualProvider,
+        handlePromptAsync: vi.fn(),
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+
+    const response = await request(app)
+      .get('/api/config/providers')
+      .expect(200);
+
+    expect(response.body.providers).toEqual([
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'GPT-5.5' } },
+      },
+      {
+        id: 'cursor-acp',
+        name: 'Cursor',
+        models: { cached: { id: 'cached', name: 'Cached Cursor' } },
+      },
+    ]);
+    expect(getCachedVirtualProvider).toHaveBeenCalledWith();
+    expect(refreshVirtualProvider).toHaveBeenCalledWith({ reason: 'providers_route' });
+    expect(getVirtualProvider).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+
   it('treats Cursor workspace repair as an SDK-managed compatibility no-op', async () => {
     const restartOpenCode = vi.fn(async () => undefined);
     const setOpenCodeWorkingDirectory = vi.fn();

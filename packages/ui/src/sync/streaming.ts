@@ -8,6 +8,7 @@
 
 import { create } from "zustand"
 import type { Message, SessionStatus } from "@opencode-ai/sdk/v2/client"
+import { hasTerminalAssistantFinish, isTerminalAssistantMessage } from "./session-working"
 import type { State } from "./types"
 
 export type StreamPhase = "streaming" | "cooldown" | "completed"
@@ -37,19 +38,6 @@ export const useStreamingStore = create<StreamingStore>()(() => ({
  */
 /** Only update lastUpdateAt every this many ms to avoid 60Hz store churn */
 const STREAMING_HEARTBEAT_MS = 1000
-
-const isTerminalAssistantMessage = (message: Message | undefined): boolean => {
-  if (!message || message.role !== "assistant") return false
-  const finish = (message as { finish?: unknown }).finish
-  const completed = (message as { time?: { completed?: unknown } }).time?.completed
-  return typeof completed === "number" || (typeof finish === "string" && finish.length > 0)
-}
-
-const hasTerminalAssistantFinish = (message: Message | undefined): boolean => {
-  if (!message || message.role !== "assistant") return false
-  const finish = (message as { finish?: unknown }).finish
-  return typeof finish === "string" && finish.length > 0
-}
 
 const isIncompleteAssistantMessage = (message: Message | undefined): message is Message => (
   Boolean(message && message.role === "assistant" && !isTerminalAssistantMessage(message))

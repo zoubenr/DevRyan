@@ -1,7 +1,8 @@
 import React from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { isHiddenModelRef } from '@/lib/providers/modelVisibility';
+import { isHiddenProviderModelRef } from '@/lib/providers/modelVisibility';
+import { shouldHidePairedFastModel } from '@/lib/providers/variantControls';
 import type { Provider } from '@opencode-ai/sdk/v2';
 
 type ProviderModel = Provider["models"][string];
@@ -27,7 +28,8 @@ export const useModelLists = () => {
         const providerModels = Array.isArray(provider.models) ? provider.models : [];
         const model = providerModels.find((m: ProviderModel) => m.id === modelID);
         if (!model) return null;
-        if (isHiddenModelRef(hiddenModels, providerID, modelID)) return null;
+        if (isHiddenProviderModelRef(hiddenModels, providerID, model)) return null;
+        if (shouldHidePairedFastModel(provider, modelID)) return null;
         return { provider, model, providerID, modelID };
       })
       .filter((item): item is ModelListItem => item !== null);

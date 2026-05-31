@@ -533,6 +533,7 @@ const cursorSdkRuntime = createCursorSdkRuntime({
   readAuth: readAuthFile,
   env: process.env,
   emitEvent: emitSyntheticOpenCodeEvent,
+  recordTimingMark: (input) => turnTimingRuntime.recordClientMark(input),
   logger: console,
   resolveAgentPrompt: async ({ agent, directory }) => {
     const result = getAgentConfig(agent, directory);
@@ -1168,6 +1169,7 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   setMessageStreamRuntime: (value) => {
     messageStreamRuntime = value;
   },
+  getCursorSdkRuntime: () => cursorSdkRuntime,
   shouldSkipOpenCodeStop: () => ENV_SKIP_OPENCODE_START || isExternalOpenCode,
   getOpenCodePort: () => openCodePort,
   getOpenCodeProcess: () => openCodeProcess,

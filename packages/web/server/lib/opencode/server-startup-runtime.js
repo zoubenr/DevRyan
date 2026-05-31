@@ -126,6 +126,10 @@ export const createServerStartupRuntime = (dependencies) => {
 
     process.on('uncaughtException', (error) => {
       console.error('Uncaught Exception:', error);
+      if (process.env.OPENCHAMBER_DEV_MODE === 'true') {
+        process.exit(1);
+        return;
+      }
       gracefulShutdown();
     });
   };

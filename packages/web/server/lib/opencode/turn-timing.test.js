@@ -187,6 +187,102 @@ describe('turn timing runtime', () => {
     expect(record.marks.first_text_delta.at).toBe(10);
   });
 
+  it('records Cursor worker and SDK streaming timing marks', () => {
+    let now = 100;
+    const runtime = createTurnTimingRuntime({ now: () => now });
+
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'prompt_accepted',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+    });
+    now = 110;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_worker_ready',
+      metadata: { workerMode: 'persistent-node-worker' },
+    });
+    now = 120;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_run_create_started',
+    });
+    now = 145;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_run_created',
+    });
+    now = 160;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_first_sdk_delta',
+    });
+    now = 175;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_first_stream_event',
+    });
+    now = 190;
+    runtime.processOpenCodeEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'msg_cursor_user_assistant',
+          sessionID: 'ses_cursor',
+          role: 'assistant',
+          parentID: 'msg_cursor_user',
+          time: { created: 190 },
+        },
+      },
+    });
+    now = 205;
+    runtime.recordClientMark({
+      sessionId: 'ses_cursor',
+      messageId: 'msg_cursor_user',
+      mark: 'cursor_first_emitted_text_delta',
+    });
+    now = 210;
+    runtime.processOpenCodeEvent({
+      type: 'message.part.delta',
+      properties: {
+        messageID: 'msg_cursor_user_assistant',
+        partID: 'prt_text',
+        field: 'text',
+        delta: 'Hello',
+      },
+    });
+
+    const record = runtime.getRecentTimings({ sessionId: 'ses_cursor' }).records[0];
+
+    expect(record.marks).toEqual(expect.objectContaining({
+      cursor_worker_ready: expect.objectContaining({
+        metadata: { workerMode: 'persistent-node-worker' },
+      }),
+      cursor_run_create_started: expect.any(Object),
+      cursor_run_created: expect.any(Object),
+      cursor_first_sdk_delta: expect.any(Object),
+      cursor_first_stream_event: expect.any(Object),
+      cursor_first_emitted_text_delta: expect.any(Object),
+      first_text_delta: expect.any(Object),
+    }));
+    expect(record.durationsMs).toEqual(expect.objectContaining({
+      prompt_accepted_to_cursor_worker_ready: 10,
+      cursor_run_create_started_to_cursor_run_created: 25,
+      cursor_run_created_to_cursor_first_sdk_delta: 15,
+      cursor_run_created_to_cursor_first_stream_event: 30,
+      cursor_first_sdk_delta_to_first_text_delta: 50,
+      cursor_first_stream_event_to_first_text_delta: 35,
+      cursor_first_sdk_delta_to_cursor_first_emitted_text_delta: 45,
+      cursor_first_stream_event_to_cursor_first_emitted_text_delta: 30,
+    }));
+  });
+
   it('records provider metadata and Cursor tool-schema diagnostics without response text', () => {
     let now = 1;
     const runtime = createTurnTimingRuntime({ now: () => now });

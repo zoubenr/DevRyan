@@ -51,6 +51,62 @@ export function shouldSettlePlanProposalStatus({
   return true
 }
 
+export function shouldSettleTerminalSessionStatus({
+  sessionID,
+  state,
+}: {
+  sessionID: string
+  state: PlanIdleSettlementState
+}): boolean {
+  if (state.session_status[sessionID]?.type !== "busy") return false
+  if ((state.permission[sessionID]?.length ?? 0) > 0) return false
+  if ((state.question[sessionID]?.length ?? 0) > 0) return false
+
+  const rawMessages = state.message[sessionID]
+  if (!rawMessages || rawMessages.length === 0) return false
+
+  const revertMessageID = getEffectiveSessionRevertMessageID(state, sessionID)
+  const messages = filterMessagesForRevert(rawMessages, revertMessageID)
+  const trailingMessage = messages[messages.length - 1]
+
+  if (!trailingMessage || trailingMessage.role !== "assistant") return false
+  if (!isAssistantTurnComplete(trailingMessage)) return false
+  if (hasRunningToolPart(state.part[trailingMessage.id] ?? [])) return false
+
+  return true
+}
+
+export function isSessionTurnSettledForCompletion({
+  sessionID,
+  state,
+  completedMessageId,
+}: {
+  sessionID: string
+  state: PlanIdleSettlementState
+  completedMessageId: string
+}): boolean {
+  const status = state.session_status[sessionID]
+  if (status && status.type !== "idle") return false
+  if ((state.permission[sessionID]?.length ?? 0) > 0) return false
+  if ((state.question[sessionID]?.length ?? 0) > 0) return false
+
+  const rawMessages = state.message[sessionID]
+  if (!rawMessages || rawMessages.length === 0) return false
+
+  const revertMessageID = getEffectiveSessionRevertMessageID(state, sessionID)
+  const messages = filterMessagesForRevert(rawMessages, revertMessageID)
+  const trailingMessage = messages[messages.length - 1]
+
+  if (!trailingMessage || trailingMessage.id !== completedMessageId || trailingMessage.role !== "assistant") {
+    return false
+  }
+
+  if (!isAssistantTurnComplete(trailingMessage)) return false
+  if (hasRunningToolPart(state.part[completedMessageId] ?? [])) return false
+
+  return true
+}
+
 function hasRunningToolPart(parts: readonly Part[]): boolean {
   for (const part of parts) {
     if (part.type !== "tool") continue

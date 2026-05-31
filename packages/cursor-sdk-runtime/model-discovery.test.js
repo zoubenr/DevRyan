@@ -15,6 +15,68 @@ const createRuntimeForModels = (models) => createCursorSdkRuntime({
 });
 
 describe('Cursor SDK model discovery', () => {
+  test('maps fallback Composer fast rows to SDK fast parameter selections', async () => {
+    const runtime = createRuntimeForModels([]);
+
+    const provider = await runtime.getVirtualProvider();
+
+    expect(provider.models['composer-2.5']?.options?.cursorSdkModel).toEqual({
+      id: 'composer-2.5',
+      params: [{ id: 'fast', value: 'false' }],
+    });
+    expect(provider.models['composer-2.5-fast']?.options?.cursorSdkModel).toEqual({
+      id: 'composer-2.5',
+      params: [{ id: 'fast', value: 'true' }],
+    });
+    expect(provider.models['composer-2']?.options?.cursorSdkModel).toEqual({
+      id: 'composer-2',
+      params: [{ id: 'fast', value: 'false' }],
+    });
+    expect(provider.models['composer-2-fast']?.options?.cursorSdkModel).toEqual({
+      id: 'composer-2',
+      params: [{ id: 'fast', value: 'true' }],
+    });
+  });
+
+  test('returns cached provider immediately while SDK model discovery refreshes in the background', async () => {
+    let resolveModels;
+    const modelListPromise = new Promise((resolve) => {
+      resolveModels = resolve;
+    });
+    const runtime = createCursorSdkRuntime({
+      env: { CURSOR_API_KEY: 'test-key' },
+      readAuth: () => ({}),
+      writeAuth: () => {},
+      loadSdk: async () => ({
+        Cursor: {
+          models: {
+            list: async () => modelListPromise,
+          },
+        },
+      }),
+    });
+
+    const cachedProvider = runtime.getCachedVirtualProvider();
+    const refreshPromise = runtime.refreshVirtualProvider({ force: true, reason: 'test' });
+
+    expect(cachedProvider.models['composer-2.5']).toBeDefined();
+    expect(runtime.getRuntimeStatus().modelsRefreshing).toBe(true);
+
+    resolveModels([{ id: 'composer-special', displayName: 'Composer Special' }]);
+    await refreshPromise;
+
+    expect(runtime.getCachedVirtualProvider().models['composer-special']).toMatchObject({
+      id: 'composer-special',
+      name: 'Composer Special',
+    });
+    expect(runtime.getRuntimeStatus()).toMatchObject({
+      modelsRefreshing: false,
+      modelsSource: 'sdk',
+      lastModelRefreshReason: 'test',
+    });
+    expect(runtime.getRuntimeStatus().lastModelRefreshDurationMs).toBeGreaterThanOrEqual(0);
+  });
+
   test('adds Composer 2.5 Fast compatibility row when SDK only returns Composer 2.5', async () => {
     const runtime = createRuntimeForModels([
       { id: 'composer-2.5', displayName: 'Composer 2.5' },

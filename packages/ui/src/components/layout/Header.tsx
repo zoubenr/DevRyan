@@ -56,6 +56,7 @@ import {
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/react';
 import type { UsageWindow, UsageWindows } from '@/types';
 import { DesktopHostSwitcherDialog } from '@/components/desktop/DesktopHostSwitcher';
+import { DevShutdownMenuItem } from '@/components/layout/DevShutdownMenuItem';
 import { ProjectActionsButton } from '@/components/layout/ProjectActionsButton';
 import { OpenInAppButton } from '@/components/desktop/OpenInAppButton';
 import { SessionChangesBadge } from '@/components/session/SessionChangesBadge';
@@ -434,6 +435,7 @@ const DesktopServicesMenu = React.memo(function DesktopServicesMenu({
             </div>
           </div>
         ) : null}
+        <DevShutdownMenuItem />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1960,6 +1962,7 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                     </div>
                   )}
+                  <DevShutdownMenuItem />
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>

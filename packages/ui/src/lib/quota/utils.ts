@@ -43,6 +43,7 @@ export const formatWindowLabel = (label: string): string => {
   if (label === 'daily') return 'Daily';
   if (label === 'monthly') return 'Monthly Limit';
   if (label === 'credits') return 'Credits';
+  if (label === 'ai-credits') return 'GitHub AI Credits';
   if (label === 'session') return 'Session';
   if (label === 'premium') return 'Premium Interactions';
   if (label === 'chat') return 'Chat Requests';

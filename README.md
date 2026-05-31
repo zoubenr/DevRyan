@@ -21,6 +21,18 @@
 
 </details>
 
+## Development
+
+Run the full local stack with:
+
+```bash
+npm run dev
+```
+
+The dev orchestrator keeps the API, web build watcher, and UI typecheck watcher running. If a child process exits unexpectedly, it is restarted automatically. Press **Ctrl+C** in the terminal to stop everything.
+
+Use **Services → Stop DevRyan** in the app when you want to end the dev stack from the UI (with confirmation).
+
 ## Why use DevRyan?
 
 - **Cross-device continuity**: Start in TUI, continue on tablet/phone, return to terminal - same session

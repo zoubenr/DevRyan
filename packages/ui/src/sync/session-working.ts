@@ -1,16 +1,17 @@
 import type { Message, SessionStatus } from "@opencode-ai/sdk/v2/client"
 
-function isTerminalAssistantMessage(message: Message | undefined): boolean {
+export function hasTerminalAssistantFinish(message: Message | undefined): boolean {
   if (!message || message.role !== "assistant") return false
   const finish = (message as { finish?: unknown }).finish
-  const completed = (message as { time?: { completed?: unknown } }).time?.completed
-  return typeof completed === "number" || (typeof finish === "string" && finish.length > 0)
+  if (typeof finish !== "string") return false
+  const normalized = finish.trim().toLowerCase()
+  return normalized.length > 0 && normalized !== "tool-calls"
 }
 
-function hasTerminalAssistantFinish(message: Message | undefined): boolean {
+export function isTerminalAssistantMessage(message: Message | undefined): boolean {
   if (!message || message.role !== "assistant") return false
-  const finish = (message as { finish?: unknown }).finish
-  return typeof finish === "string" && finish.length > 0
+  const completed = (message as { time?: { completed?: unknown } }).time?.completed
+  return typeof completed === "number" || hasTerminalAssistantFinish(message)
 }
 
 function isIncompleteAssistantMessage(message: Message | undefined): boolean {

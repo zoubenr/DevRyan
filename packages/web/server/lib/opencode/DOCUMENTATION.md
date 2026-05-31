@@ -27,7 +27,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/runtime-agent-overlays.js`: materializes user-scoped agent model/variant overrides, project-specific visible-skill policy, active project/worktree external-directory permissions, Anthropic OAuth proxy bootstrap config, and managed runtime MCP timeout overlays into a DevRyan-managed high-precedence OpenCode config directory for managed runtimes. Project/package markdown remains the prompt/behavior source; generated overlay files replace only user-owned model fields and runtime-only permission policy, and use an empty-string variant sentinel to clear inherited project variants because OpenCode rejects YAML null and deep-merges omitted fields. User-scoped remote MCP servers without an explicit timeout receive a generated runtime-only timeout so unavailable global MCP servers cannot hold first-turn tool resolution for the full OpenCode fallback delay. When the active merged config contains a valid `opencode-with-claude` setup, the overlay also carries that plugin/provider bootstrap into managed OpenCode so the plugin can start Meridian and rewrite the Anthropic proxy URL at runtime.
 - `packages/web/server/lib/opencode/skill-policy.js`: shared visible-skill policy helpers used by settings routes and packaged-agent runtime sync so hidden/removed skills cannot remain allowed through managed agent configs.
 - `packages/web/server/lib/opencode/agent-runtime-warmup.js`: non-fatal startup warmup runtime for read-only OpenCode health/config/status/agent/skill/MCP/command checks and capped visible skill reads.
-- `packages/web/server/lib/opencode/turn-timing.js`: in-memory first-turn timing diagnostics for client/proxy marks and observed OpenCode session/message/part events.
+- `packages/web/server/lib/opencode/turn-timing.js`: in-memory first-turn timing diagnostics for client/proxy marks, Cursor SDK bridge marks, and observed OpenCode session/message/part events.
 - `packages/web/server/lib/opencode/harness-result.js`: additive response-envelope helpers for diagnostics and low-risk runtime endpoints. Helpers preserve existing payload keys and add harness metadata with status, summary, next actions, artifacts, and recovery guidance.
 - `packages/web/server/lib/opencode/harness-preflight.js`: read-only harness preflight diagnostics for agents, skills, MCP/tool manifest state, latest warmup state, and packaged prompt context-budget audit.
 - `packages/web/server/lib/opencode/cli-options.js`: CLI/environment option parsing for server startup arguments.
@@ -101,7 +101,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - Keeps route behavior independent from composition root; `index.js` now supplies dependencies only.
 - `POST /api/provider/anthropic/check-oauth` verifies Claude CLI OAuth with a bounded non-interactive Claude command, writes the `opencode-with-claude` proxy config to the active project config when possible (user config otherwise), and refreshes OpenCode only when it changes config.
 - `POST /api/provider/cursor-acp/configure` verifies Cursor SDK auth/model discovery without writing OpenCode bridge config.
-- `GET /api/provider/cursor-acp/runtime-status` reports Cursor SDK execution auth and dashboard usage-token status independently as `sdkAuthConfigured` and `usageAuthConfigured`.
+- `GET /api/provider/cursor-acp/runtime-status` reports Cursor SDK execution auth and dashboard usage-token status independently as `sdkAuthConfigured` and `usageAuthConfigured`, plus Cursor worker mode/readiness/restart diagnostics.
 - `GET /api/session/status` merges Cursor SDK runtime busy/idle status into the proxied OpenCode session status payload, falling back to Cursor-only status when upstream status is unavailable.
 
 ## Public exports (session-runtime.js)
@@ -167,7 +167,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `createTurnTimingRuntime(options?)`: creates an in-memory capped timing store. Returned API:
   - `recordClientMark({ sessionId, messageId?, mark, directory?, metadata? })`
   - `processOpenCodeEvent(payload)`
-  - `getRecentTimings({ sessionId?, limit? })`: returns timing marks/durations plus send metadata and diagnostic counters for provider/model/agent/variant, repeated text frames, malformed tool-call diagnostics, loop-guard diagnostics, and mutation evidence without exposing prompt or response text.
+  - `getRecentTimings({ sessionId?, limit? })`: returns timing marks/durations plus send metadata and diagnostic counters for provider/model/agent/variant, Cursor worker/run/stream timing, repeated text frames, malformed tool-call diagnostics, loop-guard diagnostics, and mutation evidence without exposing prompt or response text.
 - `registerTurnTimingRoutes(app, runtime)`: registers internal diagnostic routes:
   - `POST /api/diagnostics/turn-timing/mark`
   - `GET /api/diagnostics/turn-timing/recent`

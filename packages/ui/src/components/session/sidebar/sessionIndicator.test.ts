@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { resolveLeadingIndicatorPositionClasses, resolveSidebarIndicator } from './sessionIndicator';
+import { resolveLeadingIndicatorPositionClasses, resolveSidebarIndicator, resolveSubtaskSidebarIndicator } from './sessionIndicator';
 
 describe('resolveSidebarIndicator', () => {
   test('shows a success indicator for completed plans without unread notifications', () => {
@@ -9,6 +9,7 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: false,
       hasUnreadCompletion: false,
       hasCompletedStatus: false,
+      hasErrorStatus: false,
       pendingQuestionCount: 0,
       planState: 'completed',
     })).toEqual({
@@ -24,12 +25,26 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: false,
       hasUnreadCompletion: false,
       hasCompletedStatus: true,
+      hasErrorStatus: false,
       pendingQuestionCount: 0,
       planState: null,
     })).toEqual({
       className: 'bg-status-success',
       labelKey: 'sessions.sidebar.session.status.completed',
     });
+  });
+
+  test('does not show completion from unread notifications without a settled completion indicator', () => {
+    expect(resolveSidebarIndicator({
+      isRootSession: true,
+      isWorking: false,
+      hasUnreadStatus: true,
+      hasUnreadCompletion: true,
+      hasCompletedStatus: false,
+      hasErrorStatus: false,
+      pendingQuestionCount: 0,
+      planState: null,
+    })).toBeNull();
   });
 
   test('hides completion when read-state cleanup has cleared completion inputs', () => {
@@ -39,6 +54,7 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: false,
       hasUnreadCompletion: false,
       hasCompletedStatus: false,
+      hasErrorStatus: false,
       pendingQuestionCount: 0,
       planState: null,
     })).toBeNull();
@@ -51,6 +67,7 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: true,
       hasUnreadCompletion: true,
       hasCompletedStatus: true,
+      hasErrorStatus: true,
       pendingQuestionCount: 1,
       planState: 'completed',
     })).toEqual({
@@ -66,6 +83,7 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: true,
       hasUnreadCompletion: true,
       hasCompletedStatus: true,
+      hasErrorStatus: false,
       pendingQuestionCount: 0,
       planState: 'completed',
     })).toBeNull();
@@ -78,11 +96,67 @@ describe('resolveSidebarIndicator', () => {
       hasUnreadStatus: true,
       hasUnreadCompletion: true,
       hasCompletedStatus: true,
+      hasErrorStatus: false,
       pendingQuestionCount: 0,
       planState: 'proposed',
     })).toEqual({
       className: 'bg-status-warning',
       labelKey: 'sessions.sidebar.session.status.planReady',
+    });
+  });
+
+  test('keeps unseen errors higher priority than plan and completion indicators', () => {
+    expect(resolveSidebarIndicator({
+      isRootSession: true,
+      isWorking: false,
+      hasUnreadStatus: true,
+      hasUnreadCompletion: true,
+      hasCompletedStatus: true,
+      hasErrorStatus: true,
+      pendingQuestionCount: 0,
+      planState: 'proposed',
+    })).toEqual({
+      className: 'bg-status-error',
+      labelKey: 'sessions.sidebar.session.status.error',
+    });
+  });
+});
+
+describe('resolveSubtaskSidebarIndicator', () => {
+  test('does not show a blue info dot for generic unread subtask updates', () => {
+    expect(resolveSubtaskSidebarIndicator({
+      isRootSession: false,
+      notifyOnSubtasks: true,
+      isWorking: false,
+      isActive: false,
+      hasUnreadCompletion: false,
+      hasUnreadError: false,
+    })).toBeNull();
+  });
+
+  test('shows red for unread subtask errors and green for unread subtask completion', () => {
+    expect(resolveSubtaskSidebarIndicator({
+      isRootSession: false,
+      notifyOnSubtasks: true,
+      isWorking: false,
+      isActive: false,
+      hasUnreadCompletion: true,
+      hasUnreadError: true,
+    })).toEqual({
+      className: 'bg-status-error',
+      labelKey: 'sessions.sidebar.session.status.error',
+    });
+
+    expect(resolveSubtaskSidebarIndicator({
+      isRootSession: false,
+      notifyOnSubtasks: true,
+      isWorking: false,
+      isActive: false,
+      hasUnreadCompletion: true,
+      hasUnreadError: false,
+    })).toEqual({
+      className: 'bg-status-success',
+      labelKey: 'sessions.sidebar.session.status.completed',
     });
   });
 });

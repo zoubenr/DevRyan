@@ -38,4 +38,11 @@ describe('areRelevantTurnGroupingContextsEqual', () => {
 
     expect(areRelevantTurnGroupingContextsEqual(first, second, 'assistant-1', false)).toBe(false);
   });
+
+  test('treats turn-level plan mode source changes as render-relevant for assistant messages', () => {
+    const normal = createTurnContext({ isPlanModeSource: false });
+    const planMode = createTurnContext({ isPlanModeSource: true });
+
+    expect(areRelevantTurnGroupingContextsEqual(normal, planMode, 'assistant-1', false)).toBe(false);
+  });
 });

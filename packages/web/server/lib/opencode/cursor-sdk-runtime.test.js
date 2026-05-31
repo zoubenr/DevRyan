@@ -138,6 +138,62 @@ describe('Cursor SDK runtime', () => {
     expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('All tests have passed successfully.');
   });
 
+  it('surfaces Cursor final text while the SDK stream remains pending', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const emitted = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (event) => emitted.push(event),
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        waitFinalResult: async () => ({
+          ok: true,
+          finalStatus: 'success',
+          finalText: 'Finished while the Cursor stream is quiet.',
+        }),
+        stream: async function* stream() {
+          await new Promise(() => {});
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_wait_before_stream',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_wait_before_stream_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_wait_before_stream');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const textEvents = emitted.filter((event) => (
+      event?.type === 'message.part.updated'
+      && event.properties?.part?.messageID === 'msg_wait_before_stream_user_assistant'
+      && event.properties?.part?.type === 'text'
+    ));
+    const idleEvents = emitted.filter((event) => (
+      event?.type === 'session.status'
+      && event.properties?.sessionID === 'ses_wait_before_stream'
+      && event.properties?.status?.type === 'idle'
+    ));
+
+    expect(textEvents.at(-1)?.properties?.part?.text).toBe('Finished while the Cursor stream is quiet.');
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(records?.[1]?.parts?.find((part) => part.type === 'text')?.text).toBe('Finished while the Cursor stream is quiet.');
+    expect(idleEvents).toHaveLength(1);
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
+  });
+
   it('passes selected Cursor SDK thinking and fast parameters to prompt runs', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     let sentModelSelection = null;
@@ -272,11 +328,13 @@ describe('Cursor SDK runtime', () => {
   it('streams Cursor SDK onDelta text before the final wait result', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     const emitted = [];
+    const timingMarks = [];
     const runtime = createCursorSdkRuntime({
       storageDir: tempDir,
       readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
       env: {},
       emitEvent: (payload) => emitted.push(payload),
+      recordTimingMark: (mark) => timingMarks.push(mark),
       loadSdk: async () => ({
         Agent: {
           create: async () => ({
@@ -332,6 +390,12 @@ describe('Cursor SDK runtime', () => {
     ));
     expect(assistantTextEvents[0]?.properties?.part?.text).toBe('First streamed chunk. ');
     expect(assistantTextEvents.at(-1)?.properties?.part?.text).toBe('First streamed chunk. Final answer.');
+    expect(timingMarks).toContainEqual(expect.objectContaining({
+      sessionId: 'ses_delta_stream',
+      messageId: 'msg_delta_stream_user',
+      mark: 'cursor_first_emitted_text_delta',
+      metadata: { providerID: 'cursor-acp', modelID: 'composer-2' },
+    }));
   });
 
   it('deduplicates Cursor onDelta text mirrored by the legacy stream', async () => {
@@ -624,7 +688,7 @@ describe('Cursor SDK runtime', () => {
         : null;
     });
 
-    expect(sentImages).toEqual([{ url: 'data:image/png;base64,aGVsbG8=' }]);
+    expect(sentImages).toEqual([{ data: 'aGVsbG8=', mimeType: 'image/png' }]);
     expect(records?.[0]?.parts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'part_image_1',

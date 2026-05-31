@@ -287,6 +287,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             previousUserRecordedPlanMode,
         );
     }, [isUser, previousMessage, previousUserRecordedPlanMode]);
+    const effectiveIsPlanModeSource = previousIsPlanModeUserMessage || turnGroupingContext?.isPlanModeSource === true;
 
     const agentName = React.useMemo(() => {
         if (isUser) return undefined;
@@ -1206,7 +1207,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 turnGroupingContext={turnGroupingContext}
                                  errorMessage={assistantErrorText}
                                  errorVariant={assistantErrorVariant}
-                                 isPlanModeSource={previousIsPlanModeUserMessage}
+                                 isPlanModeSource={effectiveIsPlanModeSource}
                              />
 
                         </div>

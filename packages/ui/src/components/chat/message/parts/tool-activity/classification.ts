@@ -6,6 +6,7 @@ const EXPANDABLE_TOOL_NAMES = new Set<string>([
 ]);
 
 const STANDALONE_TOOL_NAMES = new Set<string>(['task']);
+const HIDDEN_TOOL_NAMES = new Set<string>(['mkdir']);
 const SHELL_TOOL_NAMES = new Set<string>(['bash', 'shell', 'cmd', 'terminal']);
 const QUESTION_TOOL_NAMES = new Set<string>(['question']);
 
@@ -116,9 +117,13 @@ export const isStandaloneTool = (toolName: unknown): boolean => {
     return STANDALONE_TOOL_NAMES.has(normalizeToolName(toolName));
 };
 
+export const isHiddenTool = (toolName: unknown): boolean => {
+    return HIDDEN_TOOL_NAMES.has(normalizeToolName(toolName));
+};
+
 export const isStaticTool = (toolName: unknown): boolean => {
     if (typeof toolName !== 'string') return false;
-    return !isExpandableTool(toolName) && !isStandaloneTool(toolName);
+    return !isExpandableTool(toolName) && !isStandaloneTool(toolName) && !isHiddenTool(toolName);
 };
 
 export const isToolActivityGroupingBoundary = (toolName: unknown): boolean => {

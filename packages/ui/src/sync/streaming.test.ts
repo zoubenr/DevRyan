@@ -89,6 +89,43 @@ describe("updateStreamingState", () => {
     expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
   })
 
+  test("keeps a tracked active assistant stream through repeated transient idle statuses", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ], { type: "idle" } as SessionStatus))
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ], { type: "idle" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
+  })
+
+  test("completes a tracked assistant stream when a new user turn becomes trailing after idle", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+      message("msg_user_2", "user"),
+    ], { type: "idle" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBeNull()
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("completed")
+  })
+
   test("completes the streaming message when idle arrives after message completion", () => {
     updateStreamingState(stateWithMessages([
       message("msg_user_1", "user"),
@@ -116,6 +153,38 @@ describe("updateStreamingState", () => {
       message("msg_user_1", "user"),
       terminalAssistantMessage("msg_assistant_1", "cancelled"),
     ], { type: "busy" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBeNull()
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("completed")
+  })
+
+  test("keeps intermediate tool-call assistant finishes streaming while the session remains busy", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      terminalAssistantMessage("msg_assistant_1", "tool-calls"),
+    ], { type: "busy" } as SessionStatus))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
+  })
+
+  test("completes the streaming message when idle arrives after a terminal finish", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      message("msg_assistant_1", "assistant"),
+    ]))
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      terminalAssistantMessage("msg_assistant_1", "stop"),
+    ], { type: "idle" } as SessionStatus))
 
     expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBeNull()
     expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("completed")

@@ -183,6 +183,7 @@ export const shouldReleaseAutoFollowFromScroll = ({
 };
 
 export type PinnedContentFollowAction = 'continuous-follow' | 'idle-settle' | 'none';
+export type PinnedFollowWriteMode = 'instant' | 'animated' | 'none';
 
 export const getPinnedContentFollowAction = ({
     state,
@@ -196,6 +197,18 @@ export const getPinnedContentFollowAction = ({
     if (anchorPreservationActive) return 'none';
     if (state !== 'following') return 'none';
     return sessionIsWorking ? 'continuous-follow' : 'idle-settle';
+};
+
+export const getPinnedFollowWriteMode = ({
+    action,
+    explicitSmoothRequest,
+}: {
+    action: PinnedContentFollowAction;
+    explicitSmoothRequest: boolean;
+}): PinnedFollowWriteMode => {
+    if (action === 'none') return 'none';
+    if (action === 'continuous-follow' && explicitSmoothRequest) return 'animated';
+    return 'instant';
 };
 
 export const useChatAutoFollow = ({
@@ -393,14 +406,48 @@ export const useChatAutoFollow = ({
             sessionIsWorking: sessionWorkingRef.current,
             anchorPreservationActive: isAnchorPreservationActive(),
         });
+        const mode = getPinnedFollowWriteMode({
+            action,
+            explicitSmoothRequest: false,
+        });
 
-        if (action === 'continuous-follow') {
+        if (mode === 'none') {
+            return;
+        }
+
+        if (mode === 'instant') {
+            writeScrollBottomInstant();
+            if (action === 'idle-settle') {
+                startSettleBurst();
+            }
+            return;
+        }
+
+        startFollowLoop();
+    }, [isAnchorPreservationActive, startFollowLoop, startSettleBurst, writeScrollBottomInstant]);
+
+    const followPinnedLatestContentSmooth = React.useCallback(() => {
+        const action = getPinnedContentFollowAction({
+            state: stateRef.current,
+            sessionIsWorking: sessionWorkingRef.current,
+            anchorPreservationActive: isAnchorPreservationActive(),
+        });
+        const mode = getPinnedFollowWriteMode({
+            action,
+            explicitSmoothRequest: true,
+        });
+
+        if (mode === 'none') {
+            return;
+        }
+
+        if (mode === 'animated') {
             startFollowLoop();
             return;
         }
 
+        writeScrollBottomInstant();
         if (action === 'idle-settle') {
-            writeScrollBottomInstant();
             startSettleBurst();
         }
     }, [isAnchorPreservationActive, startFollowLoop, startSettleBurst, writeScrollBottomInstant]);
@@ -440,17 +487,17 @@ export const useChatAutoFollow = ({
         lastUserReleaseAtRef.current = 0;
         if (!container) return;
         if (mode === 'smooth' && sessionWorkingRef.current) {
-            startFollowLoop();
+            followPinnedLatestContentSmooth();
             return;
         }
         const target = Math.max(0, container.scrollHeight - container.clientHeight);
         writeScrollTopInstant(target);
         if (sessionWorkingRef.current) {
-            startFollowLoop();
+            followPinnedLatestContent();
         } else {
             startSettleBurst();
         }
-    }, [setStateValue, startFollowLoop, startSettleBurst, writeScrollTopInstant]);
+    }, [followPinnedLatestContent, followPinnedLatestContentSmooth, setStateValue, startSettleBurst, writeScrollTopInstant]);
 
     const flushSave = React.useCallback(() => {
         if (saveTimerRef.current !== null) {
@@ -519,7 +566,7 @@ export const useChatAutoFollow = ({
             const target = Math.max(0, container.scrollHeight - container.clientHeight);
             writeScrollTopInstant(target);
             if (sessionWorkingRef.current) {
-                startFollowLoop();
+                followPinnedLatestContent();
             }
             startSettleBurst();
             return false;
@@ -541,7 +588,7 @@ export const useChatAutoFollow = ({
         });
 
         return true;
-    }, [isMobile, setStateValue, startFollowLoop, startSettleBurst, updateViewportAnchor, writeScrollTopInstant]);
+    }, [followPinnedLatestContent, isMobile, setStateValue, startSettleBurst, updateViewportAnchor, writeScrollTopInstant]);
 
     React.useEffect(() => {
         if (!currentSessionId || currentSessionId === lastSessionIdRef.current) {
@@ -575,9 +622,9 @@ export const useChatAutoFollow = ({
                 startSettleBurst();
             }
         } else if (stateRef.current === 'following') {
-            startFollowLoop();
+            writeScrollBottomInstant();
         }
-    }, [sessionIsWorking, startFollowLoop, startSettleBurst, stopFollowLoop, writeScrollBottomInstant]);
+    }, [sessionIsWorking, startSettleBurst, stopFollowLoop, writeScrollBottomInstant]);
 
     // Replay a deferred restoreSnapshot once ChatViewport mounts. Layout timing
     // keeps the initial bottom/latest placement from painting at a stale offset.
@@ -639,7 +686,7 @@ export const useChatAutoFollow = ({
         if (stateRef.current === 'released' && isNearBottom(container, isMobile) && !inGrace) {
             setStateValue('following');
             if (sessionWorkingRef.current) {
-                startFollowLoop();
+                followPinnedLatestContent();
             }
         }
 
@@ -650,7 +697,7 @@ export const useChatAutoFollow = ({
         isMobile,
         queueSave,
         setStateValue,
-        startFollowLoop,
+        followPinnedLatestContent,
         stopFollowLoop,
         stopSettleBurst,
         updateOverflowAndButton,

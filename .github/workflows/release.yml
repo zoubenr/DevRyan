@@ -118,7 +118,7 @@ jobs:
         with:
           tag_name: v${{ steps.get_version.outputs.version }}
           draft: true
-          generate_release_notes: true
+          generate_release_notes: false
           name: DevRyan v${{ steps.get_version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

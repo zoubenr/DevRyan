@@ -46,9 +46,12 @@ export const stripPlanCardSentinel = (text: string): string => {
   return text.replace(new RegExp(`\\s*${PLAN_CARD_SENTINEL}\\s*`), '\n');
 };
 
+export type PlanCardSource = 'sentinel' | 'structured' | 'reasoning';
+
 export type PlanCardSentinelSplit = {
   preambleText: string;
   planText: string;
+  source: PlanCardSource;
 };
 
 const PLAN_CARD_SENTINEL_LINE_PATTERN = /(^|[\r\n])([ \t]*<!--plan-->[ \t]*)(?:\r?\n|$)/;
@@ -64,7 +67,7 @@ export const splitPlanCardSentinel = (text: string): PlanCardSentinelSplit | nul
   const preambleText = text.slice(0, sentinelStart);
   const planText = text.slice(match.index + match[0].length);
 
-  return { preambleText, planText };
+  return { preambleText, planText, source: 'sentinel' };
 };
 
 const getPartText = (part: Part): string => {
@@ -178,7 +181,10 @@ const findStructuredPlanStartIndex = (text: string): number => {
   return -1;
 };
 
-const splitStructuredPlanFallback = (text: string): PlanCardSentinelSplit | null => {
+const splitStructuredPlanFallback = (
+  text: string,
+  source: Exclude<PlanCardSource, 'sentinel'> = 'structured',
+): PlanCardSentinelSplit | null => {
   const planStart = findStructuredPlanStartIndex(text);
   if (planStart < 0) return null;
 
@@ -188,6 +194,7 @@ const splitStructuredPlanFallback = (text: string): PlanCardSentinelSplit | null
   return {
     preambleText: text.slice(0, planStart),
     planText,
+    source,
   };
 };
 
@@ -226,7 +233,7 @@ export const resolveMessagePlanCard = (
   if (reasoningParts.length === 0) return textSplit?.planText.trim() ? textSplit : null;
 
   for (let index = reasoningParts.length - 1; index >= 0; index -= 1) {
-    const reasoningSplit = splitStructuredPlanFallback(reasoningParts[index] ?? '');
+    const reasoningSplit = splitStructuredPlanFallback(reasoningParts[index] ?? '', 'reasoning');
     if (!reasoningSplit?.planText.trim()) continue;
 
     const preambleText = [
@@ -237,6 +244,7 @@ export const resolveMessagePlanCard = (
     return {
       preambleText: preambleText.length > 0 ? `${preambleText}\n` : '',
       planText: reasoningSplit.planText,
+      source: 'reasoning',
     };
   }
 
