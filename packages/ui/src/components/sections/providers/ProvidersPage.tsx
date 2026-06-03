@@ -30,24 +30,6 @@ import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 
-const COMPACT_NUMBER_FORMATTER = new Intl.NumberFormat('en-US', {
-  notation: 'compact',
-  compactDisplay: 'short',
-  maximumFractionDigits: 1,
-  minimumFractionDigits: 0,
-});
-
-const formatTokens = (value?: number | null) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return null;
-  }
-  if (value === 0) {
-    return '0';
-  }
-  const formatted = COMPACT_NUMBER_FORMATTER.format(value);
-  return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted;
-};
-
 const ADD_PROVIDER_ID = '__add_provider__';
 const ANTHROPIC_PROVIDER_OPTION: ProviderOption = { id: 'anthropic', name: 'Anthropic' };
 const ANTIGRAVITY_PROVIDER_ID = 'antigravity';
@@ -1767,9 +1749,6 @@ export const ProvidersPage: React.FC = () => {
                   const metadata = modelId ? getModelMetadata(selectedProvider.id, modelId) as ModelMetadata | undefined : undefined;
                   const isHidden = isHiddenModelRef(hiddenModels, selectedProvider.id, modelId);
 
-                  const contextTokens = formatTokens(metadata?.limit?.context);
-                  const outputTokens = formatTokens(metadata?.limit?.output);
-
                   const capabilityIcons: Array<{ key: string; icon: typeof RiToolsLine; label: string }> = [];
                   if (metadata?.tool_call) capabilityIcons.push({ key: 'tools', icon: RiToolsLine, label: t('settings.providers.page.models.capability.toolCalling') });
                   if (metadata?.reasoning) capabilityIcons.push({ key: 'reasoning', icon: RiBrainAi3Line, label: t('settings.providers.page.models.capability.reasoning') });
@@ -1787,13 +1766,6 @@ export const ProvidersPage: React.FC = () => {
                         {modelName}
                       </span>
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        {(contextTokens || outputTokens) && (
-                          <span className="typography-micro text-muted-foreground flex-shrink-0 bg-[var(--surface-muted)] px-1.5 py-0.5 rounded">
-                            {contextTokens ? `${contextTokens} ${t('settings.providers.page.models.tokenBadge.context')}` : ''}
-                            {contextTokens && outputTokens ? ' · ' : ''}
-                            {outputTokens ? `${outputTokens} ${t('settings.providers.page.models.tokenBadge.output')}` : ''}
-                          </span>
-                        )}
                         {capabilityIcons.length > 0 && (
                           <div className="flex items-center gap-1 flex-shrink-0">
                             {capabilityIcons.map(({ key, icon: Icon, label }) => (

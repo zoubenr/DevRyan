@@ -5,10 +5,27 @@ import {
   getSettingsNavButtonClassName,
   getSettingsPageSidebarClassName,
 } from './SettingsView.styles';
+import { resolveMobileSettingsBackStage } from './SettingsView.mobileNavigation';
 import { resolveSettingsSlug } from '@/lib/settings/metadata';
 import { SETTINGS_NAV_SECTIONS } from '@/lib/settings/navigation';
 
 describe('SettingsView navigation', () => {
+  test('mobile split-page content backs to the split page list', () => {
+    expect(resolveMobileSettingsBackStage('page-content', { kind: 'split' })).toBe('page-sidebar');
+  });
+
+  test('mobile split-page list backs to the settings nav', () => {
+    expect(resolveMobileSettingsBackStage('page-sidebar', { kind: 'split' })).toBe('nav');
+  });
+
+  test('mobile single-page content backs to the settings nav', () => {
+    expect(resolveMobileSettingsBackStage('page-content', { kind: 'single' })).toBe('nav');
+  });
+
+  test('mobile settings nav stays on nav when back is resolved', () => {
+    expect(resolveMobileSettingsBackStage('nav', { kind: 'split' })).toBe('nav');
+  });
+
   test('settings sidebar page buttons fill the scrollable row without changing semantics', () => {
     const className = getSettingsNavButtonClassName(false);
 

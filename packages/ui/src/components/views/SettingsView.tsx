@@ -79,6 +79,10 @@ import {
   getSettingsNavButtonClassName,
   getSettingsPageSidebarClassName,
 } from './SettingsView.styles';
+import {
+  resolveMobileSettingsBackStage,
+  type MobileStage,
+} from './SettingsView.mobileNavigation';
 
 // Same constraints as main sidebar
 const SETTINGS_NAV_MIN_WIDTH = 176;
@@ -88,8 +92,6 @@ const SETTINGS_NAV_RESIZE_STEP = 8;
 function clampSettingsNavWidth(width: number): number {
   return Math.min(SETTINGS_NAV_MAX_WIDTH, Math.max(SETTINGS_NAV_MIN_WIDTH, width));
 }
-
-type MobileStage = 'nav' | 'page-sidebar' | 'page-content';
 
 interface SettingsViewProps {
   onClose?: () => void;
@@ -584,8 +586,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   const showFullPageBackButton = !isMobile && Boolean(onClose);
 
   const handleBack = React.useCallback(() => {
-    setMobileStage('nav');
-  }, []);
+    setMobileStage((stage) => resolveMobileSettingsBackStage(stage, activePageMeta));
+  }, [activePageMeta]);
 
   const handleOpenPageSidebar = React.useCallback(() => {
     setMobileStage('page-sidebar');

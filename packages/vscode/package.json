@@ -2,7 +2,7 @@
   "name": "openchamber",
   "displayName": "DevRyan",
   "description": "AI coding assistant powered by OpenCode",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "fedaykindev",
   "private": true,
   "repository": {
