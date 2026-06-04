@@ -41,6 +41,22 @@ function partUpdatedEvent(text = "hello"): Event {
   } as Event
 }
 
+function reasoningPartUpdatedEvent(text = ""): Event {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "prt_reasoning_1",
+        messageID: "msg_reasoning_1",
+        sessionID: "ses_1",
+        type: "reasoning",
+        text,
+        time: { start: 123 },
+      },
+    },
+  } as Event
+}
+
 function testSession(id: string, parentID?: string, revertMessageID?: string): Session {
   return {
     id,
@@ -121,6 +137,28 @@ describe("applyDirectoryEvent", () => {
     })
   })
 
+  test("creates a provisional assistant message for orphan live reasoning parts", () => {
+    const draft = state()
+    const result = applyDirectoryEvent(draft, reasoningPartUpdatedEvent())
+
+    expect(draft.message.ses_1[0]?.id).toBe("msg_reasoning_1")
+    expect(draft.message.ses_1[0]?.sessionID).toBe("ses_1")
+    expect(draft.message.ses_1[0]?.role).toBe("assistant")
+    expect(draft.message.ses_1[0]?.time).toEqual({ created: 123 })
+    expect((draft.message.ses_1[0] as { finish?: unknown }).finish).toBe(undefined)
+    expect((draft.message.ses_1[0]?.time as { completed?: unknown }).completed).toBe(undefined)
+    expect(draft.part.msg_reasoning_1.map((item) => item.id)).toEqual(["prt_reasoning_1"])
+    expect(result).toEqual({
+      changed: true,
+      materialization: {
+        type: "incomplete-session-snapshot",
+        sessionID: "ses_1",
+        messageID: "msg_reasoning_1",
+        partID: "prt_reasoning_1",
+      },
+    })
+  })
+
   test("applies part update without materialization when owning message exists", () => {
     const draft = state({
       message: { ses_1: [{ id: "msg_1", sessionID: "ses_1", role: "assistant", time: { created: 1 } } as never] },
@@ -186,26 +224,72 @@ describe("applyDirectoryEvent", () => {
     expect(draft.session_status.ses_1).toBe(statusRef)
   })
 
-  test("clears busy status from terminal Cursor assistant message updates", () => {
+  test("clears busy status from terminal assistant message updates for any provider", () => {
     const draft = state({
       message: {
         ses_1: [{
-          ...testMessage("msg_cursor_assistant", "ses_1", "assistant", 1),
-          providerID: "cursor-acp",
+          ...testMessage("msg_assistant", "ses_1", "assistant", 1),
+          providerID: "anthropic",
         } as unknown as Message],
       },
       session_status: { ses_1: { type: "busy" } as SessionStatus },
     })
 
     const result = applyDirectoryEvent(draft, messageUpdatedEvent({
-      ...testMessage("msg_cursor_assistant", "ses_1", "assistant", 1),
-      providerID: "cursor-acp",
+      ...testMessage("msg_assistant", "ses_1", "assistant", 1),
+      providerID: "anthropic",
       finish: "stop",
       time: { created: 1, completed: 2 },
     } as unknown as Message))
 
     expect(result).toBe(true)
     expect(draft.session_status.ses_1).toEqual({ type: "idle" })
+  })
+
+  test("does not settle busy status from an older terminal assistant turn", () => {
+    const draft = state({
+      message: {
+        ses_1: [
+          testMessage("msg_1_user", "ses_1", "user", 1),
+          testMessage("msg_2_assistant", "ses_1", "assistant", 2),
+          testMessage("msg_3_user", "ses_1", "user", 3),
+        ],
+      },
+      session_status: { ses_1: { type: "busy" } as SessionStatus },
+    })
+
+    const result = applyDirectoryEvent(draft, messageUpdatedEvent({
+      ...testMessage("msg_2_assistant", "ses_1", "assistant", 2),
+      finish: "stop",
+      time: { created: 2, completed: 4 },
+    } as unknown as Message))
+
+    expect(result).toBe(true)
+    expect(draft.session_status.ses_1).toEqual({ type: "busy" })
+  })
+
+  test("does not settle busy status while a blocker is pending", () => {
+    const draft = state({
+      message: {
+        ses_1: [
+          testMessage("msg_1_user", "ses_1", "user", 1),
+          testMessage("msg_2_assistant", "ses_1", "assistant", 2),
+        ],
+      },
+      permission: {
+        ses_1: [{ id: "perm_1", sessionID: "ses_1" } as PermissionRequest],
+      },
+      session_status: { ses_1: { type: "busy" } as SessionStatus },
+    })
+
+    const result = applyDirectoryEvent(draft, messageUpdatedEvent({
+      ...testMessage("msg_2_assistant", "ses_1", "assistant", 2),
+      finish: "stop",
+      time: { created: 2, completed: 3 },
+    } as unknown as Message))
+
+    expect(result).toBe(true)
+    expect(draft.session_status.ses_1).toEqual({ type: "busy" })
   })
 
   test("keeps session summary totals independent from session diff events", () => {

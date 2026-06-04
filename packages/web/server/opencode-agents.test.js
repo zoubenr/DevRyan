@@ -427,6 +427,20 @@ describe('Packaged OpenChamber agents', () => {
     expect(orchestrator?.prompt).toContain('If Explorer is unavailable');
   });
 
+  it('keeps Explorer discovery speed-bounded and Orchestrator prompts compact', () => {
+    const explorer = listPackagedAgents().find((agent) => agent.name === 'explorer');
+    const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
+
+    expect(explorer?.prompt).toContain('at most two search passes');
+    expect(explorer?.prompt).toContain('strong candidates, not exhaustive coverage');
+    expect(explorer?.prompt).toContain('smallest needed file slices');
+    expect(orchestrator?.prompt).toContain('Find:');
+    expect(orchestrator?.prompt).toContain('Scope:');
+    expect(orchestrator?.prompt).toContain('Need:');
+    expect(orchestrator?.prompt).toContain('Avoid:');
+    expect(orchestrator?.prompt).toContain('For known paths, exact symbols in 1-2 files, codemap-identified targets, or a single narrow `read`/`grep`, do it yourself instead of delegating.');
+  });
+
   it('instructs Orchestrator to stop after plan-only responses without asking to implement', () => {
     const orchestrator = listPackagedAgents().find((agent) => agent.name === 'orchestrator');
 

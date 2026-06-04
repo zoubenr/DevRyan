@@ -167,7 +167,7 @@ Keep this in sync with `handleDirectoryEvent` in `sync-context.tsx`:
 | `session.diff` | `session_diff` |
 | `session.status` | `session_status` |
 | `todo.updated` | `todo` |
-| `message.updated` | `message`; `session_status` only for terminal Cursor assistant updates |
+| `message.updated` | `message`; `session_status` only for terminal trailing assistant status settlement |
 | `message.removed` | `message`, `part` |
 | `message.part.updated/removed/delta` | `part` |
 | `vcs.branch.updated` | (none — mutates `draft.vcs` directly) |
@@ -187,7 +187,7 @@ Server compatibility events named `openchamber:session-status` are normalized in
 
 ## Active-session recovery watchdog
 
-`sync-context.tsx` tracks the last observed `session.status` event per `directory + sessionID`. A 5-second watchdog checks only the active viewed session; when that session remains `busy` or `retry` without a fresh status event for 20 seconds, it runs a targeted reconnect resync for that session only. A 15-second per-session cooldown prevents repeated recovery calls.
+`sync-context.tsx` tracks the last observed `session.status` and message/part output event per `directory + sessionID`. A 5-second watchdog checks only the active viewed session; when that session remains `busy` or `retry` without fresh status or output activity for 20 seconds, it runs a targeted reconnect resync for that session only. A 15-second per-session cooldown prevents repeated recovery calls.
 
 ## Selector hygiene
 

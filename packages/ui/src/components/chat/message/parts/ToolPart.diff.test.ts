@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { getDiffPatchEntries, splitUnifiedDiffPatch } from "./toolPartDiffEntries"
+import {
+  getDiffPatchEntries,
+  resolveRawPatchFallback,
+  splitUnifiedDiffPatch,
+} from "./toolPartDiffEntries"
 
 const multiFilePatch = [
   "--- old/a.txt",
@@ -15,6 +19,37 @@ const multiFilePatch = [
 ].join("\n")
 
 describe("ToolPart diff entries", () => {
+  test("malformed patch returns no parsed entries", () => {
+    expect(splitUnifiedDiffPatch("not a unified diff\n+still not valid")).toEqual([])
+  })
+
+  test("malformed non-empty patch returns raw fallback text", () => {
+    const patch = "  not a unified diff\n+still not valid  "
+    const entries = splitUnifiedDiffPatch(patch)
+
+    expect(resolveRawPatchFallback(patch, entries)).toBe("not a unified diff\n+still not valid")
+  })
+
+  test("valid parsed diff suppresses raw fallback", () => {
+    const patch = [
+      "--- old/a.txt",
+      "+++ new/a.txt",
+      "@@ -1 +1 @@",
+      "-old a",
+      "+new a",
+    ].join("\n")
+    const entries = splitUnifiedDiffPatch(patch)
+
+    expect(entries).toHaveLength(1)
+    expect(resolveRawPatchFallback(patch, entries)).toBeNull()
+  })
+
+  test("empty patch suppresses raw fallback", () => {
+    expect(resolveRawPatchFallback("  \n\t ", [])).toBeNull()
+    expect(resolveRawPatchFallback(null, [])).toBeNull()
+    expect(resolveRawPatchFallback(undefined, [])).toBeNull()
+  })
+
   test("splits arbitrary non-empty unified file headers into separate files", () => {
     const entries = splitUnifiedDiffPatch(multiFilePatch)
 

@@ -160,4 +160,24 @@ describe("getReconnectCandidateSessionIds", () => {
       lastRecoveryAt: 30_000,
     })).toBe(false)
   })
+
+  test("uses fresh output events to suppress active-session recovery while streaming continues", () => {
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "busy" } as SessionStatus,
+      now: 40_000,
+      lastStatusEventAt: 0,
+      lastOutputEventAt: 35_000,
+      lastRecoveryAt: undefined,
+    })).toBe(false)
+  })
+
+  test("recovers active sessions when both status and output events are stale", () => {
+    expect(shouldRecoverStaleActiveSession({
+      status: { type: "retry", attempt: 1, message: "again", next: 45_000 } as SessionStatus,
+      now: 40_000,
+      lastStatusEventAt: 0,
+      lastOutputEventAt: 10_000,
+      lastRecoveryAt: undefined,
+    })).toBe(true)
+  })
 })

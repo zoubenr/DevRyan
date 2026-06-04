@@ -90,6 +90,7 @@ import {
     type ComposerDraftTarget,
 } from './chatInputDraftPersistence';
 import { clearSubmittedComposerAfterSend } from './chatInputSubmitCleanup';
+import { shouldInterruptBeforeSubmit } from './submitInterrupt';
 
 const MAX_VISIBLE_TEXTAREA_LINES = 8;
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -1721,15 +1722,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             ...primaryAttachments,
             ...additionalParts.flatMap(p => p.attachments ?? []),
         ];
-        const shouldInterruptForQueuedSend = claimedQueuedMessages.length > 0
-            && Boolean(currentSessionId)
-            && sessionPhase !== 'idle';
+        const shouldInterruptCurrentTurn = shouldInterruptBeforeSubmit({
+            currentSessionId,
+            sessionPhase,
+            queuedMessageCount: claimedQueuedMessages.length,
+            queuedOnly: queuedOnly === true,
+        });
         const submittedDraftTarget = newSessionDraftOpen && !currentSessionId
             ? activeDraftTarget
             : ({ kind: 'none' } satisfies ComposerDraftTarget);
 
         try {
-            if (shouldInterruptForQueuedSend && currentSessionId) {
+            if (shouldInterruptCurrentTurn && currentSessionId) {
                 await sessionActions.interruptCurrentOperationForQueuedSend(currentSessionId);
             }
 

@@ -128,6 +128,7 @@ export function shouldRecoverStaleActiveSession(input: {
   status: SessionStatus | undefined
   now?: number
   lastStatusEventAt?: number
+  lastOutputEventAt?: number
   lastRecoveryAt?: number
   staleMs?: number
   cooldownMs?: number
@@ -140,9 +141,15 @@ export function shouldRecoverStaleActiveSession(input: {
   const now = input.now ?? Date.now()
   const staleMs = input.staleMs ?? ACTIVE_SESSION_STATUS_STALE_MS
   const cooldownMs = input.cooldownMs ?? ACTIVE_SESSION_RECOVERY_COOLDOWN_MS
-  const lastStatusEventAt = input.lastStatusEventAt ?? now
+  const observedEventTimes = [
+    input.lastStatusEventAt,
+    input.lastOutputEventAt,
+  ].filter((value): value is number => typeof value === "number")
+  const lastObservedEventAt = observedEventTimes.length > 0
+    ? Math.max(...observedEventTimes)
+    : now
 
-  if (now - lastStatusEventAt < staleMs) {
+  if (now - lastObservedEventAt < staleMs) {
     return false
   }
 

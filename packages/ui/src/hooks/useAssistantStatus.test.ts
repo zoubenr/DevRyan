@@ -89,4 +89,14 @@ describe("getAssistantActivePartStatus", () => {
             activeToolName: undefined,
         });
     });
+
+    test("suppresses stale live part labels when the assistant message is terminal", () => {
+        expect(getAssistantActivePartStatus([
+            reasoningPart("reasoning_1", "thinking"),
+            toolPart("edit_1", "edit", "running"),
+        ], { isTerminalAssistantMessage: true })).toEqual({
+            activePartType: undefined,
+            activeToolName: undefined,
+        });
+    });
 });

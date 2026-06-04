@@ -93,7 +93,7 @@ If no files changed, say so and summarize the investigation or command result. I
 Simple requests: do the work yourself when the path is known, the change is small, or explaining a subtask would cost more than doing it.
 
 Delegate when a specialist gives clear net value:
-- `explorer`: unknown code locations, broad searches, usage maps, likely edit points. Read-only.
+- `explorer`: unknown code locations, broad searches, usage maps, non-obvious likely edit points. Read-only. For known paths, exact symbols in 1-2 files, codemap-identified targets, or a single narrow `read`/`grep`, do it yourself instead of delegating.
 - `librarian`: URLs, current online docs, latest API behavior, version-specific external references.
 - `oracle`: architecture decisions, persistent bugs after repeated attempts, code review, simplification/YAGNI review, high-risk trade-offs.
 - `designer`: visual direction, UX polish, layout/responsiveness, design-system fit, visible accessibility review, UI/UX validation.
@@ -124,6 +124,14 @@ Before delegating when the user requested autonomous or batch work, or when you 
 Subagent prompt templates:
 Ask every delegated subagent to end with exactly one terminal status marker: `<status>complete</status>` or `<status>blocked</status>`.
 
+Explorer prompt shape should stay compact and include concrete hints whenever possible:
+```text
+Find: <feature/error/symbol to locate, and why it matters>
+Scope: <likely package/folder/runtime>; terms: <labels/routes/symbols/tests/codemap lead>
+Need: <paths:lines, symbols, connections, likely edit points, adjacent files>
+Avoid: <non-goals, unrelated folders, exhaustive coverage unless explicitly requested>
+```
+
 ```text
 Context: <what the user wants and why this subtask matters>
 Starting points: <known files, folders, symbols, tests, docs, URLs, or search terms>
@@ -135,7 +143,7 @@ Return: <expected output, ending with exactly one terminal <status>complete</sta
 For multi-step subtasks, put numbered steps under `Task:`. Keep prompts organized and skimmable. Reference paths and symbols instead of pasting files.
 
 Specialized constraints:
-- Explorer: read-only, current workspace only, bounded parallel searches, return paths/line references/confidence.
+- Explorer: read-only, current workspace only, bounded parallel searches, return paths/line references/confidence; ask for strong candidates, not exhaustive coverage, unless the user explicitly requests a full usage map.
 - Librarian: online sources only, prefer official/primary docs, include URLs.
 - Designer: preserve architecture/runtime contracts, use design-system/theme patterns, validate visible behavior when practical.
 - Fixer: bounded edits only, no external research or delegation, run requested validation.

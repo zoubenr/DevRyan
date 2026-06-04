@@ -4,6 +4,7 @@ import type { AssistantMessage, Message, Part, ReasoningPart, TextPart, ToolPart
 import type { MessageStreamPhase } from '@/stores/types/sessionTypes';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectorySync, useSessionPermissions, useSessionQuestions, useSessionStatus } from '@/sync/sync-context';
+import { isTerminalAssistantMessage as isTerminalSyncAssistantMessage } from '@/sync/session-working';
 import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { postRendererTurnTimingMark } from '@/stores/utils/streamDebug';
 import { getAssistantToolStatusPhrase } from './assistantStatusFormatting';
@@ -48,6 +49,10 @@ export type AssistantActivePartType = 'text' | 'tool' | 'reasoning' | 'editing' 
 export interface AssistantActivePartStatus {
     activePartType: AssistantActivePartType;
     activeToolName: string | undefined;
+}
+
+interface AssistantActivePartStatusOptions {
+    isTerminalAssistantMessage?: boolean;
 }
 
 type AssistantMessageWithState = AssistantMessage & {
@@ -137,7 +142,14 @@ const isToolLive = (part: ToolPart): boolean => {
     return status === 'running' || status === 'pending';
 };
 
-export const getAssistantActivePartStatus = (parts: readonly Part[] | undefined): AssistantActivePartStatus => {
+export const getAssistantActivePartStatus = (
+    parts: readonly Part[] | undefined,
+    options: AssistantActivePartStatusOptions = {},
+): AssistantActivePartStatus => {
+    if (options.isTerminalAssistantMessage) {
+        return { activePartType: undefined, activeToolName: undefined };
+    }
+
     let hasNewerReliableActivity = false;
 
     for (let i = (parts ?? []).length - 1; i >= 0; i -= 1) {
@@ -308,7 +320,9 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
 
         const lastAssistant = sortedAssistantMessages[sortedAssistantMessages.length - 1];
 
-        const { activePartType, activeToolName } = getAssistantActivePartStatus(lastAssistant.parts ?? []);
+        const { activePartType, activeToolName } = getAssistantActivePartStatus(lastAssistant.parts ?? [], {
+            isTerminalAssistantMessage: isTerminalSyncAssistantMessage(lastAssistant.info),
+        });
 
         const WORKING_PHRASES = [
             'working',

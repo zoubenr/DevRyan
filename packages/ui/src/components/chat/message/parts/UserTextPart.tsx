@@ -166,6 +166,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({ part, messageId, agentMenti
                 {normalizedRenderingMode === 'markdown' ? (
                     <SimpleMarkdownRenderer 
                         content={processedMarkdownContent} 
+                        className="whitespace-pre-wrap"
                         disableLinkSafety 
                     />
                 ) : (

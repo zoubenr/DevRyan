@@ -416,7 +416,12 @@ describe("sync plan lifecycle on message.part.delta", () => {
     await flushAsync()
 
     expect(useNotificationStore.getState().list).toHaveLength(0)
-    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.get(SESSION_ID)).toEqual({
+      messageId: ASSISTANT_MESSAGE_ID,
+      completedAt: 3,
+    })
   })
 
   test("clears normal completion when the session becomes busy again", async () => {
@@ -678,6 +683,52 @@ describe("sync plan lifecycle on message.part.delta", () => {
     expect(store.getState().session_status[SESSION_ID]).toEqual({ type: "idle" })
   })
 
+  test("clones session status when terminal assistant message settlement happens through sync", () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const nonCursorAssistant = {
+      ...assistantMessage(),
+      providerID: "anthropic",
+      time: { created: 2 },
+    } as Message
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [userMessage(), nonCursorAssistant],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "busy" } as SessionStatus,
+      },
+    })
+
+    const previousStatusMap = store.getState().session_status
+
+    applySyncEventForTest(
+      DIRECTORY,
+      {
+        type: "message.updated",
+        properties: {
+          info: {
+            ...nonCursorAssistant,
+            finish: "stop",
+            time: { created: 2, completed: 3 },
+          } as Message,
+        },
+      } as Event,
+      childStores,
+      routingIndexFor(),
+    )
+
+    expect(store.getState().session_status).not.toBe(previousStatusMap)
+    expect(store.getState().session_status[SESSION_ID]).toEqual({ type: "idle" })
+  })
+
   test("clears completed plan and completion notifications when the session becomes busy again", async () => {
     const childStores = new ChildStoreManager()
     const store = childStores.ensureChild(DIRECTORY)
@@ -776,10 +827,17 @@ describe("sync plan lifecycle on message.part.delta", () => {
     )
     await flushAsync()
 
-    const sessionUIState = useSessionUIStore.getState()
-    expect(sessionUIState.sessionPlanIndicator.has(SESSION_ID)).toBe(false)
-    expect(sessionUIState.sessionPlanAvailable.get(SESSION_ID)).toBe(true)
     expect(useNotificationStore.getState().list).toHaveLength(0)
+
+    await waitForCompletionIndicatorSettlement()
+
+    const sessionUIState = useSessionUIStore.getState()
+    expect(sessionUIState.sessionPlanAvailable.get(SESSION_ID)).toBe(true)
+    expect(sessionUIState.sessionPlanIndicator.get(SESSION_ID)).toEqual({
+      state: "completed",
+      sourceMessageId: ASSISTANT_MESSAGE_ID,
+      implementationMessageId: IMPLEMENT_USER_MESSAGE_ID,
+    })
   })
 
   test("does not record stale completion when part update finalizes a different message", async () => {

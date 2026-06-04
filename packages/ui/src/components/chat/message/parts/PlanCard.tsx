@@ -26,14 +26,11 @@ import PlanCardSkeleton from './PlanCardSkeleton';
 import {
   PLAN_CARD_COLLAPSED_MAX_HEIGHT_PX,
   getPlanCardImplementationKey,
-  getPlanOverlayClipPercent,
-  getPlanOverlayPhase,
   getPlanSkeletonRevealState,
   getStableSkeletonLineCount,
   resolvePlanCardDisplayText,
 } from './planCardReveal';
 
-const MIN_SKELETON_MS = 500;
 const COLLAPSED_MAX_HEIGHT = PLAN_CARD_COLLAPSED_MAX_HEIGHT_PX;
 const EXPAND_AFFORDANCE_THRESHOLD_PX = 8;
 const BODY_TRANSITION_MS = 420;
@@ -54,23 +51,15 @@ const PlanCard: React.FC<PlanCardProps> = ({
   streamPhase,
   planText,
 }) => {
-  const [minWindowElapsed, setMinWindowElapsed] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isExpanded, setIsExpanded] = React.useState(false);
   const [contentHeight, setContentHeight] = React.useState(0);
-  const [isExitingOverlay, setIsExitingOverlay] = React.useState(false);
 
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const cardRef = React.useRef<HTMLDivElement | null>(null);
   const measureRafRef = React.useRef<number | null>(null);
   const anchorRafRef = React.useRef<number | null>(null);
   const stableLineCountRef = React.useRef(0);
-  const overlayWasVisibleRef = React.useRef(false);
-
-  React.useEffect(() => {
-    const timer = window.setTimeout(() => setMinWindowElapsed(true), MIN_SKELETON_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   const isStreaming = streamPhase === 'streaming' || streamPhase === 'cooldown';
   const throttledPlanText = useStreamingTextThrottle({
@@ -85,19 +74,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
   });
 
   const reveal = React.useMemo(
-    () => getPlanSkeletonRevealState({ minWindowElapsed, planText: displayPlanText, streamPhase }),
-    [displayPlanText, minWindowElapsed, streamPhase],
+    () => getPlanSkeletonRevealState({ planText: displayPlanText, streamPhase }),
+    [displayPlanText, streamPhase],
   );
-  const shouldStartOverlayExit = !reveal.showOverlaySkeleton && reveal.hasPlanText && overlayWasVisibleRef.current;
-  const overlayPhase = getPlanOverlayPhase({
-    reveal,
-    isExitingOverlay: isExitingOverlay || shouldStartOverlayExit,
-  });
-  const overlayClipPercent = getPlanOverlayClipPercent({
-    phase: overlayPhase,
-    revealPercent: reveal.revealPercent,
-  });
-  const showRevealOverlay = overlayPhase === 'streaming' || overlayPhase === 'exiting';
 
   // Lock skeleton line count to the running max so it never shrinks mid-stream.
   stableLineCountRef.current = getStableSkeletonLineCount(displayPlanText, stableLineCountRef.current);
@@ -111,28 +90,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
     (state) => state.implementedPlanRequests.has(implementationKey),
   );
   const canImplement = streamPhase === 'completed' && planText.trim().length > 0 && !isImplementationRequested;
-
-  React.useEffect(() => {
-    if (reveal.showOverlaySkeleton) {
-      overlayWasVisibleRef.current = true;
-      setIsExitingOverlay(false);
-      return;
-    }
-
-    if (!overlayWasVisibleRef.current || !reveal.hasPlanText) {
-      overlayWasVisibleRef.current = false;
-      setIsExitingOverlay(false);
-      return;
-    }
-
-    setIsExitingOverlay(true);
-    const timer = window.setTimeout(() => {
-      overlayWasVisibleRef.current = false;
-      setIsExitingOverlay(false);
-    }, 260);
-
-    return () => window.clearTimeout(timer);
-  }, [reveal.showOverlaySkeleton, reveal.hasPlanText]);
 
   // Measure the content so the collapsed→expanded max-height transition has a
   // concrete target. Re-measure as the plan streams in or the skeleton grows.
@@ -352,19 +309,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
                   variant="assistant"
                   enableFileReferences={!isStreaming}
                 />
-                {showRevealOverlay ? (
-                  <div
-                    className="oc-plan-card-reveal-overlay"
-                    data-phase={overlayPhase}
-                    style={{ clipPath: `inset(${overlayClipPercent}% 0 0 0)` }}
-                    aria-hidden="true"
-                  >
-                    <PlanCardSkeleton
-                      className="oc-plan-card-reveal-lines"
-                      lineCount={skeletonLineCount}
-                    />
-                  </div>
-                ) : null}
               </div>
             )}
           </div>

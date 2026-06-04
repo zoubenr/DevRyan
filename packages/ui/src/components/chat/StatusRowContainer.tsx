@@ -1,9 +1,16 @@
 import React from 'react';
 
-import { useAssistantStatus } from '@/hooks/useAssistantStatus';
+import { useAssistantStatus, type AssistantActivePartType } from '@/hooks/useAssistantStatus';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { StatusRow } from './StatusRow';
+
+// Exported for focused regression tests; keep component exports unchanged otherwise.
+// eslint-disable-next-line react-refresh/only-export-components
+export const shouldRenderStatusRowAssistantStatus = (
+    activePartType: AssistantActivePartType,
+    isWorking: boolean,
+): boolean => isWorking && activePartType !== 'reasoning';
 
 /**
  * Status row wrapper.
@@ -24,11 +31,12 @@ export const StatusRowContainer: React.FC = React.memo(() => {
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
 
     const wasAborted = Boolean(abortRecord && !abortRecord.acknowledged);
+    const showWorkingPlaceholder = shouldRenderStatusRowAssistantStatus(working.activePartType, working.isWorking);
 
     return (
         <StatusRow
-            isWorking={working.isWorking}
-            statusText={working.statusText}
+            isWorking={showWorkingPlaceholder}
+            statusText={showWorkingPlaceholder ? working.statusText : null}
             isGenericStatus={working.isGenericStatus}
             isWaitingForPermission={working.isWaitingForPermission}
             wasAborted={wasAborted || working.wasAborted}

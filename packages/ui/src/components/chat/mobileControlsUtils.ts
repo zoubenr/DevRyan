@@ -226,7 +226,12 @@ export const getCursorAcpVariantState = (
     }
 
     const normalizedVariant = resolveCursorAcpVariantKey(variants, variant);
-    const parsedVariant = parseCursorAcpVariantKey(normalizedVariant ?? variant);
+    const canInterpretRawVariant = effortOptions.length > 0 || hasThinking;
+    const parsedVariant = normalizedVariant
+        ? parseCursorAcpVariantKey(normalizedVariant)
+        : canInterpretRawVariant
+            ? parseCursorAcpVariantKey(variant)
+            : null;
     const selectedEffort = parsedVariant?.effort ?? getPreferredCursorAcpEffort(effortOptions);
 
     return {

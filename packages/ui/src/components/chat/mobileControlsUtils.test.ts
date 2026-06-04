@@ -177,6 +177,9 @@ describe('Cursor ACP variant helpers', () => {
         expect(state?.canToggleThinking).toBe(false);
         expect(state?.visibleVariantOptions).toEqual([]);
         expect(getCursorAcpVariantDisplayLabel(state)).toBe('Default');
+        const recordedMediumState = getCursorAcpVariantState(provider, 'composer-2.5', 'medium');
+        expect(recordedMediumState?.selectedEffort).toBe(undefined);
+        expect(getCursorAcpVariantDisplayLabel(recordedMediumState)).toBe('Default');
         const fastState = getCursorAcpVariantState(provider, 'composer-2.5-fast', undefined);
         expect(fastState?.fastEnabled).toBe(true);
         expect(getCursorAcpVariantDisplayLabel(fastState)).toBeNull();

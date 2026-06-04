@@ -194,6 +194,71 @@ describe('Cursor SDK runtime', () => {
     expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
   });
 
+  it('finalizes open-stream Cursor edit tool activity when the SDK wait result finishes', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const emitted = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (event) => emitted.push(event),
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        waitFinalResult: async () => ({
+          ok: true,
+          finalStatus: 'success',
+          finalText: 'Edited the file and finished.',
+        }),
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'tool_edit_1',
+              name: 'edit',
+              status: 'running',
+              args: { file: 'src/app.ts' },
+            },
+          };
+          await new Promise(() => {});
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_open_stream_edit',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_open_stream_edit_user',
+        parts: [{ type: 'text', text: 'edit this file' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_open_stream_edit');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const editTool = assistant?.parts?.find((part) => part.type === 'tool' && part.tool === 'edit');
+    const idleEvents = emitted.filter((event) => (
+      event?.type === 'session.status'
+      && event.properties?.sessionID === 'ses_open_stream_edit'
+      && event.properties?.status?.type === 'idle'
+    ));
+
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
+    expect(runtime.getSessionStatus?.().ses_open_stream_edit).toEqual({ type: 'idle' });
+    expect(assistant?.info.finish).toBe('stop');
+    expect(assistant?.parts?.find((part) => part.type === 'text')?.text).toBe('Edited the file and finished.');
+    expect(editTool?.state?.status).toBe('completed');
+    expect(typeof editTool?.state?.time?.end).toBe('number');
+    expect(idleEvents).toHaveLength(1);
+  });
+
   it('passes selected Cursor SDK thinking and fast parameters to prompt runs', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     let sentModelSelection = null;

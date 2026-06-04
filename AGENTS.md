@@ -284,18 +284,6 @@ skill({ name: "clack-cli-patterns" })
 
 Scope: terminal CLI only (for example `packages/web/bin/*`). Do not apply this requirement to VS Code or web UI work.
 
-## Theme System (MANDATORY for UI work)
-
-When working on any UI components, styling, or visual changes, agents **MUST** study the theme system skill first.
-
-**Before starting any UI work:**
-
-```
-skill({ name: "theme-system" })
-```
-
-This skill contains all color tokens, semantic logic, decision tree, and usage patterns. All UI colors must use theme tokens - never hardcoded values or Tailwind color classes.
-
 ## Performance rules (MANDATORY)
 
 These rules exist because violating them has caused measurable regressions (render cascades, memory bloat, UI jank). They apply to all UI and sync layer work.

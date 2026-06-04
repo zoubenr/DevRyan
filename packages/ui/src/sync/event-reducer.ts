@@ -22,6 +22,7 @@ import { dropSessionCaches } from "./session-cache"
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { syncDebug } from "./debug"
 import { appendNonOverlappingDelta, appendStreamingTextDelta, normalizeAssistantPartText } from "./part-delta"
+import { isTerminalAssistantMessage } from "./session-working"
 import {
   updateSessionUserActivityFromMessage,
   updateSessionUserActivityFromMessages,
@@ -125,17 +126,64 @@ export function isTerminalCursorAssistantMessage(info: Message | undefined): boo
   const providerID = (info as { providerID?: unknown }).providerID
   if (providerID !== CURSOR_PROVIDER_ID) return false
 
-  const finish = (info as { finish?: unknown }).finish
-  const completed = (info.time as { completed?: unknown } | undefined)?.completed
-  return typeof finish === "string" && finish.length > 0
-    || typeof completed === "number"
+  return isTerminalAssistantMessage(info)
 }
 
-function settleCursorAssistantStatus(draft: State, info: Message): boolean {
-  if (!isTerminalCursorAssistantMessage(info)) {
-    return false
+const isBlockingRequestPending = (state: State, sessionID: string): boolean => {
+  return (state.permission[sessionID]?.length ?? 0) > 0
+    || (state.question[sessionID]?.length ?? 0) > 0
+}
+
+const getMessageCreatedAt = (message: Message | undefined): number | undefined => {
+  const created = (message as { time?: { created?: unknown } } | undefined)?.time?.created
+  return typeof created === "number" ? created : undefined
+}
+
+const compareMessageOrder = (left: Message, right: Message): number => {
+  const leftCreated = getMessageCreatedAt(left)
+  const rightCreated = getMessageCreatedAt(right)
+  if (typeof leftCreated === "number" && typeof rightCreated === "number" && leftCreated !== rightCreated) {
+    return leftCreated - rightCreated
+  }
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+}
+
+const isTrailingConversationalMessage = (state: State, info: Message): boolean => {
+  const messages = state.message[info.sessionID] ?? []
+  let latest: Message | undefined
+
+  for (const message of messages) {
+    if (message.role !== "user" && message.role !== "assistant") {
+      continue
+    }
+    if (!latest || compareMessageOrder(message, latest) > 0) {
+      latest = message
+    }
   }
 
+  if (!latest) {
+    return true
+  }
+  if (latest.id === info.id) {
+    return true
+  }
+  return compareMessageOrder(latest, info) <= 0
+}
+
+export function shouldSettleTerminalAssistantMessageStatus(state: State, info: Message | undefined): info is Message {
+  if (!info || !isTerminalAssistantMessage(info)) {
+    return false
+  }
+  if (isBlockingRequestPending(state, info.sessionID)) {
+    return false
+  }
+  return isTrailingConversationalMessage(state, info)
+}
+
+function settleTerminalAssistantStatus(draft: State, info: Message): boolean {
+  if (!shouldSettleTerminalAssistantMessageStatus(draft, info)) {
+    return false
+  }
   const status = { type: "idle" } as const
   if (areSessionStatusesEqual(draft.session_status[info.sessionID], status)) {
     return false
@@ -320,6 +368,52 @@ function shouldNormalizeAssistantPartDuringUpdate(
   messageID: string,
 ): boolean {
   return !isAssistantMessageActivelyStreaming(draft, sessionID, messageID)
+}
+
+function getPartStartTime(part: Part): number | undefined {
+  const stateStart = (part as { state?: { time?: { start?: unknown } } }).state?.time?.start
+  if (typeof stateStart === "number") {
+    return stateStart
+  }
+
+  const timeStart = (part as { time?: { start?: unknown } }).time?.start
+  return typeof timeStart === "number" ? timeStart : undefined
+}
+
+function insertProvisionalAssistantMessageForReasoningPart(draft: State, part: Part): boolean {
+  if (part.type !== "reasoning") {
+    return false
+  }
+
+  const partRecord = part as { messageID?: unknown; sessionID?: unknown }
+  const messageID = typeof partRecord.messageID === "string" ? partRecord.messageID : ""
+  const sessionID = typeof partRecord.sessionID === "string" ? partRecord.sessionID : ""
+  if (!messageID || !sessionID || hasMessage(draft, sessionID, messageID)) {
+    return false
+  }
+
+  const created = getPartStartTime(part) ?? Date.now()
+  const provisionalMessage = {
+    id: messageID,
+    sessionID,
+    role: "assistant",
+    time: { created },
+  } as Message
+
+  const messages = draft.message[sessionID]
+  if (!messages) {
+    draft.message[sessionID] = [provisionalMessage]
+    return true
+  }
+
+  const next = [...messages]
+  const result = Binary.search(next, messageID, (message) => message.id)
+  if (result.found) {
+    return false
+  }
+  next.splice(result.index, 0, provisionalMessage)
+  draft.message[sessionID] = next
+  return true
 }
 
 function normalizeAssistantTextPart(part: Part): Part {
@@ -523,7 +617,7 @@ export function applyDirectoryEvent(
         return removeHiddenMessageFromDraft(draft, info.sessionID, info.id)
       }
       const activityChanged = updateSessionUserActivityFromMessage(draft, info)
-      const cursorStatusChanged = settleCursorAssistantStatus(draft, info)
+      const terminalStatusChanged = settleTerminalAssistantStatus(draft, info)
       const messages = draft.message[info.sessionID]
       if (!messages) {
         draft.message[info.sessionID] = [info]
@@ -546,7 +640,7 @@ export function applyDirectoryEvent(
           const partsChanged = info.role === "assistant"
             ? normalizeAssistantMessagePartsInDraft(draft, info.id)
             : false
-          return applyMessageSummaryToSession(draft, info.sessionID) || activityChanged || partsChanged || cursorStatusChanged
+          return applyMessageSummaryToSession(draft, info.sessionID) || activityChanged || partsChanged || terminalStatusChanged
         }
         const next = [...messages]
         next[result.index] = info
@@ -603,6 +697,9 @@ export function applyDirectoryEvent(
         && shouldNormalizeAssistantPartDuringUpdate(draft, sessionID, messageID)
         ? normalizeAssistantTextPart(part)
         : part
+      if (missingOwningMessage) {
+        insertProvisionalAssistantMessageForReasoningPart(draft, incomingPart)
+      }
       const parts = draft.part[messageID]
       if (!parts) {
         syncDebug.reducer.partUpdatedNoExistingParts(messageID, part.id, part.type)

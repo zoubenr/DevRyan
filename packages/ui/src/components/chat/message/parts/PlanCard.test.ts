@@ -4,55 +4,42 @@ import {
   PLAN_CARD_BODY_VERTICAL_PADDING_PX,
   PLAN_CARD_COLLAPSED_CONTENT_LINES,
   getPlanCardImplementationKey,
-  getPlanOverlayPhase,
-  getPlanOverlayClipPercent,
   getPlanSkeletonLineCount,
   getPlanSkeletonRevealState,
   getStableSkeletonLineCount,
   getPlanCardCollapsedMaxHeight,
-  getStreamingRevealPercent,
   resolvePlanCardDisplayText,
 } from './planCardReveal';
 
 describe('getPlanSkeletonRevealState', () => {
   test('uses the initial skeleton while streaming before plan text exists', () => {
     expect(getPlanSkeletonRevealState({
-      minWindowElapsed: false,
       planText: '',
       streamPhase: 'streaming',
     })).toEqual({
       hasPlanText: false,
       showInitialSkeleton: true,
-      showOverlaySkeleton: false,
-      revealPercent: 0,
       skeletonLineCount: 8,
     });
   });
 
-  test('keeps plan text mounted while the skeleton overlay reveals it during streaming', () => {
+  test('drops the skeleton once plan text exists so it streams in like agent text', () => {
     const state = getPlanSkeletonRevealState({
-      minWindowElapsed: true,
       planText: '# Plan\n\n1. Do work',
       streamPhase: 'streaming',
     });
 
     expect(state.hasPlanText).toBe(true);
     expect(state.showInitialSkeleton).toBe(false);
-    expect(state.showOverlaySkeleton).toBe(true);
-    expect(state.revealPercent).toBeGreaterThan(0);
-    expect(state.revealPercent).toBeLessThan(100);
   });
 
-  test('removes the skeleton overlay when the plan is complete', () => {
+  test('renders the plan text directly once complete', () => {
     expect(getPlanSkeletonRevealState({
-      minWindowElapsed: true,
       planText: '# Plan\n\n1. Do work',
       streamPhase: 'completed',
     })).toEqual({
       hasPlanText: true,
       showInitialSkeleton: false,
-      showOverlaySkeleton: false,
-      revealPercent: 100,
       skeletonLineCount: 8,
     });
   });
@@ -79,23 +66,6 @@ describe('resolvePlanCardDisplayText', () => {
       throttledPlanText,
       isStreaming: false,
     })).toBe(rawPlanText);
-  });
-});
-
-describe('getStreamingRevealPercent', () => {
-  test('holds the skeleton over the text until the minimum window elapses', () => {
-    expect(getStreamingRevealPercent({ minWindowElapsed: false, planText: '# Plan' })).toBe(0);
-  });
-
-  test('advances the reveal as streamed plan text grows', () => {
-    const shortReveal = getStreamingRevealPercent({ minWindowElapsed: true, planText: '# Plan' });
-    const longReveal = getStreamingRevealPercent({
-      minWindowElapsed: true,
-      planText: '# Plan\n\n' + 'Add implementation detail. '.repeat(80),
-    });
-
-    expect(longReveal).toBeGreaterThan(shortReveal);
-    expect(longReveal).toBeLessThan(100);
   });
 });
 
@@ -129,59 +99,6 @@ describe('getStableSkeletonLineCount', () => {
     const peak = getStableSkeletonLineCount('Plan detail. '.repeat(80), 0);
     const shrunk = getStableSkeletonLineCount('', peak);
     expect(shrunk).toBe(peak);
-  });
-});
-
-describe('getPlanOverlayPhase', () => {
-  test('returns initial when only the placeholder skeleton is showing', () => {
-    const reveal = getPlanSkeletonRevealState({
-      minWindowElapsed: false,
-      planText: '',
-      streamPhase: 'streaming',
-    });
-    expect(getPlanOverlayPhase({ reveal, isExitingOverlay: false })).toBe('initial');
-  });
-
-  test('returns streaming while plan text is being revealed', () => {
-    const reveal = getPlanSkeletonRevealState({
-      minWindowElapsed: true,
-      planText: '# Plan\n\n1. Do work',
-      streamPhase: 'streaming',
-    });
-    expect(getPlanOverlayPhase({ reveal, isExitingOverlay: false })).toBe('streaming');
-  });
-
-  test('returns exiting while the overlay fades out after completion', () => {
-    const reveal = getPlanSkeletonRevealState({
-      minWindowElapsed: true,
-      planText: '# Plan\n\n1. Do work',
-      streamPhase: 'completed',
-    });
-    expect(getPlanOverlayPhase({ reveal, isExitingOverlay: true })).toBe('exiting');
-  });
-
-  test('returns done once the overlay has unmounted', () => {
-    const reveal = getPlanSkeletonRevealState({
-      minWindowElapsed: true,
-      planText: '# Plan\n\n1. Do work',
-      streamPhase: 'completed',
-    });
-    expect(getPlanOverlayPhase({ reveal, isExitingOverlay: false })).toBe('done');
-  });
-});
-
-describe('getPlanOverlayClipPercent', () => {
-  test('keeps the overlay fully covering text during the initial skeleton phase', () => {
-    expect(getPlanOverlayClipPercent({ phase: 'initial', revealPercent: 40 })).toBe(0);
-  });
-
-  test('uses the reveal percent while the plan streams', () => {
-    expect(getPlanOverlayClipPercent({ phase: 'streaming', revealPercent: 42 })).toBe(42);
-  });
-
-  test('fully reveals text while the overlay exits or is done', () => {
-    expect(getPlanOverlayClipPercent({ phase: 'exiting', revealPercent: 64 })).toBe(100);
-    expect(getPlanOverlayClipPercent({ phase: 'done', revealPercent: 64 })).toBe(100);
   });
 });
 

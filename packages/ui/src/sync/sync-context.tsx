@@ -10,7 +10,7 @@ import {
   reduceGlobalEvent,
   applyGlobalProject,
   applyDirectoryEvent,
-  isTerminalCursorAssistantMessage,
+  shouldSettleTerminalAssistantMessageStatus,
 } from "./event-reducer"
 import { useGlobalSyncStore, type GlobalSyncStore } from "./global-sync-store"
 import { ChildStoreManager, type DirectoryStore } from "./child-store"
@@ -642,6 +642,7 @@ let _activeSession = ""
 let _activeSessionTrackingKey = ""
 const externallyViewedSessions = new Map<string, number>()
 const lastStatusEventAtBySessionKey = new Map<string, number>()
+const lastOutputEventAtBySessionKey = new Map<string, number>()
 const lastRecoveryAtBySessionKey = new Map<string, number>()
 const EXTERNAL_VIEW_TTL_MS = 15_000
 
@@ -662,6 +663,13 @@ function markStatusEventObserved(directory: string, sessionId: string, timestamp
   if (!directory || !sessionId || directory === "global") return
   const key = statusTrackingKey(directory, sessionId)
   rememberBoundedTimestamp(lastStatusEventAtBySessionKey, key, timestamp)
+  lastRecoveryAtBySessionKey.delete(key)
+}
+
+function markOutputEventObserved(directory: string, sessionId: string | null | undefined, timestamp = Date.now()) {
+  if (!directory || !sessionId || directory === "global") return
+  const key = statusTrackingKey(directory, sessionId)
+  rememberBoundedTimestamp(lastOutputEventAtBySessionKey, key, timestamp)
   lastRecoveryAtBySessionKey.delete(key)
 }
 
@@ -780,14 +788,12 @@ async function detectAndMarkPlanLifecycle(
     ? completedCandidate
     : null
 
-  if (settledTurnCandidate && !isViewed) {
+  if (settledTurnCandidate) {
     sessionUI.markSessionTurnCompleted(
       sessionID,
       settledTurnCandidate.completedMessageId,
       getMessageCompletedAt(state, sessionID, settledTurnCandidate.completedMessageId),
     )
-  } else if (settledTurnCandidate && isViewed) {
-    sessionUI.clearReadCompletionIndicators([sessionID])
   }
 
   if (shouldDetectTurnCompletion && !isViewed) {
@@ -817,12 +823,7 @@ async function detectAndMarkPlanLifecycle(
   }
 
   if (settledPlanCandidate) {
-    if (isViewed) {
-      useSessionUIStore.getState().clearViewedPlanCompletion(sessionID)
-      useSessionUIStore.getState().clearReadCompletionIndicators([sessionID])
-    } else {
-      sessionUI.markPlanCompleted(sessionID, settledPlanCandidate.sourceMessageId)
-    }
+    sessionUI.markPlanCompleted(sessionID, settledPlanCandidate.sourceMessageId)
   }
 
   if (shouldSettleTerminalSessionStatus({ sessionID, state: store.getState() })) {
@@ -907,6 +908,35 @@ function isActiveSessionStatusEvent(payload: Event): boolean {
   if (payload.type !== "session.status") return false
   const props = payload.properties as { status?: SessionStatus } | undefined
   return props?.status?.type === "busy" || props?.status?.type === "retry"
+}
+
+function getOutputSessionIdFromPayload(
+  state: State,
+  routingIndex: EventRoutingIndex,
+  payload: Event,
+): string | null {
+  if (payload.type === "message.updated") {
+    const info = (payload.properties as { info?: Message }).info
+    return typeof info?.sessionID === "string" && info.sessionID.length > 0 ? info.sessionID : null
+  }
+
+  if (payload.type === "message.part.updated") {
+    const part = (payload.properties as { part?: Part }).part as (Part & { sessionID?: string; messageID?: string }) | undefined
+    if (typeof part?.sessionID === "string" && part.sessionID.length > 0) {
+      return part.sessionID
+    }
+    if (typeof part?.messageID === "string" && part.messageID.length > 0) {
+      return resolveSessionIdForMessage(state, routingIndex, part.messageID)
+    }
+    return null
+  }
+
+  if (payload.type === "message.part.delta" || payload.type === "message.part.removed") {
+    const messageID = getMessageIdFromPayload(payload)
+    return messageID ? resolveSessionIdForMessage(state, routingIndex, messageID) : null
+  }
+
+  return null
 }
 
 function getMessageCompletedAt(state: State, sessionID: string, messageID: string): number | undefined {
@@ -1838,6 +1868,7 @@ function handleEvent(
   // type will mutate. This preserves reference identity for untouched slices
   // so Zustand selectors skip re-renders for unrelated subscribers.
   const current = store.getState()
+  markOutputEventObserved(resolvedDirectory, getOutputSessionIdFromPayload(current, routingIndex, payload))
   markFirstAssistantStreamForDebug(current, payload)
   const draft: State = { ...current }
   const sessionUpdateInfo = payload.type === "session.updated"
@@ -1871,7 +1902,7 @@ function handleEvent(
       break
     case "message.updated":
       draft.message = { ...current.message }
-      if (isTerminalCursorAssistantMessage((payload.properties as { info?: Message }).info)) {
+      if (shouldSettleTerminalAssistantMessageStatus(current, (payload.properties as { info?: Message }).info)) {
         draft.session_status = { ...(current.session_status ?? {}) }
       }
       break
@@ -2256,6 +2287,7 @@ export function SyncProvider(props: {
         status,
         now,
         lastStatusEventAt: lastStatusEventAtBySessionKey.get(key),
+        lastOutputEventAt: lastOutputEventAtBySessionKey.get(key),
         lastRecoveryAt: lastRecoveryAtBySessionKey.get(key),
         staleMs: ACTIVE_SESSION_STATUS_STALE_MS,
         cooldownMs: ACTIVE_SESSION_RECOVERY_COOLDOWN_MS,

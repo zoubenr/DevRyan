@@ -103,7 +103,8 @@ const ReasoningPart = React.memo(({
     const rawText = partWithText.text || partWithText.content || '';
     const textContent = React.useMemo(() => cleanReasoningText(rawText), [rawText]);
     const time = partWithText.time;
-    const isStreaming = chatRenderMode === 'live' && typeof time?.end !== 'number';
+    const isActive = typeof time?.end !== 'number';
+    const isStreaming = chatRenderMode === 'live' && isActive;
     const throttledText = useStreamingTextThrottle({
         text: textContent,
         isStreaming,
@@ -111,8 +112,22 @@ const ReasoningPart = React.memo(({
     });
 
     // Show reasoning even if time.end isn't set yet (during streaming)
-    // Only hide if there's no text content
+    // If no text has arrived yet, keep active reasoning visible so the user can see work in progress.
     if (!throttledText || throttledText.trim().length === 0) {
+        if (isActive) {
+            return (
+                <div
+                    className="my-1 typography-meta text-muted-foreground"
+                    data-reasoning-block-id={part.id || `${messageId}-reasoning`}
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div className="relative pr-2 pb-2 pt-1">
+                        <span className="inline-flex animate-pulse motion-reduce:animate-none">Thinking…</span>
+                    </div>
+                </div>
+            );
+        }
         return null;
     }
 

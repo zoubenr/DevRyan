@@ -538,26 +538,6 @@ svg.animate-spin {
   isolation: isolate;
 }
 
-.oc-plan-card-reveal-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  pointer-events: none;
-  overflow: hidden;
-  background: var(--card);
-  opacity: 1;
-  transition:
-    clip-path 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 220ms ease-out;
-  will-change: clip-path, opacity;
-}
-.oc-plan-card-reveal-overlay[data-phase='exiting'] {
-  opacity: 0;
-}
-.oc-plan-card-reveal-lines {
-  min-height: 100%;
-}
-
 .oc-plan-expand-button {
   position: absolute;
   left: 50%;
@@ -610,10 +590,6 @@ svg.animate-spin {
   .oc-plan-expand-button,
   .oc-plan-expand-button-icon {
     transition: none !important;
-  }
-  .oc-plan-card-reveal-overlay {
-    transition: none !important;
-    opacity: 0;
   }
 }
 
