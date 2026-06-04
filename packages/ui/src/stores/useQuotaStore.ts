@@ -19,6 +19,7 @@ interface QuotaSettingsState {
   autoRefresh: boolean;
   refreshIntervalMs: number;
   displayMode: 'usage' | 'remaining';
+  showPredictionValues: boolean;
   dropdownProviderIds: QuotaProviderId[];
   selectedModels: Record<string, string[]>;  // Map of providerId -> selected model names
   expandedFamilies: Record<string, string[]>;  // Map of providerId -> EXPANDED family IDs (header dropdown - inverted)
@@ -40,6 +41,7 @@ interface QuotaStore extends QuotaSettingsState {
   setAutoRefresh: (enabled: boolean) => void;
   setRefreshInterval: (intervalMs: number) => void;
   setDisplayMode: (mode: 'usage' | 'remaining') => void;
+  setShowPredictionValues: (enabled: boolean) => void;
   setDropdownProviderIds: (providerIds: QuotaProviderId[]) => void;
   setSelectedModels: (providerId: string, modelNames: string[]) => void;
   toggleModelSelected: (providerId: string, modelName: string) => void;
@@ -59,6 +61,9 @@ const parseSettings = (data: Record<string, unknown> | null): QuotaSettingsState
       : DEFAULT_REFRESH_INTERVAL_MS;
 
   const displayMode = data?.usageDisplayMode === 'remaining' ? 'remaining' : 'usage';
+  const showPredictionValues = typeof data?.usageShowPredValues === 'boolean'
+    ? data.usageShowPredValues
+    : true;
   const rawDropdownProviders = Array.isArray(data?.usageDropdownProviders)
     ? data?.usageDropdownProviders
     : null;
@@ -114,6 +119,7 @@ const parseSettings = (data: Record<string, unknown> | null): QuotaSettingsState
     autoRefresh,
     refreshIntervalMs,
     displayMode,
+    showPredictionValues,
     dropdownProviderIds,
     selectedModels,
     expandedFamilies,
@@ -147,6 +153,7 @@ const loadSettingsFromRuntime = async (): Promise<QuotaSettingsState> => {
     autoRefresh: false,
     refreshIntervalMs: DEFAULT_REFRESH_INTERVAL_MS,
     displayMode: 'usage',
+    showPredictionValues: true,
     dropdownProviderIds: QUOTA_PROVIDERS.map((provider) => provider.id),
     selectedModels: {},
     expandedFamilies: {},
@@ -166,6 +173,7 @@ export const useQuotaStore = create<QuotaStore>()(
       autoRefresh: false,
       refreshIntervalMs: DEFAULT_REFRESH_INTERVAL_MS,
       displayMode: 'usage',
+      showPredictionValues: true,
       dropdownProviderIds: QUOTA_PROVIDERS.map((provider) => provider.id),
       selectedModels: {},
       expandedFamilies: {},
@@ -253,6 +261,7 @@ export const useQuotaStore = create<QuotaStore>()(
         set({ refreshIntervalMs: clamped });
       },
       setDisplayMode: (mode) => set({ displayMode: mode }),
+      setShowPredictionValues: (enabled) => set({ showPredictionValues: enabled }),
       setDropdownProviderIds: (providerIds) => set({ dropdownProviderIds: providerIds }),
 
       setSelectedModels: (providerId, modelNames) => {

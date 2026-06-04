@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(testDir, '../../../../../..');
 const source = (fileName: string) => readFileSync(resolve(testDir, fileName), 'utf8');
+const repoSource = (relativePath: string) => readFileSync(resolve(repoRoot, relativePath), 'utf8');
 
 describe('UsagePage model rows', () => {
   test('shows model names as model row titles while keeping window labels for calculations', () => {
@@ -44,5 +46,51 @@ describe('UsagePage model rows', () => {
     expect(pageSource).toContain("selectedProviderId === 'antigravity'");
     expect(pageSource).toContain('renderModelCard(model)');
     expect(pageSource).toContain('providerModels.map((model) => renderModelCard(model))');
+  });
+
+  test('Usage card source gates PaceIndicator on prediction visibility', () => {
+    const cardSource = source('UsageCard.tsx');
+
+    expect(cardSource).toContain('showPredictionValues');
+    expect(cardSource).toContain('showPredictionValues && displayState.paceInfo');
+    expect(cardSource).toContain('<PaceIndicator paceInfo={displayState.paceInfo} displayMode={displayMode} />');
+  });
+
+  test('sidebar source persists usageShowPredValues', () => {
+    const sidebarSource = source('UsageSidebar.tsx');
+
+    expect(sidebarSource).toContain('setShowPredictionValues');
+    expect(sidebarSource).toContain('usageShowPredValues: enabled');
+    expect(sidebarSource).toContain('settings.usage.sidebar.field.showPredictionRows');
+  });
+
+  test('quota store source defaults prediction visibility to true', () => {
+    const storeSource = repoSource('packages/ui/src/stores/useQuotaStore.ts');
+
+    expect(storeSource).toContain('showPredictionValues: boolean');
+    expect(storeSource).toContain('data?.usageShowPredValues');
+    expect(storeSource).toContain(': true');
+  });
+
+  test('sanitizers accept boolean usageShowPredValues', () => {
+    const webSettingsSource = repoSource('packages/web/server/lib/opencode/settings-helpers.js');
+    const vscodeSettingsSource = repoSource('packages/vscode/src/bridge-settings-runtime.ts');
+    const persistenceSource = repoSource('packages/ui/src/lib/persistence.ts');
+
+    expect(webSettingsSource).toContain('typeof candidate.usageShowPredValues === \'boolean\'');
+    expect(webSettingsSource).toContain('result.usageShowPredValues = candidate.usageShowPredValues');
+    expect(vscodeSettingsSource).toContain('typeof restChanges.usageShowPredValues !== \'boolean\'');
+    expect(persistenceSource).toContain('typeof candidate.usageShowPredValues === \'boolean\'');
+    expect(persistenceSource).toContain('result.usageShowPredValues = candidate.usageShowPredValues');
+  });
+
+  test('sanitizers reject non-boolean usageShowPredValues', () => {
+    const webSettingsSource = repoSource('packages/web/server/lib/opencode/settings-helpers.js');
+    const vscodeSettingsSource = repoSource('packages/vscode/src/bridge-settings-runtime.ts');
+    const persistenceSource = repoSource('packages/ui/src/lib/persistence.ts');
+
+    expect(webSettingsSource).not.toContain('result.usageShowPredValues = candidate.usageShowPredValues ??');
+    expect(vscodeSettingsSource).toContain('delete restChanges.usageShowPredValues');
+    expect(persistenceSource).not.toContain('result.usageShowPredValues = candidate.usageShowPredValues ??');
   });
 });

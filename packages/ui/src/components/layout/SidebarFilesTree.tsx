@@ -50,6 +50,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { getContextFileOpenFailureMessage, validateContextFileOpen } from '@/lib/contextFileOpenGuard';
 import { useI18n } from '@/lib/i18n';
+import { shouldShowSidebarFileRowActions } from './sidebarFilesTreeRuntime';
 
 type FileNode = {
   name: string;
@@ -140,6 +141,7 @@ interface FileRowProps {
   isActive: boolean;
   status?: FileStatus | null;
   badge?: { modified: number; added: number } | null;
+  showActions: boolean;
   permissions: {
     canRename: boolean;
     canCreateFile: boolean;
@@ -163,6 +165,7 @@ const FileRow: React.FC<FileRowProps> = ({
   isActive,
   status,
   badge,
+  showActions,
   permissions,
   downloadFile,
   contextMenuPath,
@@ -175,12 +178,14 @@ const FileRow: React.FC<FileRowProps> = ({
   const { t } = useI18n();
   const isDir = node.type === 'directory';
   const { canRename, canCreateFile, canCreateFolder, canDelete, canReveal } = permissions;
+  const hasAvailableActions = showActions
+    && (canRename || canCreateFile || canCreateFolder || canDelete || canReveal || Boolean(downloadFile));
 
   const handleContextMenu = React.useCallback((event?: React.MouseEvent) => {
-    if (!canRename && !canCreateFile && !canCreateFolder && !canDelete && !canReveal) return;
+    if (!hasAvailableActions) return;
     event?.preventDefault();
     setContextMenuPath(node.path);
-  }, [canRename, canCreateFile, canCreateFolder, canDelete, canReveal, node.path, setContextMenuPath]);
+  }, [hasAvailableActions, node.path, setContextMenuPath]);
 
   const handleInteraction = React.useCallback(() => {
     if (isDir) {
@@ -205,16 +210,17 @@ const FileRow: React.FC<FileRowProps> = ({
   return (
     <div
       className="group relative flex items-center"
-      onContextMenu={handleContextMenu}
+      onContextMenu={showActions ? handleContextMenu : undefined}
     >
       <button
         type="button"
         onClick={handleInteraction}
-        onContextMenu={handleContextMenu}
+        onContextMenu={showActions ? handleContextMenu : undefined}
         draggable
         onDragStart={handleDragStart}
         className={cn(
-          'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-foreground transition-colors pr-8 select-none',
+          'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-foreground transition-colors select-none',
+          hasAvailableActions && 'pr-8',
           isActive ? 'bg-interactive-selection/70' : 'hover:bg-interactive-hover/40',
           'cursor-grab active:cursor-grabbing'
         )}
@@ -239,7 +245,7 @@ const FileRow: React.FC<FileRowProps> = ({
           </span>
         )}
       </button>
-      {(canRename || canCreateFile || canCreateFolder || canDelete || canReveal) && (
+      {hasAvailableActions && (
         <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 focus-within:opacity-100 group-hover:opacity-100">
           <DropdownMenu
             open={contextMenuPath === node.path}
@@ -325,6 +331,7 @@ const FileRow: React.FC<FileRowProps> = ({
 export const SidebarFilesTree: React.FC = () => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
+  const showFileRowActions = shouldShowSidebarFileRowActions(runtime);
   const currentDirectory = useEffectiveDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());
   const showHidden = useDirectoryShowHidden();
@@ -792,8 +799,9 @@ export const SidebarFilesTree: React.FC = () => {
             isActive={isActive}
             status={!isDir ? getFileStatus(node.path) : undefined}
             badge={isDir ? getFolderBadge(node.path) : undefined}
+            showActions={showFileRowActions}
             permissions={fileRowPermissions}
-            downloadFile={files.downloadFile}
+            downloadFile={showFileRowActions ? files.downloadFile : undefined}
             contextMenuPath={contextMenuPath}
             setContextMenuPath={setContextMenuPath}
             onSelect={handleOpenFile}

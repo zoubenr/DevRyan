@@ -142,4 +142,23 @@ describe("pending part deltas", () => {
     expect(result.applied).toBe(true)
     expect((result.parts[0] as { text?: string }).text).toBe("The hook has already been created.")
   })
+
+  test("replays buffered reasoning text onto an initially empty live reasoning part", () => {
+    const store: PendingPartDeltaStore = new Map()
+
+    addPendingPartDelta(store, "/repo", {
+      messageID: "msg_1",
+      partID: "prt_1",
+      field: "text",
+      delta: "Inspecting the relevant files.",
+    }, 1)
+
+    const pending = consumePendingPartDeltas(store, "/repo", "msg_1", "prt_1", 2)
+    const result = applyPendingPartDeltasToParts([
+      { ...reasoningPart(), time: { start: 1 } } as Part,
+    ], "prt_1", pending, { sanitizeAssistantText: true })
+
+    expect(result.applied).toBe(true)
+    expect((result.parts[0] as { text?: string }).text).toBe("Inspecting the relevant files.")
+  })
 })

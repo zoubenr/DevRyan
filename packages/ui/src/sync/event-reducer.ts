@@ -322,6 +322,52 @@ function shouldNormalizeAssistantPartDuringUpdate(
   return !isAssistantMessageActivelyStreaming(draft, sessionID, messageID)
 }
 
+function getPartStartTime(part: Part): number | undefined {
+  const stateStart = (part as { state?: { time?: { start?: unknown } } }).state?.time?.start
+  if (typeof stateStart === "number") {
+    return stateStart
+  }
+
+  const timeStart = (part as { time?: { start?: unknown } }).time?.start
+  return typeof timeStart === "number" ? timeStart : undefined
+}
+
+function insertProvisionalAssistantMessageForReasoningPart(draft: State, part: Part): boolean {
+  if (part.type !== "reasoning") {
+    return false
+  }
+
+  const partRecord = part as { messageID?: unknown; sessionID?: unknown }
+  const messageID = typeof partRecord.messageID === "string" ? partRecord.messageID : ""
+  const sessionID = typeof partRecord.sessionID === "string" ? partRecord.sessionID : ""
+  if (!messageID || !sessionID || hasMessage(draft, sessionID, messageID)) {
+    return false
+  }
+
+  const created = getPartStartTime(part) ?? Date.now()
+  const provisionalMessage = {
+    id: messageID,
+    sessionID,
+    role: "assistant",
+    time: { created },
+  } as Message
+
+  const messages = draft.message[sessionID]
+  if (!messages) {
+    draft.message[sessionID] = [provisionalMessage]
+    return true
+  }
+
+  const next = [...messages]
+  const result = Binary.search(next, messageID, (message) => message.id)
+  if (result.found) {
+    return false
+  }
+  next.splice(result.index, 0, provisionalMessage)
+  draft.message[sessionID] = next
+  return true
+}
+
 function normalizeAssistantTextPart(part: Part): Part {
   if (part.type !== "text" && part.type !== "reasoning") {
     return part
@@ -603,6 +649,9 @@ export function applyDirectoryEvent(
         && shouldNormalizeAssistantPartDuringUpdate(draft, sessionID, messageID)
         ? normalizeAssistantTextPart(part)
         : part
+      if (missingOwningMessage) {
+        insertProvisionalAssistantMessageForReasoningPart(draft, incomingPart)
+      }
       const parts = draft.part[messageID]
       if (!parts) {
         syncDebug.reducer.partUpdatedNoExistingParts(messageID, part.id, part.type)

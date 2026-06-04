@@ -57,7 +57,7 @@ import {
     type SessionMessageWithParts,
     type TaskToolSummaryEntry,
 } from './taskToolUtils';
-import { getDiffPatchEntries } from './toolPartDiffEntries';
+import { getDiffPatchEntries, resolveRawPatchFallback } from './toolPartDiffEntries';
 
 type ToolStateWithMetadata = ToolStateUnion & { metadata?: Record<string, unknown>; input?: Record<string, unknown>; output?: string; error?: string; time?: { start: number; end?: number } };
 
@@ -343,7 +343,7 @@ const getPrimaryDiffFromMetadata = (
     metadata?: Record<string, unknown>,
     preferredPath?: string,
 ): string | undefined => {
-    if (!metadata || (tool !== 'edit' && tool !== 'multiedit' && tool !== 'apply_patch')) {
+    if (!metadata || (tool !== 'edit' && tool !== 'multiedit' && tool !== 'apply_patch' && tool !== 'write')) {
         return undefined;
     }
 
@@ -804,6 +804,44 @@ const TOOL_NORMAL_ICON_STYLE: React.CSSProperties = { color: 'var(--tools-icon)'
 const TOOL_ERROR_TITLE_STYLE: React.CSSProperties = { color: 'var(--status-error)' };
 const TOOL_NORMAL_TITLE_STYLE: React.CSSProperties = { color: 'var(--tools-title)' };
 
+const RawPatchFallback: React.FC<{ patch: string }> = ({ patch }) => (
+    <pre className="tool-output-surface m-0 rounded-lg p-2 whitespace-pre-wrap break-words typography-code text-muted-foreground/90">{patch}</pre>
+);
+
+RawPatchFallback.displayName = 'RawPatchFallback';
+
+type DiffPreviewBoundaryProps = {
+    fallback: React.ReactNode;
+    resetKey: string;
+    children: React.ReactNode;
+};
+
+type DiffPreviewBoundaryState = {
+    hasError: boolean;
+};
+
+class DiffPreviewErrorBoundary extends React.Component<DiffPreviewBoundaryProps, DiffPreviewBoundaryState> {
+    state: DiffPreviewBoundaryState = { hasError: false };
+
+    static getDerivedStateFromError(): DiffPreviewBoundaryState {
+        return { hasError: true };
+    }
+
+    componentDidUpdate(previousProps: DiffPreviewBoundaryProps) {
+        if (previousProps.resetKey !== this.props.resetKey && this.state.hasError) {
+            this.setState({ hasError: false });
+        }
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return this.props.fallback;
+        }
+
+        return this.props.children;
+    }
+}
+
 const renderPathLikeGitChanges = (path: string, grow = true) => {
     const lastSlash = path.lastIndexOf('/');
     if (lastSlash === -1) {
@@ -914,12 +952,17 @@ const DiffPreview: React.FC<DiffPreviewProps> = React.memo(({ diff, pierreTheme,
 
     return (
         <div className="typography-markdown font-mono px-1 pb-1 pt-0" style={style}>
-            <PatchDiff
-                patch={diff}
-                metrics={TOOL_DIFF_METRICS}
-                options={options}
-                className="block w-full"
-            />
+            <DiffPreviewErrorBoundary
+                resetKey={`${diffViewMode}:${pierreThemeType}:${diff}`}
+                fallback={<RawPatchFallback patch={diff} />}
+            >
+                <PatchDiff
+                    patch={diff}
+                    metrics={TOOL_DIFF_METRICS}
+                    options={options}
+                    className="block w-full"
+                />
+            </DiffPreviewErrorBoundary>
         </div>
     );
 });
@@ -972,6 +1015,20 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
     const diffEntries = React.useMemo(
         () => getDiffPatchEntries(metadata, diffContent ?? '', currentDirectory),
         [currentDirectory, diffContent, metadata]
+    );
+    const isDiffOutputTool = part.tool === 'edit'
+        || part.tool === 'multiedit'
+        || part.tool === 'apply_patch'
+        || part.tool === 'write';
+    const rawPatchSource = React.useMemo(() => {
+        if (!isDiffOutputTool) {
+            return null;
+        }
+        return diffContent ?? getPrimaryDiffFromMetadata(part.tool, metadata) ?? null;
+    }, [diffContent, isDiffOutputTool, metadata, part.tool]);
+    const rawPatchFallback = React.useMemo(
+        () => resolveRawPatchFallback(rawPatchSource, diffEntries),
+        [diffEntries, rawPatchSource],
     );
     const hideToolInputPreview = part.tool === 'apply_patch'
         || part.tool === 'edit'
@@ -1147,7 +1204,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         }
 
-        if ((part.tool === 'edit' || part.tool === 'multiedit' || part.tool === 'apply_patch' || part.tool === 'write') && (diffEntries.length > 0 || !!diagnosticSection)) {
+        if (isDiffOutputTool && (diffEntries.length > 0 || !!rawPatchFallback || !!diagnosticSection)) {
             return renderScrollableBlock(
                 <div className="space-y-3">
                     {diffEntries.map((entry) => (
@@ -1165,6 +1222,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
                             />
                         </div>
                     ))}
+                    {rawPatchFallback ? <RawPatchFallback patch={rawPatchFallback} /> : null}
                     {renderDiagnosticsSection()}
                 </div>,
                 { className: 'p-1' }
@@ -1245,7 +1303,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
 
                     {isSuccessfulFinalStatus && 'output' in state && (
                         <div>
-                            {(part.tool === 'edit' || part.tool === 'multiedit' || part.tool === 'apply_patch' || part.tool === 'write') && diffContent ? (
+                            {isDiffOutputTool && rawPatchSource ? (
                                 <div className="mb-1 flex items-center justify-end gap-2">
                                     <DiffViewToggle
                                         mode={diffViewMode}

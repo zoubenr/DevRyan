@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { useI18n } from '@/lib/i18n';
 import { TodoSendDialog, type TodoSendExecution } from './TodoSendDialog';
+import { orderProjectTodos } from './projectTodoOrdering';
 
 interface ProjectNotesTodoPanelProps {
   projectRef: ProjectRef | null;
@@ -276,6 +277,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
 
   const todoInputValue = newTodoText.slice(0, OPENCHAMBER_PROJECT_TODO_TEXT_MAX_LENGTH);
   const completedTodoCount = todos.reduce((count, todo) => count + (todo.completed ? 1 : 0), 0);
+  const orderedTodos = React.useMemo(() => orderProjectTodos(todos), [todos]);
 
   const routeToChat = React.useCallback(() => {
     setActiveMainTab('chat');
@@ -587,7 +589,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
             </p>
           ) : (
             <ul className="divide-y divide-border/50">
-              {todos.map((todo) => {
+              {orderedTodos.map((todo) => {
                 const isExpandedTodo = expandedTodoIds.has(todo.id);
                 return (
                   <li key={todo.id} className="flex items-start gap-1.5 px-2.5 py-1.5">

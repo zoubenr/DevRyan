@@ -105,7 +105,7 @@ describe('resolveSidebarIndicator', () => {
     });
   });
 
-  test('keeps unseen errors higher priority than plan and completion indicators', () => {
+  test('keeps proposed plans higher priority than stale unread errors and completion', () => {
     expect(resolveSidebarIndicator({
       isRootSession: true,
       isWorking: false,
@@ -116,8 +116,8 @@ describe('resolveSidebarIndicator', () => {
       pendingQuestionCount: 0,
       planState: 'proposed',
     })).toEqual({
-      className: 'bg-status-error',
-      labelKey: 'sessions.sidebar.session.status.error',
+      className: 'bg-status-warning',
+      labelKey: 'sessions.sidebar.session.status.planReady',
     });
   });
 });

@@ -41,6 +41,22 @@ function partUpdatedEvent(text = "hello"): Event {
   } as Event
 }
 
+function reasoningPartUpdatedEvent(text = ""): Event {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "prt_reasoning_1",
+        messageID: "msg_reasoning_1",
+        sessionID: "ses_1",
+        type: "reasoning",
+        text,
+        time: { start: 123 },
+      },
+    },
+  } as Event
+}
+
 function testSession(id: string, parentID?: string, revertMessageID?: string): Session {
   return {
     id,
@@ -117,6 +133,28 @@ describe("applyDirectoryEvent", () => {
         sessionID: "ses_1",
         messageID: "msg_1",
         partID: "prt_1",
+      },
+    })
+  })
+
+  test("creates a provisional assistant message for orphan live reasoning parts", () => {
+    const draft = state()
+    const result = applyDirectoryEvent(draft, reasoningPartUpdatedEvent())
+
+    expect(draft.message.ses_1[0]?.id).toBe("msg_reasoning_1")
+    expect(draft.message.ses_1[0]?.sessionID).toBe("ses_1")
+    expect(draft.message.ses_1[0]?.role).toBe("assistant")
+    expect(draft.message.ses_1[0]?.time).toEqual({ created: 123 })
+    expect((draft.message.ses_1[0] as { finish?: unknown }).finish).toBe(undefined)
+    expect((draft.message.ses_1[0]?.time as { completed?: unknown }).completed).toBe(undefined)
+    expect(draft.part.msg_reasoning_1.map((item) => item.id)).toEqual(["prt_reasoning_1"])
+    expect(result).toEqual({
+      changed: true,
+      materialization: {
+        type: "incomplete-session-snapshot",
+        sessionID: "ses_1",
+        messageID: "msg_reasoning_1",
+        partID: "prt_reasoning_1",
       },
     })
   })

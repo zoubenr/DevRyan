@@ -27,6 +27,10 @@ const getPartText = (part: unknown): string | undefined => {
     return undefined;
 };
 
+const isActiveReasoningPart = (part: unknown): boolean => {
+    return (part as { type?: unknown }).type === 'reasoning' && getPartEndTime(part) === undefined;
+};
+
 const getMessageFinish = (message: ChatMessageEntry): string | undefined => {
     const finish = (message.info as { finish?: unknown }).finish;
     return typeof finish === 'string' ? finish : undefined;
@@ -75,7 +79,7 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
                 return;
             }
 
-            if (part.type === 'reasoning' && getPartText(part)) {
+            if (part.type === 'reasoning' && (getPartText(part) || isActiveReasoningPart(part))) {
                 hasReasoning = true;
             }
         });
@@ -121,7 +125,7 @@ export const projectTurnActivity = (input: ProjectActivityInput): ProjectActivit
             if (isTool) {
                 kind = 'tool';
             } else if (part.type === 'reasoning') {
-                if (text) {
+                if (text || isActiveReasoningPart(part)) {
                     kind = 'reasoning';
                 }
             } else if (

@@ -37,9 +37,11 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
   const usageAutoRefresh = useQuotaStore((state) => state.autoRefresh);
   const usageRefreshIntervalMs = useQuotaStore((state) => state.refreshIntervalMs);
   const usageDisplayMode = useQuotaStore((state) => state.displayMode);
+  const showPredictionValues = useQuotaStore((state) => state.showPredictionValues);
   const setUsageAutoRefresh = useQuotaStore((state) => state.setAutoRefresh);
   const setUsageRefreshInterval = useQuotaStore((state) => state.setRefreshInterval);
   const setUsageDisplayMode = useQuotaStore((state) => state.setDisplayMode);
+  const setShowPredictionValues = useQuotaStore((state) => state.setShowPredictionValues);
   const loadUsageSettings = useQuotaStore((state) => state.loadSettings);
 
   const visibleProviders = React.useMemo(() => {
@@ -54,7 +56,7 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
     void loadUsageSettings();
   }, [loadUsageSettings]);
 
-  const persistUsageSettings = React.useCallback(async (changes: { usageAutoRefresh?: boolean; usageRefreshIntervalMs?: number; usageDisplayMode?: 'usage' | 'remaining'; usageDropdownProviders?: string[] }) => {
+  const persistUsageSettings = React.useCallback(async (changes: { usageAutoRefresh?: boolean; usageRefreshIntervalMs?: number; usageDisplayMode?: 'usage' | 'remaining'; usageShowPredValues?: boolean; usageDropdownProviders?: string[] }) => {
     try {
       await updateDesktopSettings(changes);
     } catch (error) {
@@ -83,6 +85,11 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
     setUsageDisplayMode(value);
     void persistUsageSettings({ usageDisplayMode: value });
   }, [persistUsageSettings, setUsageDisplayMode]);
+
+  const handleShowPredictionValuesChange = React.useCallback((enabled: boolean) => {
+    setShowPredictionValues(enabled);
+    void persistUsageSettings({ usageShowPredValues: enabled });
+  }, [persistUsageSettings, setShowPredictionValues]);
 
   const bgClass = 'bg-background';
 
@@ -144,6 +151,26 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
               <SelectItem value="remaining">{t('settings.usage.sidebar.field.displayModeRemaining')}</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="typography-micro text-foreground">{t('settings.usage.sidebar.field.showPredictionRows')}</div>
+            <div className="typography-micro text-muted-foreground">{t('settings.usage.sidebar.tooltip.showPredictionRows')}</div>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex flex-shrink-0">
+                <Checkbox
+                  checked={showPredictionValues}
+                  onChange={handleShowPredictionValuesChange}
+                  ariaLabel={t('settings.usage.sidebar.field.showPredictionRows')}
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {t('settings.usage.sidebar.tooltip.showPredictionRows')}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

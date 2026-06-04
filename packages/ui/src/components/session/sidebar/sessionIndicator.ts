@@ -91,12 +91,15 @@ export function resolveSidebarIndicator({
 
   if (isWorking) return null;
 
-  if (hasErrorStatus) {
-    return ERROR_INDICATOR;
-  }
-
+  // A proposed plan is an explicit plan-card lifecycle state. It must stay
+  // yellow even if stale unread error/completion notifications remain until
+  // the user opens the session and read-state cleanup runs.
   if (planState === 'proposed') {
     return PLAN_READY_INDICATOR;
+  }
+
+  if (hasErrorStatus) {
+    return ERROR_INDICATOR;
   }
 
   if (planState === 'completed') {

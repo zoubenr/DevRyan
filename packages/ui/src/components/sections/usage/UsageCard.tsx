@@ -32,6 +32,7 @@ export const UsageCard: React.FC<UsageCardProps> = ({
   trendKey,
 }) => {
   const displayMode = useQuotaStore((state) => state.displayMode);
+  const showPredictionValues = useQuotaStore((state) => state.showPredictionValues);
   const windowLabel = formatWindowLabel(title);
   const visibleTitle = displayTitle ?? windowLabel;
 
@@ -86,7 +87,7 @@ export const UsageCard: React.FC<UsageCardProps> = ({
         </div>
       </div>
 
-      {displayState.paceInfo && (
+      {showPredictionValues && displayState.paceInfo && (
         <div className="mt-1.5">
           <PaceIndicator paceInfo={displayState.paceInfo} displayMode={displayMode} />
         </div>

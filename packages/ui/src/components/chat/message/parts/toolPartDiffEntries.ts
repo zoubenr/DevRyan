@@ -166,3 +166,19 @@ export const getDiffPatchEntries = (
 
   return []
 }
+
+export const resolveRawPatchFallback = (
+  patch: string | null | undefined,
+  entries: readonly DiffPatchEntry[],
+): string | null => {
+  if (entries.length > 0) {
+    return null
+  }
+
+  if (typeof patch !== 'string') {
+    return null
+  }
+
+  const trimmed = patch.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
