@@ -5,7 +5,6 @@ import {
     RiAiAgentLine,
     RiAttachment2,
     RiCloseLine,
-    RiCommandLine,
     RiExternalLinkLine,
     RiFolderLine,
     RiGitPullRequestLine,
@@ -263,14 +262,12 @@ const MemoMobileModelButton = React.memo(MobileModelButton);
 const MemoStatusRow = React.memo(StatusRow);
 
 type ComposerAttachmentControlsProps = {
-    isMobile: boolean;
     isVSCode: boolean;
     footerIconButtonClass: string;
     iconSizeClass: string;
     fileInputRef: React.RefObject<HTMLInputElement | null>;
     handleLocalFileSelect: (event: React.ChangeEvent<HTMLInputElement>) => void | Promise<void>;
     handlePickLocalFiles: () => void;
-    handleOpenCommandMenu: () => void;
     openIssuePicker: () => void;
     openPrPicker: () => void;
     onOpenSettings?: () => void;
@@ -279,14 +276,12 @@ type ComposerAttachmentControlsProps = {
 const ComposerAttachmentControls = React.memo(function ComposerAttachmentControls(props: ComposerAttachmentControlsProps) {
     const { t } = useI18n();
     const {
-        isMobile,
         isVSCode,
         footerIconButtonClass,
         iconSizeClass,
         fileInputRef,
         handleLocalFileSelect,
         handlePickLocalFiles,
-        handleOpenCommandMenu,
         openIssuePicker,
         openPrPicker,
         onOpenSettings,
@@ -294,27 +289,6 @@ const ComposerAttachmentControls = React.memo(function ComposerAttachmentControl
 
     return (
         <div className="flex items-center gap-x-1.5">
-            {isMobile ? (
-                <button
-                    type="button"
-                    className={cn(
-                        footerIconButtonClass,
-                        'rounded-md',
-                        'hover:bg-interactive-hover/40'
-                    )}
-                    onPointerDownCapture={(event) => {
-                        if (event.pointerType === 'touch') {
-                            event.preventDefault();
-                            event.stopPropagation();
-                        }
-                    }}
-                    onClick={handleOpenCommandMenu}
-                    title={t('chat.chatInput.actions.commands')}
-                    aria-label={t('chat.chatInput.actions.commands')}
-                >
-                    <RiCommandLine className={cn(iconSizeClass)} />
-                </button>
-            ) : null}
             <input
                 ref={fileInputRef}
                 type="file"
@@ -391,8 +365,7 @@ const ComposerAttachmentControls = React.memo(function ComposerAttachmentControl
         </div>
     );
 }, (prev, next) => (
-    prev.isMobile === next.isMobile
-    && prev.isVSCode === next.isVSCode
+    prev.isVSCode === next.isVSCode
     && prev.footerIconButtonClass === next.footerIconButtonClass
     && prev.iconSizeClass === next.iconSizeClass
     && prev.onOpenSettings === next.onOpenSettings
@@ -2488,32 +2461,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         setShowFileMention(tab === 'agents' || tab === 'files');
     }, [applyAutocompletePrefix, isMobile, message, setAutocompleteTab, setCommandQuery, setMentionQuery, setShowCommandAutocomplete, setShowFileMention, setShowSkillAutocomplete]);
 
-    const handleOpenCommandMenu = React.useCallback(() => {
-        if (!isMobile) {
-            return;
-        }
-        const textarea = textareaRef.current;
-        if (textarea) {
-            try {
-                textarea.focus({ preventScroll: true });
-            } catch {
-                textarea.focus();
-            }
-            const len = textarea.value.length;
-            try {
-                textarea.setSelectionRange(len, len);
-            } catch {
-                // ignored
-            }
-        }
-        applyAutocompletePrefix('/');
-        setCommandQuery('');
-        setAutocompleteTab('commands');
-        setShowCommandAutocomplete(true);
-        setShowFileMention(false);
-        setShowSkillAutocomplete(false);
-    }, [applyAutocompletePrefix, isMobile, setAutocompleteTab, setCommandQuery, setShowCommandAutocomplete, setShowFileMention, setShowSkillAutocomplete]);
-
     const insertTextAtSelection = React.useCallback((text: string) => {
         if (!text) {
             return;
@@ -4051,14 +3998,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                                 <div className="flex w-full items-center justify-between gap-x-1.5">
                                     <div className="flex items-center gap-x-1.5">
                                         <ComposerAttachmentControls
-                                            isMobile={isMobile}
                                             isVSCode={isVSCode}
                                             footerIconButtonClass={footerIconButtonClass}
                                             iconSizeClass={iconSizeClass}
                                             fileInputRef={fileInputRef}
                                             handleLocalFileSelect={handleLocalFileSelect}
                                             handlePickLocalFiles={handlePickLocalFiles}
-                                            handleOpenCommandMenu={handleOpenCommandMenu}
                                             openIssuePicker={openIssuePicker}
                                             openPrPicker={openPrPicker}
                                             onOpenSettings={onOpenSettings}
@@ -4073,12 +4018,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                                     </div>
                                     <div className="flex items-center min-w-0 gap-x-1 justify-end">
                                         <div className="flex items-center gap-x-1 min-w-0 max-w-[60vw] flex-shrink">
-                                            <MemoMobileModelButton onOpenModel={() => handleOpenMobilePanel('model')} className="min-w-0 flex-shrink" />
                                             <MemoMobileAgentButton
                                                 onOpenAgentPanel={handleOpenAgentPanel}
                                                 onCycleAgent={handleCycleAgent}
                                                 className="min-w-0 flex-shrink"
                                             />
+                                            <MemoMobileModelButton onOpenModel={() => handleOpenMobilePanel('model')} className="min-w-0 flex-shrink" />
                                         </div>
                                         <div className="flex items-center gap-x-1 flex-shrink-0">
                                             <MemoBrowserVoiceButton />
@@ -4108,14 +4053,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                             <>
                                 <div className={cn("flex items-center flex-shrink-0", footerGapClass)}>
                                     <ComposerAttachmentControls
-                                        isMobile={isMobile}
                                         isVSCode={isVSCode}
                                         footerIconButtonClass={footerIconButtonClass}
                                         iconSizeClass={iconSizeClass}
                                         fileInputRef={fileInputRef}
                                         handleLocalFileSelect={handleLocalFileSelect}
                                         handlePickLocalFiles={handlePickLocalFiles}
-                                        handleOpenCommandMenu={handleOpenCommandMenu}
                                         openIssuePicker={openIssuePicker}
                                         openPrPicker={openPrPicker}
                                         onOpenSettings={onOpenSettings}

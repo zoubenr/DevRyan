@@ -6,6 +6,12 @@
       "runtimeExecutable": "bun",
       "runtimeArgs": ["run", "dev"],
       "port": 3001
+    },
+    {
+      "name": "devryan-live",
+      "runtimeExecutable": "sleep",
+      "runtimeArgs": ["86400"],
+      "port": 5180
     }
   ]
 }

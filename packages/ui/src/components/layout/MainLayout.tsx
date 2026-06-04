@@ -470,7 +470,7 @@ export const MainLayout: React.FC = () => {
                         </div>
                     </motion.aside>
                     
-                    {/* Right drawer (Git) */}
+                    {/* Right drawer (Source / Files) */}
                     <motion.aside
                         drag="x"
                         dragElastic={0.08}
@@ -510,9 +510,7 @@ export const MainLayout: React.FC = () => {
                         aria-hidden={!isRightSidebarOpen}
                     >
                         <div className="h-full overflow-hidden flex flex-col bg-background shadow-none drawer-safe-area" data-page-scroll-lock="true">
-                            <ErrorBoundary>
-                                <React.Suspense fallback={null}><GitView /></React.Suspense>
-                            </ErrorBoundary>
+                            <ErrorBoundary><RightSidebarTabs /></ErrorBoundary>
                         </div>
                     </motion.aside>
                     

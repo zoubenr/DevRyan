@@ -10,8 +10,6 @@ import {
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import {
   RiAddLine,
-  RiArrowDownSLine,
-  RiArrowRightSLine,
   RiCloseLine,
   RiFolderLine,
   RiMore2Line,
@@ -173,6 +171,7 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                       type="button"
                       onMouseDown={handleToggleMouseDown}
                       onClick={handleToggleClick}
+                      aria-expanded={!isCollapsed}
                       {...listeners}
                       className={cn(
                         'flex-1 min-w-0 flex items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded-md cursor-grab active:cursor-grabbing transition-[padding]',
@@ -181,19 +180,13 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                           : (alwaysShowActions ? 'pr-14' : 'pr-7 group-hover/project:pr-14 group-focus-within/project:pr-14'),
                       )}
                     >
-                    <span className="inline-flex h-[0.91875rem] w-[0.91875rem] flex-shrink-0 items-center justify-center">
-                      <span className={cn(
-                        'h-3.5 w-3.5 items-center justify-center text-muted-foreground',
-                        alwaysShowActions ? 'inline-flex' : 'hidden group-hover/project:inline-flex group-focus-within/project:inline-flex',
-                      )}>
-                        {isCollapsed ? <RiArrowRightSLine className="h-3.5 w-3.5" /> : <RiArrowDownSLine className="h-3.5 w-3.5" />}
-                      </span>
+                    <span
+                      data-project-header-icon
+                      className="inline-flex h-[0.91875rem] w-[0.91875rem] flex-shrink-0 items-center justify-center"
+                    >
                       {imageUrl ? (
                         <span
-                          className={cn(
-                            'h-[0.91875rem] w-[0.91875rem] items-center justify-center overflow-hidden rounded-[3px]',
-                            alwaysShowActions ? 'hidden' : 'inline-flex group-hover/project:hidden group-focus-within/project:hidden',
-                          )}
+                          className="inline-flex h-[0.91875rem] w-[0.91875rem] items-center justify-center overflow-hidden rounded-[3px]"
                           style={projectIconBackground ? { backgroundColor: projectIconBackground } : undefined}
                         >
                           <img
@@ -205,9 +198,9 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                           />
                         </span>
                       ) : ProjectIcon ? (
-                        <ProjectIcon className={cn('h-[0.91875rem] w-[0.91875rem]', alwaysShowActions ? 'hidden' : 'group-hover/project:hidden group-focus-within/project:hidden')} style={iconColor ? { color: iconColor } : undefined} />
+                        <ProjectIcon className="h-[0.91875rem] w-[0.91875rem]" style={iconColor ? { color: iconColor } : undefined} />
                       ) : (
-                        <RiFolderLine className={cn('h-[0.91875rem] w-[0.91875rem] text-muted-foreground/80', alwaysShowActions ? 'hidden' : 'group-hover/project:hidden group-focus-within/project:hidden')} style={iconColor ? { color: iconColor } : undefined} />
+                        <RiFolderLine className="h-[0.91875rem] w-[0.91875rem] text-muted-foreground/80" style={iconColor ? { color: iconColor } : undefined} />
                       )}
                     </span>
                     <span className={cn(

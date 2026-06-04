@@ -77,16 +77,16 @@ export const MobileAgentButton: React.FC<MobileAgentButtonProps> = ({ onCycleAge
             onContextMenu={(e) => e.preventDefault()}
             className={cn(
                 'inline-flex min-w-0 items-center select-none',
-                'rounded-lg border border-border/50 px-1.5',
-                'typography-micro font-medium',
+                'rounded-md border border-border/50 px-1.5',
+                'text-[11px] leading-none font-medium',
                 'focus:outline-none hover:bg-[var(--interactive-hover)]',
                 'touch-none',
                 className
             )}
             style={{
-                height: '26px',
-                maxHeight: '26px',
-                minHeight: '26px',
+                height: '23px',
+                maxHeight: '23px',
+                minHeight: '23px',
                 ...(isPlanModeSelected ? PLAN_MODE_AGENT_STYLE : { color: `var(${agentColor.var})` }),
             }}
             title={agentLabel}

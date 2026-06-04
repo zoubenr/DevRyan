@@ -20,12 +20,12 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
             onClick={onOpenModel}
             className={cn(
                 'inline-flex min-w-0 items-center justify-center',
-                'rounded-lg border border-border/50 px-1.5',
-                'typography-micro font-medium text-foreground/80',
+                'rounded-md border border-border/50 px-1.5',
+                'text-[11px] leading-none font-medium text-foreground/80',
                 'focus:outline-none hover:bg-[var(--interactive-hover)]',
                 className
             )}
-            style={{ height: '26px', maxHeight: '26px', minHeight: '26px' }}
+            style={{ height: '23px', maxHeight: '23px', minHeight: '23px' }}
             title={modelLabel}
         >
             <span className="min-w-0 max-w-full overflow-x-auto whitespace-nowrap scrollbar-hidden">

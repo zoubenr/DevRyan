@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { SortableTabsStrip, type SortableTabsStripItem } from '@/components/ui/sortable-tabs-strip';
 
-import { RiArrowLeftSLine, RiBarChartLine, RiChat4Line, RiChatNewLine, RiCloseLine, RiCommandLine, RiFolder6Line, RiPlayListAddLine, RiRefreshLine, RiServerLine, type RemixiconComponentType } from '@remixicon/react';
+import { RiArrowLeftSLine, RiBarChartLine, RiChat4Line, RiChatNewLine, RiCloseLine, RiCommandLine, RiPlayListAddLine, RiRefreshLine, RiServerLine, type RemixiconComponentType } from '@remixicon/react';
 import { DiffIcon } from '@/components/icons/DiffIcon';
 import {
   PlanDocumentIcon,
@@ -1240,7 +1240,6 @@ export const Header: React.FC<HeaderProps> = ({
 
       base.push(
         { id: 'diff', label: t('layout.mainTab.diff'), icon: 'diff' },
-        { id: 'files', label: t('layout.mainTab.files'), icon: RiFolder6Line },
         { id: 'terminal', label: t('layout.mainTab.terminal'), icon: TerminalPanelIcon },
       );
 

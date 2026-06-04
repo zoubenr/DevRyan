@@ -1606,7 +1606,7 @@ export const dict = {
   'chat.mobileStatus.projects.remove': 'Remove',
   'chat.mobileStatus.new': 'New',
   'chat.mobileStatus.noSessionsInProject': 'No sessions in this project',
-  'chat.mobileStatus.swipeHint': '← Swipe here to open sidebars →',
+  'chat.mobileStatus.swipeHint': 'Swipe here to open sidebars',
   'chat.mobileStatus.toast.addProjectFailed': 'Failed to add project',
   'chat.mobileStatus.toast.selectValidDirectory': 'Please select a valid directory.',
   'chat.mobileStatus.toast.selectDirectoryFailed': 'Failed to select directory',
