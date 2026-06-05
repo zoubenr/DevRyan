@@ -24,6 +24,13 @@ export function getSettingsNavButtonClassName(selected: boolean): string {
   );
 }
 
+export function getSettingsNavScrollClassName({ reserveTopChrome = false }: { reserveTopChrome?: boolean } = {}): string {
+  return cn(
+    'flex-1 min-h-0 overflow-y-auto overflow-x-hidden',
+    reserveTopChrome ? 'pt-14' : ''
+  );
+}
+
 export function getSettingsPageSidebarClassName(slug: SettingsPageSlug): string {
   if (slug === 'skills.installed') {
     return 'w-[334px] min-w-[334px] max-w-[334px]';

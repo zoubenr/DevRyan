@@ -3,6 +3,7 @@ import {
   getSettingsBackButtonClassName,
   getSettingsFullPageOverlayClassName,
   getSettingsNavButtonClassName,
+  getSettingsNavScrollClassName,
   getSettingsPageSidebarClassName,
 } from './SettingsView.styles';
 import { resolveMobileSettingsBackStage } from './SettingsView.mobileNavigation';
@@ -31,6 +32,14 @@ describe('SettingsView navigation', () => {
 
     expect(className.split(/\s+/)).toContain('w-full');
     expect(className.split(/\s+/)).toContain('text-left');
+  });
+
+  test('settings nav scroll area reserves top chrome space above its scrollable content', () => {
+    const className = getSettingsNavScrollClassName({ reserveTopChrome: true });
+    const classes = className.split(/\s+/);
+
+    expect(classes).toContain('overflow-y-auto');
+    expect(classes).toContain('pt-14');
   });
 
   test('settings full-page overlay covers the app shell without dialog styling', () => {

@@ -76,6 +76,7 @@ import {
 import { SETTINGS_NAV_SECTIONS } from '@/lib/settings/navigation';
 import {
   getSettingsBackButtonClassName,
+  getSettingsNavScrollClassName,
   getSettingsNavButtonClassName,
   getSettingsPageSidebarClassName,
 } from './SettingsView.styles';
@@ -597,8 +598,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     return (
       <div className="flex h-full flex-col overflow-hidden">
         {/* Scrollable nav items */}
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          <div className={cn('flex flex-col gap-3 pb-2 px-2', showFullPageBackButton ? 'pt-14' : 'pt-4')}>
+        <div className={getSettingsNavScrollClassName({ reserveTopChrome: showFullPageBackButton })}>
+          <div className={cn('flex flex-col gap-3 pb-2 px-2', showFullPageBackButton ? 'pt-0' : 'pt-4')}>
             {groupedVisiblePages.map((section) => (
               <div key={section.labelKey} className="space-y-0.5">
                 <div className="px-2 pb-1 typography-micro text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground/70">
