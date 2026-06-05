@@ -120,6 +120,9 @@ export interface TurnGroupingContext {
     userMessageCreatedAt?: number;
     userMessageVariant?: string;
     isPlanModeSource?: boolean;
+    // Part id of the turn's final todowrite/todoread snapshot, used to collapse redundant todo
+    // rows across all messages in the turn to a single up-to-date widget.
+    lastTodoToolPartId?: string | null;
     isWorking: boolean;
     isTurnWorking: boolean;
     isGroupExpanded?: boolean;

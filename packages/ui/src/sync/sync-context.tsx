@@ -788,7 +788,7 @@ async function detectAndMarkPlanLifecycle(
     ? completedCandidate
     : null
 
-  if (settledTurnCandidate) {
+  if (settledTurnCandidate && !isViewed) {
     sessionUI.markSessionTurnCompleted(
       sessionID,
       settledTurnCandidate.completedMessageId,
@@ -824,6 +824,9 @@ async function detectAndMarkPlanLifecycle(
 
   if (settledPlanCandidate) {
     sessionUI.markPlanCompleted(sessionID, settledPlanCandidate.sourceMessageId)
+    if (isViewed) {
+      sessionUI.clearViewedPlanCompletion(sessionID)
+    }
   }
 
   if (shouldSettleTerminalSessionStatus({ sessionID, state: store.getState() })) {

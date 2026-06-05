@@ -631,6 +631,25 @@ const TurnBlock = React.memo(({
         const userMessageVariant = typeof rawVariant === 'string' && rawVariant.trim().length > 0
             ? rawVariant
             : undefined;
+        // Turn's final todowrite/todoread part id: lets every message in the turn collapse its
+        // redundant todo rows down to the single surviving snapshot (see collapseSupersededTodoWrites).
+        let lastTodoToolPartId: string | null = null;
+        for (const record of visibleActivityParts) {
+            if (record.kind !== 'tool') {
+                continue;
+            }
+            const toolName = (record.part as { tool?: unknown }).tool;
+            if (typeof toolName !== 'string') {
+                continue;
+            }
+            const normalized = toolName.toLowerCase();
+            if (normalized === 'todowrite' || normalized === 'todoread') {
+                const partId = (record.part as { id?: unknown }).id;
+                if (typeof partId === 'string') {
+                    lastTodoToolPartId = partId;
+                }
+            }
+        }
         return {
             turnId: turn.turnId,
             summaryBody: turn.summaryText,
@@ -645,6 +664,7 @@ const TurnBlock = React.memo(({
             userMessageCreatedAt: typeof userCreatedAt === 'number' ? userCreatedAt : undefined,
             userMessageVariant,
             isPlanModeSource: isPlanModeSourceTurn,
+            lastTodoToolPartId,
         };
     }, [isPlanModeSourceTurn, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summary.sourceMessageId, turn.summary.sourcePartId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
 
@@ -686,6 +706,7 @@ const TurnBlock = React.memo(({
                     hasTools: turn.hasTools,
                     hasReasoning: turn.hasReasoning,
                     isPlanModeSource: turnGroupingContextBase.isPlanModeSource,
+                    lastTodoToolPartId: turnGroupingContextBase.lastTodoToolPartId,
                     ...(shouldAttachFullTurnContext ? {
                         summaryBody: turnGroupingContextBase.summaryBody,
                         summarySourceMessageId: turnGroupingContextBase.summarySourceMessageId,

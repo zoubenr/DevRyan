@@ -80,25 +80,125 @@ export const isFinalizedTextPart = (part: Part): boolean => {
 
 const MIN_DUPLICATE_TEXT_PART_LENGTH = 32;
 
+// Compare text parts for duplication after collapsing internal whitespace runs, so
+// frames that differ only by incidental whitespace/newlines still collapse.
+const normalizeForDuplicateCompare = (value: string): string => value.trim().replace(/\s+/g, ' ');
+
+// Detection hook for the intermittent "duplicate output" bug. Fires only on an actual
+// duplicate (rare by construction), so it is safe to surface in any build. The distinctive
+// tag makes occurrences greppable in console logs / bug reports.
+const reportDuplicateTextPart = (
+    kind: 'collapsed-exact' | 'near-duplicate-not-collapsed',
+    detail: Record<string, unknown>,
+): void => {
+    try {
+        console.warn(`[DevRyan:dup] ${kind} adjacent text part`, detail);
+    } catch {
+        // Telemetry must never break rendering.
+    }
+};
+
+const partId = (part: Part): string | null => {
+    const id = (part as { id?: unknown }).id;
+    return typeof id === 'string' ? id : null;
+};
+
 export const collapseExactDuplicateAdjacentTextParts = (parts: Part[]): Part[] => {
     const collapsed: Part[] = [];
     let previousText: string | null = null;
+    let previousId: string | null = null;
 
     for (const part of parts) {
         if (part.type !== 'text') {
             collapsed.push(part);
             previousText = null;
+            previousId = null;
             continue;
         }
 
-        const text = extractTextContent(part).trim();
-        if (text.length >= MIN_DUPLICATE_TEXT_PART_LENGTH && previousText === text) {
-            continue;
+        const text = normalizeForDuplicateCompare(extractTextContent(part));
+        if (text.length >= MIN_DUPLICATE_TEXT_PART_LENGTH && previousText !== null) {
+            if (previousText === text) {
+                reportDuplicateTextPart('collapsed-exact', {
+                    keptId: previousId,
+                    droppedId: partId(part),
+                    length: text.length,
+                });
+                continue;
+            }
+            // Detection only (no behavior change): a separate part that fully contains the
+            // previous one usually means a re-emitted/partial frame replay. Surface it so the
+            // partial-overlap case can be measured before we change collapsing behavior.
+            if (previousText.includes(text) || text.includes(previousText)) {
+                reportDuplicateTextPart('near-duplicate-not-collapsed', {
+                    previousId,
+                    partId: partId(part),
+                    previousLength: previousText.length,
+                    length: text.length,
+                });
+            }
         }
 
         collapsed.push(part);
         previousText = text.length > 0 ? text : null;
+        previousId = text.length > 0 ? partId(part) : null;
     }
 
     return collapsed;
+};
+
+// Tools whose every call emits a full-state snapshot, so only the final call is meaningful.
+const LATEST_ONLY_TOOL_NAMES = new Set<string>(['todowrite', 'todoread']);
+
+const toolPartName = (part: Part): string | null => {
+    if (part.type !== 'tool') {
+        return null;
+    }
+    const name = (part as { tool?: unknown }).tool;
+    return typeof name === 'string' ? name.toLowerCase() : null;
+};
+
+// `todowrite`/`todoread` re-emit the entire todo list on every update, so a turn with several
+// updates renders a churn of redundant "Update Todo List" rows. Keep only the surviving snapshot
+// so the transcript shows one up-to-date todo summary. Display-only: the store retains every part.
+//
+// `keepPartId` lets a caller scope the survivor across an entire turn (which can span multiple
+// assistant messages): pass the turn's last todo-tool part id and every message hides its todo
+// rows except the one that owns that id. When omitted, it falls back to keep-last within `parts`.
+export const collapseSupersededTodoWrites = (parts: Part[], keepPartId?: string | null): Part[] => {
+    const hasTodoPart = parts.some((part) => {
+        const name = toolPartName(part);
+        return name !== null && LATEST_ONLY_TOOL_NAMES.has(name);
+    });
+    if (!hasTodoPart) {
+        return parts;
+    }
+
+    let keepIndex = -1;
+    if (keepPartId) {
+        // Turn-scoped: keep only the part matching the turn's surviving todo id. If that part
+        // lives in another message, keepIndex stays -1 and all todo rows here are hidden.
+        keepIndex = parts.findIndex((part) => {
+            const name = toolPartName(part);
+            return name !== null
+                && LATEST_ONLY_TOOL_NAMES.has(name)
+                && (part as { id?: unknown }).id === keepPartId;
+        });
+    } else {
+        // Message-scoped fallback: keep the last todo snapshot within these parts.
+        for (let index = 0; index < parts.length; index += 1) {
+            const name = toolPartName(parts[index]);
+            if (name !== null && LATEST_ONLY_TOOL_NAMES.has(name)) {
+                keepIndex = index;
+            }
+        }
+    }
+
+    return parts.filter((part, index) => {
+        const name = toolPartName(part);
+        if (name !== null && LATEST_ONLY_TOOL_NAMES.has(name)) {
+            return index === keepIndex;
+        }
+        return true;
+    });
 };

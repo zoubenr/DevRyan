@@ -211,6 +211,24 @@ export const getPinnedFollowWriteMode = ({
     return 'instant';
 };
 
+// While actively streaming we follow the bottom *forward only*. A momentary backward target
+// (target < current scrollTop) comes from the virtualizer re-measuring a row smaller for a
+// frame; snapping to it makes the viewport jump up and then back down, which reads as scroll
+// stutter. Returning null means "hold position this frame"; the idle settle pass lands the
+// exact bottom once streaming stops. Pure + exported for unit testing.
+export const resolveForwardOnlyFollowTarget = ({
+    currentScrollTop,
+    scrollHeight,
+    clientHeight,
+}: {
+    currentScrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+}): number | null => {
+    const target = Math.max(0, scrollHeight - clientHeight);
+    return target > currentScrollTop ? target : null;
+};
+
 export const useChatAutoFollow = ({
     currentSessionId,
     sessionMessageCount,
@@ -370,6 +388,23 @@ export const useChatAutoFollow = ({
         writeScrollTopInstant(Math.max(0, container.scrollHeight - container.clientHeight));
     }, [writeScrollTopInstant]);
 
+    // Forward-only variant used during active streaming follow: never moves the viewport
+    // backward (see resolveForwardOnlyFollowTarget) so virtualizer re-measure jitter doesn't
+    // read as scroll stutter.
+    const writeScrollBottomForward = React.useCallback(() => {
+        const container = scrollRef.current;
+        if (!container) return;
+        const target = resolveForwardOnlyFollowTarget({
+            currentScrollTop: container.scrollTop,
+            scrollHeight: container.scrollHeight,
+            clientHeight: container.clientHeight,
+        });
+        if (target === null) return;
+        markProgrammaticWrite();
+        container.scrollTop = target;
+        lastScrollTopRef.current = container.scrollTop;
+    }, [markProgrammaticWrite]);
+
     const stopSettleBurst = React.useCallback(() => {
         if (settleBurstRafRef.current !== null && typeof window !== 'undefined') {
             window.cancelAnimationFrame(settleBurstRafRef.current);
@@ -416,15 +451,19 @@ export const useChatAutoFollow = ({
         }
 
         if (mode === 'instant') {
-            writeScrollBottomInstant();
             if (action === 'idle-settle') {
+                writeScrollBottomInstant();
                 startSettleBurst();
+            } else {
+                // continuous-follow while streaming: forward-only so virtualizer re-measure
+                // jitter never jumps the viewport backward (the observed scroll stutter).
+                writeScrollBottomForward();
             }
             return;
         }
 
         startFollowLoop();
-    }, [isAnchorPreservationActive, startFollowLoop, startSettleBurst, writeScrollBottomInstant]);
+    }, [isAnchorPreservationActive, startFollowLoop, startSettleBurst, writeScrollBottomForward, writeScrollBottomInstant]);
 
     const followPinnedLatestContentSmooth = React.useCallback(() => {
         const action = getPinnedContentFollowAction({

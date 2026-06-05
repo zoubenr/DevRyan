@@ -5,6 +5,7 @@ import {
     CHAT_FORCE_SCROLL_BOTTOM_EVENT,
     getPinnedFollowWriteMode,
     getPinnedContentFollowAction,
+    resolveForwardOnlyFollowTarget,
     requestChatScrollToBottom,
     shouldRestoreSavedScrollPosition,
     shouldReleaseAutoFollowFromScroll,
@@ -53,6 +54,24 @@ describe('requestChatScrollToBottom', () => {
 
         expect(events).toHaveLength(1);
         expect(events[0]?.detail).toEqual({ sessionId: 'session-a' });
+    });
+});
+
+describe('resolveForwardOnlyFollowTarget', () => {
+    test('advances to the bottom when content grew (forward)', () => {
+        expect(resolveForwardOnlyFollowTarget({ currentScrollTop: 1400, scrollHeight: 2000, clientHeight: 500 }))
+            .toBe(1500);
+    });
+
+    test('holds position when the target would move backward (virtualizer shrink)', () => {
+        // target = 2000 - 500 = 1500, but we are already further down at 1520 → hold
+        expect(resolveForwardOnlyFollowTarget({ currentScrollTop: 1520, scrollHeight: 2000, clientHeight: 500 }))
+            .toBeNull();
+    });
+
+    test('holds position when already exactly at the bottom', () => {
+        expect(resolveForwardOnlyFollowTarget({ currentScrollTop: 1500, scrollHeight: 2000, clientHeight: 500 }))
+            .toBeNull();
     });
 });
 

@@ -18,7 +18,7 @@ import type { Event, Message, Part, Session, SessionStatus } from "@opencode-ai/
 import { ChildStoreManager } from "./child-store"
 import { INITIAL_STATE } from "./types"
 import { useSessionUIStore } from "./session-ui-store"
-import { applySyncEventForTest, setActiveSession } from "./sync-context"
+import { applySyncEventForTest, setActiveSession, setExternallyViewedSession } from "./sync-context"
 import { useNotificationStore } from "./notification-store"
 
 const DIRECTORY = "/repo"
@@ -162,6 +162,7 @@ describe("sync plan lifecycle on message.part.delta", () => {
       planModeUserMessagesBySession: new Map(),
     })
     setActiveSession("", "")
+    setExternallyViewedSession(DIRECTORY, SESSION_ID, false)
     useNotificationStore.setState({
       list: [],
       index: {
@@ -391,7 +392,7 @@ describe("sync plan lifecycle on message.part.delta", () => {
     })
   })
 
-  test("marks viewed normal turn completion without creating an unread notification", async () => {
+  test("does not show viewed normal turn completion indicator", async () => {
     const childStores = new ChildStoreManager()
     const store = childStores.ensureChild(DIRECTORY)
     const completedPart = textPart("Completed work.")
@@ -418,10 +419,37 @@ describe("sync plan lifecycle on message.part.delta", () => {
     expect(useNotificationStore.getState().list).toHaveLength(0)
     await waitForCompletionIndicatorSettlement()
 
-    expect(useSessionUIStore.getState().sessionCompletionIndicator.get(SESSION_ID)).toEqual({
-      messageId: ASSISTANT_MESSAGE_ID,
-      completedAt: 3,
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
+  })
+
+  test("does not show externally viewed normal turn completion indicator", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const completedPart = textPart("Completed work.")
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [userMessage(), assistantMessage()],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [completedPart],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
     })
+    setExternallyViewedSession(DIRECTORY, SESSION_ID, true)
+
+    applySyncEventForTest(DIRECTORY, partUpdatedEvent(completedPart), childStores, routingIndexFor())
+    await flushAsync()
+
+    expect(useNotificationStore.getState().list).toHaveLength(0)
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
   })
 
   test("clears normal completion when the session becomes busy again", async () => {
@@ -781,7 +809,7 @@ describe("sync plan lifecycle on message.part.delta", () => {
     expect(useNotificationStore.getState().sessionHasCompletion(SESSION_ID)).toBe(false)
   })
 
-  test("marks viewed implemented plan completed without requiring unread notification", async () => {
+  test("does not show viewed implemented plan completion indicator", async () => {
     const childStores = new ChildStoreManager()
     const store = childStores.ensureChild(DIRECTORY)
     const completedPart = implementTextPart("Implemented the plan.")
@@ -833,11 +861,7 @@ describe("sync plan lifecycle on message.part.delta", () => {
 
     const sessionUIState = useSessionUIStore.getState()
     expect(sessionUIState.sessionPlanAvailable.get(SESSION_ID)).toBe(true)
-    expect(sessionUIState.sessionPlanIndicator.get(SESSION_ID)).toEqual({
-      state: "completed",
-      sourceMessageId: ASSISTANT_MESSAGE_ID,
-      implementationMessageId: IMPLEMENT_USER_MESSAGE_ID,
-    })
+    expect(sessionUIState.sessionPlanIndicator.has(SESSION_ID)).toBe(false)
   })
 
   test("does not record stale completion when part update finalizes a different message", async () => {

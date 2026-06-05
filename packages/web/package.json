@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/web",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": false,
   "type": "module",
   "main": "./server/index.js",
@@ -19,7 +19,7 @@
     "build:watch": "vite build --watch",
     "type-check": "tsc --noEmit",
     "lint": "eslint \"./src/**/*.{ts,tsx}\" --config ../../eslint.config.js --cache --cache-location ../../.cache/eslint/web",
-    "test": "vitest run",
+    "test": "vitest run --no-file-parallelism",
     "start": "node bin/cli.js serve"
   },
   "dependencies": {

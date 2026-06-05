@@ -12,7 +12,7 @@ import type { ToolPart as ToolPartType } from '@opencode-ai/sdk/v2';
 import type { StreamPhase, ToolPopupContent, AgentMentionInfo } from './types';
 import type { TurnGroupingContext } from '../lib/turns/types';
 import { cn } from '@/lib/utils';
-import { collapseExactDuplicateAdjacentTextParts, isEmptyTextPart, extractTextContent } from './partUtils';
+import { collapseExactDuplicateAdjacentTextParts, collapseSupersededTodoWrites, isEmptyTextPart, extractTextContent } from './partUtils';
 import { FadeInOnReveal } from './FadeInOnReveal';
 import { Button } from '@/components/ui/button';
 import { SaveProjectPlanDialog } from '@/components/session/SaveProjectPlanDialog';
@@ -932,13 +932,13 @@ const AssistantMessageBody = React.memo(({
     const animateActivityRows = awaitingMessageCompletion || Boolean(turnGroupingContext?.isWorking);
 
     const visibleParts = React.useMemo(() => {
-        return parts
+        return collapseSupersededTodoWrites(parts, turnGroupingContext?.lastTodoToolPartId ?? null)
             .filter((part) => !isEmptyTextPart(part))
             .filter((part) => {
                 const rawPart = part as Record<string, unknown>;
                 return rawPart.type !== 'compaction';
             });
-    }, [parts]);
+    }, [parts, turnGroupingContext?.lastTodoToolPartId]);
 
     const toolParts = React.useMemo(() => {
         return visibleParts.filter((part): part is ToolPartType => part.type === 'tool');
