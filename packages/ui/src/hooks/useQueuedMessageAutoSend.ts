@@ -1,7 +1,5 @@
 import React from 'react';
-import type { AttachedFile } from '@/stores/types/sessionTypes';
 import { useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { getSyncSessionStatusAnyDirectory, getSyncBlockingRequestCountAnyDirectory } from '@/sync/sync-refs';
@@ -11,40 +9,7 @@ import { resolveSessionSendConfig } from '@/sync/send-config';
 import { getPdfAttachmentValidation } from '@/lib/attachments/attachmentCapabilities';
 import { toast } from '@/components/ui';
 import { useI18n } from '@/lib/i18n';
-
-const buildQueuedPayload = (queue: QueuedMessage[]) => {
-  const agents = useConfigStore.getState().getVisibleAgents();
-  let primaryText = '';
-  let primaryAttachments: AttachedFile[] = [];
-  let agentMentionName: string | undefined;
-  const additionalParts: Array<{ text: string; attachments?: AttachedFile[] }> = [];
-
-  for (let i = 0; i < queue.length; i += 1) {
-    const queued = queue[i];
-    const { sanitizedText, mention } = parseAgentMentions(queued.content, agents);
-
-    if (!agentMentionName && mention?.name) {
-      agentMentionName = mention.name;
-    }
-
-    if (i === 0) {
-      primaryText = sanitizedText;
-      primaryAttachments = queued.attachments ?? [];
-    } else {
-      additionalParts.push({
-        text: sanitizedText,
-        attachments: queued.attachments,
-      });
-    }
-  }
-
-  return {
-    primaryText,
-    primaryAttachments,
-    agentMentionName,
-    additionalParts: additionalParts.length > 0 ? additionalParts : undefined,
-  };
-};
+import { flushQueuedMessagesForSession } from '@/components/chat/queuedSend';
 
 export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?: boolean }) {
   const { t } = useI18n();
@@ -77,63 +42,55 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
         return;
       }
 
-      const claimedQueue = useMessageQueueStore.getState().claimQueueForSession(sessionId);
-      if (claimedQueue.length === 0) {
+      const fallbackSendConfig = resolveSessionSendConfig(sessionId);
+      if (!fallbackSendConfig.providerID || !fallbackSendConfig.modelID) {
         return;
-      }
-
-      const payload = buildQueuedPayload(claimedQueue);
-      if (!payload.primaryText && payload.primaryAttachments.length === 0 && !payload.additionalParts?.length) {
-        useMessageQueueStore.getState().restoreClaimedQueue(sessionId, claimedQueue);
-        return;
-      }
-
-      // Use send config captured at queue time; fall back to current config
-      const captured = claimedQueue[0]?.sendConfig;
-      const resolved = captured?.providerID && captured?.modelID
-        ? { ...captured, planMode: captured.planMode === true }
-        : resolveSessionSendConfig(sessionId);
-      if (!resolved.providerID || !resolved.modelID) {
-        useMessageQueueStore.getState().restoreClaimedQueue(sessionId, claimedQueue);
-        return;
-      }
-
-      const validation = getPdfAttachmentValidation({
-        providerID: resolved.providerID,
-        modelID: resolved.modelID,
-        files: [
-          ...payload.primaryAttachments,
-          ...(payload.additionalParts ?? []).flatMap((part) => part.attachments ?? []),
-        ],
-      });
-      if (validation.hasPdf && validation.status === 'unsupported') {
-        toast.error(t('chat.chatInput.toast.pdfUnsupported'));
-        useMessageQueueStore.getState().restoreClaimedQueue(sessionId, claimedQueue);
-        return;
-      }
-      if (validation.hasPdf && validation.status === 'unknown') {
-        toast.warning(t('chat.chatInput.toast.pdfUnknownSupport'));
       }
 
       inFlightSessionsRef.current.add(sessionId);
 
       try {
-        await useSessionUIStore.getState().sendMessageToSession(
+        await flushQueuedMessagesForSession({
           sessionId,
-          payload.primaryText,
-          resolved.providerID,
-          resolved.modelID,
-          resolved.agent,
-          payload.primaryAttachments,
-          payload.agentMentionName,
-          payload.additionalParts,
-          resolved.variant,
-          'normal',
-          resolved.planMode
-        );
+          fallbackSendConfig: {
+            providerID: fallbackSendConfig.providerID,
+            modelID: fallbackSendConfig.modelID,
+            agent: fallbackSendConfig.agent,
+            variant: fallbackSendConfig.variant,
+            planMode: fallbackSendConfig.planMode,
+          },
+          prepareQueuedMessage: (message, sendConfig) => {
+            const agents = useConfigStore.getState().getVisibleAgents();
+            const { sanitizedText, mention } = parseAgentMentions(message.content, agents);
+            const attachments = message.attachments ?? [];
+            const validation = getPdfAttachmentValidation({
+              providerID: sendConfig.providerID,
+              modelID: sendConfig.modelID,
+              files: attachments,
+            });
+
+            if (validation.hasPdf && validation.status === 'unsupported') {
+              toast.error(t('chat.chatInput.toast.pdfUnsupported'));
+              throw new Error('Queued message PDF attachments are unsupported by the selected model');
+            }
+            if (validation.hasPdf && validation.status === 'unknown') {
+              toast.warning(t('chat.chatInput.toast.pdfUnknownSupport'));
+            }
+
+            return {
+              content: sanitizedText,
+              attachments,
+              agentMentionName: mention?.name,
+              providerID: sendConfig.providerID,
+              modelID: sendConfig.modelID,
+              agent: sendConfig.agent,
+              variant: sendConfig.variant,
+              planMode: sendConfig.planMode,
+            };
+          },
+        });
       } catch (error) {
         console.warn('[queue] queued auto-send failed:', error);
-        useMessageQueueStore.getState().restoreClaimedQueue(sessionId, claimedQueue);
       } finally {
         inFlightSessionsRef.current.delete(sessionId);
       }

@@ -90,6 +90,7 @@ import {
 } from './chatInputDraftPersistence';
 import { clearSubmittedComposerAfterSend } from './chatInputSubmitCleanup';
 import { shouldInterruptBeforeSubmit } from './submitInterrupt';
+import { flushQueuedMessagesForSession } from './queuedSend';
 
 const MAX_VISIBLE_TEXTAREA_LINES = 8;
 const EMPTY_QUEUE: QueuedMessage[] = [];
@@ -1389,61 +1390,104 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (submitInFlightRef.current) return;
         submitInFlightRef.current = true;
 
-        let claimedQueueSessionId: string | null = null;
-        let claimedQueuedMessages: QueuedMessage[] = [];
-        let claimedQueueConsumedBySend = false;
-
         const releaseSubmitLock = () => {
             submitInFlightRef.current = false;
-        };
-        const restoreClaimedQueue = () => {
-            if (!claimedQueueSessionId || claimedQueuedMessages.length === 0) return;
-            useMessageQueueStore.getState().restoreClaimedQueue(claimedQueueSessionId, claimedQueuedMessages);
-            claimedQueuedMessages = [];
-            claimedQueueSessionId = null;
         };
 
         try {
             const queuedOnly = options?.queuedOnly ?? false;
             const inputSnapshot = getCurrentInputSnapshot();
-            const latestQueuedMessages = currentSessionId
+            const queueSessionId = currentSessionId;
+            const latestQueuedMessages = queueSessionId
                 ? useMessageQueueStore.getState().getQueueForSession(currentSessionId)
                 : EMPTY_QUEUE;
             const hasQueueAvailable = latestQueuedMessages.length > 0;
 
             if (queuedOnly) {
-                if (!hasQueueAvailable || !currentSessionId) return;
-            } else if ((!inputSnapshot.hasContent && !hasQueueAvailable) || (!currentSessionId && !newSessionDraftOpen)) {
+                if (!hasQueueAvailable || !queueSessionId) return;
+            } else if ((!inputSnapshot.hasContent && !hasQueueAvailable) || (!queueSessionId && !newSessionDraftOpen)) {
                 return;
             }
 
-            if (currentSessionId) {
-                claimedQueuedMessages = useMessageQueueStore.getState().claimQueueForSession(currentSessionId);
-                claimedQueueSessionId = claimedQueuedMessages.length > 0 ? currentSessionId : null;
-            }
-
-            if (queuedOnly && claimedQueuedMessages.length === 0) return;
-
-            const capturedSendConfig = claimedQueuedMessages[0]?.sendConfig;
             const liveSendConfig = getLiveSendConfig();
-            // For queued-only auto-send (queue auto-flushes on idle) the captured
-            // snapshot is authoritative — the user is not interacting. For an
-            // explicit submit click the live config the user just chose wins, so
-            // a dropdown change between queueing and clicking send is honored.
-            const preferLiveSendConfig = !queuedOnly;
-            const pickConfig = <T,>(live: T, captured: T | undefined): T =>
-                preferLiveSendConfig ? (live ?? (captured as T)) : (captured ?? live);
-            const sendProviderId = pickConfig(liveSendConfig.providerID, capturedSendConfig?.providerID);
-            const sendModelId = pickConfig(liveSendConfig.modelID, capturedSendConfig?.modelID);
-            const sendAgentName = pickConfig(liveSendConfig.agent, capturedSendConfig?.agent);
-            const sendVariant = pickConfig(liveSendConfig.variant, capturedSendConfig?.variant);
-            const sendPlanMode = preferLiveSendConfig
-                ? liveSendConfig.planMode
-                : (capturedSendConfig ? capturedSendConfig.planMode === true : liveSendConfig.planMode);
+            const sendProviderId = liveSendConfig.providerID;
+            const sendModelId = liveSendConfig.modelID;
+            const sendAgentName = liveSendConfig.agent;
+            const sendVariant = liveSendConfig.variant;
+            const sendPlanMode = liveSendConfig.planMode;
 
             if (!sendProviderId || !sendModelId) {
                 console.warn('Cannot send message: provider or model not selected');
                 return;
+            }
+
+            if (hasQueueAvailable && queueSessionId) {
+                const shouldInterruptCurrentTurn = shouldInterruptBeforeSubmit({
+                    currentSessionId: queueSessionId,
+                    sessionPhase,
+                    queuedMessageCount: latestQueuedMessages.length,
+                    queuedOnly: true,
+                });
+                if (shouldInterruptCurrentTurn) {
+                    await sessionActions.interruptCurrentOperationForQueuedSend(queueSessionId);
+                }
+
+                try {
+                    await flushQueuedMessagesForSession({
+                        sessionId: queueSessionId,
+                        fallbackSendConfig: {
+                            providerID: sendProviderId,
+                            modelID: sendModelId,
+                            agent: sendAgentName,
+                            variant: sendVariant,
+                            planMode: sendPlanMode,
+                        },
+                        prepareQueuedMessage: (queuedMsg, sendConfig) => {
+                            const { sanitizedText, mention } = parseAgentMentions(queuedMsg.content, agents);
+                            const { sanitizedText: queuedText, attachments: mentionAttachments } = extractInlineFileMentions(sanitizedText);
+                            const queuedAttachments = sanitizeAttachmentsForSend(queuedMsg.attachments);
+                            const attachments = [...queuedAttachments, ...mentionAttachments];
+                            const pdfValidation = getPdfAttachmentValidation({
+                                providerID: sendConfig.providerID,
+                                modelID: sendConfig.modelID,
+                                files: attachments,
+                            });
+
+                            if (!showPdfAttachmentValidationToast(pdfValidation)) {
+                                throw new Error('Queued message attachments are unsupported by the selected model');
+                            }
+
+                            return {
+                                content: queuedText,
+                                attachments,
+                                agentMentionName: mention?.name,
+                                providerID: sendConfig.providerID,
+                                modelID: sendConfig.modelID,
+                                agent: sendConfig.agent,
+                                variant: sendConfig.variant,
+                                planMode: sendConfig.planMode,
+                            };
+                        },
+                    });
+                } catch (error) {
+                    const rawMessage = error instanceof Error ? error.message : String(error ?? '');
+                    console.error('Queued message send failed:', rawMessage || error);
+                    if (!rawMessage.includes('Queued message attachments are unsupported')) {
+                        toast.error(rawMessage || t('chat.chatInput.toast.messageSendFailed'));
+                    }
+                    return;
+                }
+
+                if (queuedOnly || !inputSnapshot.hasContent) {
+                    if (typeof window === 'undefined') {
+                        scrollToBottom?.();
+                    } else {
+                        window.requestAnimationFrame(() => {
+                            scrollToBottom?.();
+                        });
+                    }
+                    return;
+                }
             }
 
         // Build the primary message (first part) and additional parts
@@ -1455,36 +1499,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         // Consume any pending synthetic parts (from conflict resolution, etc.)
         const syntheticParts = consumePendingSyntheticParts();
 
-        // Process queued messages first
-        for (let i = 0; i < claimedQueuedMessages.length; i++) {
-            const queuedMsg = claimedQueuedMessages[i];
-            const { sanitizedText, mention } = parseAgentMentions(queuedMsg.content, agents);
-            const { sanitizedText: queuedText, attachments: mentionAttachments } = extractInlineFileMentions(sanitizedText);
-
-            // Use agent mention from first message that has one
-            if (!agentMentionName && mention?.name) {
-                agentMentionName = mention.name;
-            }
-
-            if (i === 0) {
-                // First queued message becomes primary
-                primaryText = queuedText;
-                primaryAttachments = [
-                    ...sanitizeAttachmentsForSend(queuedMsg.attachments),
-                    ...mentionAttachments,
-                ];
-            } else {
-                // Subsequent queued messages become additional parts
-                const queuedAttachments = sanitizeAttachmentsForSend(queuedMsg.attachments);
-                additionalParts.push({
-                    text: queuedText,
-                    attachments: [...queuedAttachments, ...mentionAttachments],
-                });
-            }
-        }
-
-        // Add current input (skip for queued-only auto-send)
-        if (!queuedOnly && inputSnapshot.hasContent) {
+        if (inputSnapshot.hasContent) {
             const messageToSend = inputSnapshot.message.replace(/^\n+|\n+$/g, '');
             const { sanitizedText, mention } = parseAgentMentions(messageToSend, agents);
             const { sanitizedText: messageText, attachments: mentionAttachments } = extractInlineFileMentions(sanitizedText);
@@ -1494,17 +1509,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 agentMentionName = mention.name;
             }
 
-            if (claimedQueuedMessages.length === 0) {
-                // No queue - current input is primary
-                primaryText = messageText;
-                primaryAttachments = [...attachmentsToSend, ...mentionAttachments];
-            } else {
-                // Has queue - current input is additional part
-                additionalParts.push({
-                    text: messageText,
-                    attachments: [...attachmentsToSend, ...mentionAttachments],
-                });
-            }
+            primaryText = messageText;
+            primaryAttachments = [...attachmentsToSend, ...mentionAttachments];
         }
 
         const attachmentsForCapabilityCheck = [
@@ -1527,14 +1533,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         }
 
         if (drafts.length > 0) {
-            if (claimedQueuedMessages.length === 0) {
-                primaryText = appendInlineComments(primaryText, drafts);
-            } else if (additionalParts.length > 0) {
-                const lastPart = additionalParts[additionalParts.length - 1];
-                lastPart.text = appendInlineComments(lastPart.text, drafts);
-            } else {
-                primaryText = appendInlineComments(primaryText, drafts);
-            }
+            primaryText = appendInlineComments(primaryText, drafts);
         }
 
         // Add synthetic parts (from conflict resolution, etc.)
@@ -1698,7 +1697,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const shouldInterruptCurrentTurn = shouldInterruptBeforeSubmit({
             currentSessionId,
             sessionPhase,
-            queuedMessageCount: claimedQueuedMessages.length,
+            queuedMessageCount: 0,
             queuedOnly: queuedOnly === true,
         });
         const submittedDraftTarget = newSessionDraftOpen && !currentSessionId
@@ -1734,8 +1733,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     scrollToBottom?.();
                 });
             }
-
-            claimedQueueConsumedBySend = true;
 
             // Clear linked issue after successful message send
             if (linkedIssue) {
@@ -1792,7 +1789,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             };
 
             if (normalized.includes('payload too large') || normalized.includes('413') || normalized.includes('entity too large')) {
-                restoreClaimedQueue();
                 restoreSubmittedDraftMessage();
                 toast.error(t('chat.chatInput.toast.attachmentsTooLarge'));
                 if (allAttachments.length > 0) {
@@ -1809,7 +1805,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 return;
             }
 
-            restoreClaimedQueue();
             restoreSubmittedDraftMessage();
 
             if (allAttachments.length > 0) {
@@ -1822,9 +1817,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             textareaRef.current?.focus();
         }
         } finally {
-            if (!claimedQueueConsumedBySend) {
-                restoreClaimedQueue();
-            }
             releaseSubmitLock();
         }
     };
