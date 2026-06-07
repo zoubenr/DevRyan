@@ -8,6 +8,8 @@ import {
   removeProviderConfig,
   getProviderSources,
   ensureAnthropicOAuthProviderConfig,
+  getAgentConfig,
+  listConfigAgents,
 } from './opencodeConfig';
 import { getProviderAuth, readAuthFile, removeProviderAuth, writeAuthFile } from './opencodeAuth';
 import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProviders';
@@ -53,10 +55,33 @@ const CURSOR_ACP_PROVIDER_ID = 'cursor-acp';
 const CURSOR_USAGE_TOKEN_MAX_LENGTH = 16_384;
 let cachedZenModels: { models: Array<{ id: string; owned_by?: string }>; at: number } | null = null;
 
+const resolveCursorSdkAgentDefinitions = ({ directory }: { directory?: string | null } = {}) => {
+  const definitions: Record<string, { description: string; prompt: string; model: 'inherit' }> = {};
+  for (const agent of listConfigAgents(directory || undefined)) {
+    const name = typeof agent?.name === 'string' ? agent.name.trim() : '';
+    const prompt = typeof agent?.prompt === 'string' ? agent.prompt.trim() : '';
+    if (!name || !prompt || name.toLowerCase() === 'council') continue;
+    definitions[name] = {
+      description: typeof agent.description === 'string' && agent.description.trim()
+        ? agent.description.trim()
+        : `${name} DevRyan agent`,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return definitions;
+};
+
 const cursorSdkRuntime = createCursorSdkRuntime({
   readAuth: readAuthFile,
   env: process.env,
   logger: console,
+  resolveAgentPrompt: async ({ agent, directory }: { agent?: string; directory?: string | null }) => {
+    if (!agent) return '';
+    const result = getAgentConfig(agent, directory || undefined);
+    return typeof result?.config?.prompt === 'string' ? result.config.prompt : '';
+  },
+  resolveAgentDefinitions: resolveCursorSdkAgentDefinitions,
 });
 
 const runClaudeCliAuthCheck = () => new Promise<{ ok: boolean; error?: string }>((resolve) => {

@@ -5,7 +5,12 @@ import { useUIStore } from '@/stores/useUIStore';
 import { MarkdownRenderer } from '../../MarkdownRenderer';
 import { useStreamingTextThrottle } from '../../hooks/useStreamingTextThrottle';
 
-type PartWithText = Part & { text?: string; content?: string; time?: { start?: number; end?: number } };
+type PartWithText = Part & {
+    text?: string;
+    content?: string;
+    time?: { start?: number; end?: number };
+    metadata?: Record<string, unknown>;
+};
 
 export type ReasoningVariant = 'thinking' | 'justification';
 
@@ -32,6 +37,7 @@ type ReasoningTimelineBlockProps = {
     isStreaming?: boolean;
     actions?: React.ReactNode;
     alwaysShowActions?: boolean;
+    compact?: boolean;
 };
 
 export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
@@ -44,6 +50,7 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
     isStreaming = false,
     actions,
     alwaysShowActions: _alwaysShowActions = false,
+    compact = false,
 }) => {
     void _variant;
     void _time;
@@ -59,6 +66,37 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
 
     if (!text || text.trim().length === 0) {
         return null;
+    }
+
+    if (compact) {
+        return (
+            <details
+                className="my-1 group text-muted-foreground"
+                data-reasoning-block-id={blockId}
+                data-message-text-export-root="true"
+                data-cursor-reasoning-compact="true"
+            >
+                <summary className="cursor-pointer select-none typography-meta text-muted-foreground hover:text-foreground">
+                    {isStreaming ? 'Thinking...' : 'Thinking'}
+                </summary>
+                <div className="relative pr-2 pb-2 pt-1" data-message-text-export-source="true">
+                    <MarkdownRenderer
+                        content={text}
+                        messageId={blockId}
+                        isAnimated={false}
+                        isStreaming={isStreaming}
+                        variant="reasoning"
+                    />
+                    {actions ? (
+                        <div className="mt-2 mb-1 flex items-center justify-start gap-1.5" data-message-actions="true">
+                            <div className="flex items-center gap-1.5" data-message-action-group="true">
+                                {actions}
+                            </div>
+                        </div>
+                    ) : null}
+                </div>
+            </details>
+        );
     }
 
     return (
@@ -105,6 +143,8 @@ const ReasoningPart = React.memo(({
     const time = partWithText.time;
     const isActive = typeof time?.end !== 'number';
     const isStreaming = chatRenderMode === 'live' && isActive;
+    const isCursorReasoning = partWithText.metadata?.cursorSdk === true
+        || partWithText.metadata?.providerID === 'cursor-acp';
     const throttledText = useStreamingTextThrottle({
         text: textContent,
         isStreaming,
@@ -141,6 +181,7 @@ const ReasoningPart = React.memo(({
             showDuration={chatRenderMode !== 'sorted'}
             isStreaming={isStreaming}
             alwaysShowActions={alwaysShowActions}
+            compact={isCursorReasoning}
         />
     );
 });

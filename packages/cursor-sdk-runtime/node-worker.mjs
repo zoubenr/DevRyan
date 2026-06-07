@@ -40,6 +40,23 @@ const normalizeModelSelection = (selection, fallbackModelID) => {
   };
 };
 
+const normalizeAgentDefinitions = (value) => {
+  if (!isPlainObject(value)) return null;
+  const definitions = {};
+  for (const [rawName, rawDefinition] of Object.entries(value)) {
+    const name = trimString(rawName);
+    if (!name || !isPlainObject(rawDefinition)) continue;
+    const prompt = trimString(rawDefinition.prompt);
+    if (!prompt) continue;
+    definitions[name] = {
+      description: trimString(rawDefinition.description) || `${name} subagent`,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return Object.keys(definitions).length > 0 ? definitions : null;
+};
+
 const isMissingCursorAgentError = (error) => /Agent .* not found/i.test(error instanceof Error ? error.message : String(error || ''));
 
 const writeEvent = (event) => {
@@ -91,6 +108,14 @@ const normalizeInteractionUpdateToSdkMessage = (input) => {
   if (update.type === 'thinking-delta') {
     const text = firstStringValue(update.text, update.delta);
     return text ? { type: 'thinking', text } : null;
+  }
+
+  if (
+    update.type === 'thinking-completed'
+    || update.type === 'thinking_completed'
+    || update.type === 'thinking-complete'
+  ) {
+    return { type: 'thinking_completed' };
   }
 
   if (
@@ -161,6 +186,7 @@ const main = async () => {
   const apiKey = trimString(input.apiKey);
   const modelID = trimString(input.modelID) || 'auto';
   const modelSelection = normalizeModelSelection(input.modelSelection, modelID);
+  const agents = normalizeAgentDefinitions(input.agents);
   const prompt = trimString(input.prompt);
   const images = Array.isArray(input.images)
     ? input.images
@@ -187,10 +213,16 @@ const main = async () => {
   const { Agent } = await import('@cursor/sdk');
   const model = modelSelection;
   const local = directory ? { cwd: directory } : {};
+  const agentOptions = {
+    apiKey,
+    model,
+    local,
+    ...(agents ? { agents } : {}),
+  };
   let agent = null;
   if (agentID) {
     try {
-      agent = await Agent.resume(agentID, { apiKey, model, local });
+      agent = await Agent.resume(agentID, agentOptions);
     } catch (error) {
       if (!isMissingCursorAgentError(error)) {
         throw error;
@@ -199,10 +231,8 @@ const main = async () => {
   }
   if (!agent) {
     agent = await Agent.create({
-      apiKey,
-      model,
       name: `DevRyan ${trimString(input.sessionID) || Date.now()}`,
-      local,
+      ...agentOptions,
     });
   }
 

@@ -28,4 +28,21 @@ describe("ReasoningTimelineBlock", () => {
     expect(html).not.toContain("2.0s")
     expect(html).not.toContain("aria-expanded")
   })
+
+  test("renders compact Cursor reasoning collapsed with full detail available", () => {
+    const html = renderToStaticMarkup(
+      <ReasoningTimelineBlock
+        text={"First long Cursor thought\n\nSecond long Cursor thought"}
+        variant="thinking"
+        blockId="cursor-reasoning"
+        time={{ start: 1_000, end: 3_000 }}
+        compact={true}
+      />,
+    )
+
+    expect(html).toContain("<details")
+    expect(html).toContain("Thinking")
+    expect(html).toContain("First long Cursor thought")
+    expect(html).toContain("Second long Cursor thought")
+  })
 })

@@ -528,6 +528,23 @@ const emitSyntheticOpenCodeEvent = (payload, options = {}) => {
   broadcastGlobalUiEvent(payload, options);
 };
 
+const resolveCursorSdkAgentDefinitions = ({ directory } = {}) => {
+  const definitions = {};
+  for (const agent of listConfigAgents(directory)) {
+    const name = typeof agent?.name === 'string' ? agent.name.trim() : '';
+    const prompt = typeof agent?.prompt === 'string' ? agent.prompt.trim() : '';
+    if (!name || !prompt || name.toLowerCase() === 'council') continue;
+    definitions[name] = {
+      description: typeof agent.description === 'string' && agent.description.trim()
+        ? agent.description.trim()
+        : `${name} DevRyan agent`,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return definitions;
+};
+
 const cursorSdkRuntime = createCursorSdkRuntime({
   storageDir: path.join(OPENCHAMBER_DATA_DIR, 'cursor-sdk-sessions'),
   readAuth: readAuthFile,
@@ -539,6 +556,7 @@ const cursorSdkRuntime = createCursorSdkRuntime({
     const result = getAgentConfig(agent, directory);
     return typeof result?.config?.prompt === 'string' ? result.config.prompt : '';
   },
+  resolveAgentDefinitions: resolveCursorSdkAgentDefinitions,
 });
 
 const getActiveSessionCount = () => {

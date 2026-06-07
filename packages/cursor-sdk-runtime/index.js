@@ -244,6 +244,14 @@ const normalizeInteractionUpdateToSdkMessage = (input) => {
   }
 
   if (
+    update.type === 'thinking-completed'
+    || update.type === 'thinking_completed'
+    || update.type === 'thinking-complete'
+  ) {
+    return { type: 'thinking_completed' };
+  }
+
+  if (
     update.type === 'tool-call-started'
     || update.type === 'partial-tool-call'
     || update.type === 'tool-call-completed'
@@ -366,6 +374,7 @@ const createCrossSourceMessageDedupe = (limit = 80) => {
 const DANGLING_REASONING_LIST_MARKER_PATTERN = /(?:\n\s*)+(?:[-*]|\d+[.)])\s*$/;
 const SENTENCE_BOUNDARY_PATTERN = /[.!?][)"'\]]?(?=\s|$)/g;
 const TOOL_ONLY_COMPLETION_SUMMARY = 'Completed the requested work. See the tool activity above for details.';
+const POST_TASK_EMPTY_FINISH_DIAGNOSTIC = 'Cursor ended the parent run immediately after a subagent task completed, with no parent follow-up. DevRyan preserved the subagent output above.';
 
 const trimDanglingReasoningFragment = (value) => {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -674,6 +683,53 @@ const cloneCursorSdkModelSelection = (selection) => {
   if (!id) return null;
   return createCursorSdkModelSelection(id, selection.params);
 };
+
+const sortObjectKeys = (value) => {
+  if (Array.isArray(value)) return value.map(sortObjectKeys);
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortObjectKeys(entry)])
+  );
+};
+
+const stableJson = (value) => {
+  try {
+    return JSON.stringify(sortObjectKeys(value));
+  } catch {
+    return safeJson(value);
+  }
+};
+
+const normalizeCursorSdkAgentDefinitions = (value) => {
+  if (!isPlainObject(value)) return null;
+  const definitions = {};
+  for (const [rawName, rawDefinition] of Object.entries(value)) {
+    const name = trimString(rawName);
+    if (!name || !isPlainObject(rawDefinition)) continue;
+    const prompt = trimString(rawDefinition.prompt);
+    if (!prompt) continue;
+    const description = trimString(rawDefinition.description) || `${name} subagent`;
+    definitions[name] = {
+      description,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return Object.keys(definitions).length > 0 ? definitions : null;
+};
+
+const cloneCursorSdkAgentDefinitions = (definitions) => {
+  const normalized = normalizeCursorSdkAgentDefinitions(definitions);
+  return normalized ? sortObjectKeys(normalized) : null;
+};
+
+const createAgentRuntimeFingerprint = ({ directory, model, agents }) => stableJson({
+  directory: trimString(directory),
+  model: cloneCursorSdkModelSelection(model),
+  agents: cloneCursorSdkAgentDefinitions(agents),
+});
 
 const getModelParamValue = (params, id) => {
   const normalizedId = trimString(id);
@@ -1175,7 +1231,7 @@ const isCursorTaskTool = (toolName) => {
   return normalized === 'task';
 };
 
-const extractCursorToolModelId = (input) => {
+const extractCursorToolModelSelection = (input) => {
   if (!isPlainObject(input)) return '';
   const candidates = [
     input.model,
@@ -1186,25 +1242,60 @@ const extractCursorToolModelId = (input) => {
   for (const candidate of candidates) {
     if (isPlainObject(candidate)) {
       const id = trimString(candidate.id || candidate.modelID || candidate.modelId || candidate.model_id);
-      if (id) return normalizeModelId(id);
+      if (id) return createCursorSdkModelSelection(id, candidate.params);
       continue;
     }
     const id = trimString(candidate);
-    if (id) return normalizeModelId(id);
+    if (id) return createFallbackCursorSdkModelSelection(normalizeModelId(id));
   }
-  return '';
+  return null;
 };
 
-const buildCursorTaskModelBoundaryViolation = ({ toolName, input, selectedModelID }) => {
+const normalizeCursorSdkModelSelectionForBoundary = (selection, fallbackModelID) => {
+  const cloned = cloneCursorSdkModelSelection(selection);
+  if (cloned) return cloned;
+  const id = normalizeModelId(fallbackModelID);
+  return id ? createFallbackCursorSdkModelSelection(id) : null;
+};
+
+const canonicalCursorSdkModelSelection = (selection) => {
+  const normalized = normalizeCursorSdkModelSelectionForBoundary(selection, '');
+  if (!normalized?.id) return '';
+  const params = normalizeModelSelectionParams(normalized.params)
+    .sort((left, right) => left.id.localeCompare(right.id) || left.value.localeCompare(right.value));
+  return stableJson({ id: normalized.id, params });
+};
+
+const areCursorSdkModelSelectionsEqual = (left, right) => {
+  const leftKey = canonicalCursorSdkModelSelection(left);
+  const rightKey = canonicalCursorSdkModelSelection(right);
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
+};
+
+const formatCursorSdkModelSelectionForMessage = (selection, fallbackModelID) => {
+  const normalized = normalizeCursorSdkModelSelectionForBoundary(selection, fallbackModelID);
+  if (!normalized?.id) return trimString(fallbackModelID);
+  const params = normalizeModelSelectionParams(normalized.params);
+  if (params.length === 0) return normalized.id;
+  const suffix = params
+    .map((param) => `${param.id}=${param.value}`)
+    .join(', ');
+  return `${normalized.id} (${suffix})`;
+};
+
+const buildCursorTaskModelBoundaryViolation = ({ toolName, input, selectedModelID, selectedModelSelection }) => {
   const selected = normalizeModelId(selectedModelID);
   if (!isCursorTaskTool(toolName) || !selected || selected === 'auto') return '';
 
-  const requested = extractCursorToolModelId(input);
-  if (!requested || requested === selected) return '';
+  const requestedSelection = extractCursorToolModelSelection(input);
+  if (!requestedSelection) return '';
+
+  const selectedSelection = normalizeCursorSdkModelSelectionForBoundary(selectedModelSelection, selected);
+  if (selectedSelection && areCursorSdkModelSelectionsEqual(requestedSelection, selectedSelection)) return '';
 
   return [
     'Cursor SDK model boundary violation:',
-    `the task tool requested model "${requested}" while this session is pinned to "${selected}".`,
+    `the task tool requested model "${formatCursorSdkModelSelectionForMessage(requestedSelection)}" while this session is pinned to "${formatCursorSdkModelSelectionForMessage(selectedSelection, selected)}".`,
     'The run was aborted so DevRyan does not silently execute part of the chat on a different model.',
   ].join(' ');
 };
@@ -1238,7 +1329,7 @@ const readJsonFile = async (filePath, fallback) => {
 
 const writeJsonFile = async (filePath, value) => {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await fs.rename(tmp, filePath);
 };
@@ -1342,6 +1433,7 @@ export function createCursorSdkRuntime(options = {}) {
   const emitEvent = typeof options.emitEvent === 'function' ? options.emitEvent : () => {};
   const logger = options.logger || console;
   const resolveAgentPrompt = typeof options.resolveAgentPrompt === 'function' ? options.resolveAgentPrompt : null;
+  const resolveAgentDefinitions = typeof options.resolveAgentDefinitions === 'function' ? options.resolveAgentDefinitions : null;
   const streamIdleTimeoutMs = Math.max(0, Number(options.streamIdleTimeoutMs) || 45000);
   const finalResultWaitTimeoutMs = Math.max(0, Number(options.finalResultWaitTimeoutMs) || 1000);
   const modelDiscoveryTtlMs = Math.max(0, Number(options.modelDiscoveryTtlMs) || DEFAULT_MODEL_DISCOVERY_TTL_MS);
@@ -1364,6 +1456,7 @@ export function createCursorSdkRuntime(options = {}) {
   let workerRestarts = 0;
   let lastError = null;
   let lastCancellation = null;
+  let lastPostTaskEmptyFinish = null;
 
   const getSessionPath = (sessionID) => path.join(storageDir, `${encodeURIComponent(sessionID)}.json`);
 
@@ -1441,6 +1534,7 @@ export function createCursorSdkRuntime(options = {}) {
       lastWorkerTiming,
       lastError,
       lastCancellation,
+      lastPostTaskEmptyFinish,
     };
   };
 
@@ -1550,21 +1644,29 @@ export function createCursorSdkRuntime(options = {}) {
       refreshVirtualProviderInBackground({ reason: 'model_selection_miss' });
     }
     const selected = getCursorSdkSelectionFromModelRecord(lastModelRecords?.[normalizedModelID], variant);
-    return selected || createCursorSdkModelSelection(normalizedModelID, []);
+    return selected || createFallbackCursorSdkModelSelection(normalizedModelID);
   };
 
-  const getOrCreateAgent = async ({ sessionID, apiKey, modelID, modelSelection, directory }) => {
+  const getOrCreateAgent = async ({ sessionID, apiKey, modelID, modelSelection, directory, agentDefinitions }) => {
+    const model = cloneCursorSdkModelSelection(modelSelection) || createFallbackCursorSdkModelSelection(modelID);
+    const agents = cloneCursorSdkAgentDefinitions(agentDefinitions);
+    const fingerprint = createAgentRuntimeFingerprint({ directory, model, agents });
     const cached = agentsBySession.get(sessionID);
-    if (cached) return cached;
+    if (cached?.fingerprint === fingerprint && cached?.agent) return cached.agent;
 
     const { Agent } = await loadSdk();
     const state = await readSessionState(sessionID);
     const local = trimString(directory) ? { cwd: directory } : {};
-    const model = cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []);
+    const agentOptions = {
+      apiKey,
+      model,
+      local,
+      ...(agents ? { agents } : {}),
+    };
     let agent = null;
     if (state.agentID) {
       try {
-        agent = await Agent.resume(state.agentID, { apiKey, model, local });
+        agent = await Agent.resume(state.agentID, agentOptions);
       } catch (error) {
         if (!isMissingCursorAgentError(error)) {
           throw error;
@@ -1573,13 +1675,11 @@ export function createCursorSdkRuntime(options = {}) {
     }
     if (!agent) {
       agent = await Agent.create({
-        apiKey,
-        model,
         name: `DevRyan ${sessionID}`,
-        local,
+        ...agentOptions,
       });
     }
-    agentsBySession.set(sessionID, agent);
+    agentsBySession.set(sessionID, { agent, fingerprint });
     if (agent?.agentId) {
       await updateAgentId(sessionID, agent.agentId);
     }
@@ -1590,9 +1690,9 @@ export function createCursorSdkRuntime(options = {}) {
     await appendOrReplaceRecord(sessionID, record);
   };
 
-  const createDirectPromptRun = async ({ sessionID, apiKey, modelID, modelSelection, prompt, directory, images }) => {
-    const model = cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []);
-    const agent = await getOrCreateAgent({ sessionID, apiKey, modelID, modelSelection: model, directory });
+  const createDirectPromptRun = async ({ sessionID, apiKey, modelID, modelSelection, prompt, directory, images, agentDefinitions }) => {
+    const model = cloneCursorSdkModelSelection(modelSelection) || createFallbackCursorSdkModelSelection(modelID);
+    const agent = await getOrCreateAgent({ sessionID, apiKey, modelID, modelSelection: model, directory, agentDefinitions });
     const message = Array.isArray(images) && images.length > 0
       ? { text: prompt, images }
       : { text: prompt };
@@ -1725,7 +1825,7 @@ export function createCursorSdkRuntime(options = {}) {
     };
   };
 
-  const createNodeWorkerPromptRun = async ({ sessionID, messageID, apiKey, modelID, modelSelection, prompt, directory, images }) => {
+  const createNodeWorkerPromptRun = async ({ sessionID, messageID, apiKey, modelID, modelSelection, prompt, directory, images, agentDefinitions }) => {
     const state = await readSessionState(sessionID);
     const workerStartedAt = now();
     const child = spawnImpl(nodeBinary, [workerPath], {
@@ -1767,7 +1867,8 @@ export function createCursorSdkRuntime(options = {}) {
       apiKey,
       sessionID,
       modelID,
-      modelSelection: cloneCursorSdkModelSelection(modelSelection) || createCursorSdkModelSelection(modelID, []),
+      modelSelection: cloneCursorSdkModelSelection(modelSelection) || createFallbackCursorSdkModelSelection(modelID),
+      agents: cloneCursorSdkAgentDefinitions(agentDefinitions),
       prompt,
       images: Array.isArray(images) ? images : [],
       directory: trimString(directory),
@@ -2228,7 +2329,8 @@ export function createCursorSdkRuntime(options = {}) {
             apiKey: input.apiKey,
             sessionID: input.sessionID,
             modelID: input.modelID,
-            modelSelection: cloneCursorSdkModelSelection(input.modelSelection) || createCursorSdkModelSelection(input.modelID, []),
+            modelSelection: cloneCursorSdkModelSelection(input.modelSelection) || createFallbackCursorSdkModelSelection(input.modelID),
+            agents: cloneCursorSdkAgentDefinitions(input.agentDefinitions),
             prompt: input.prompt,
             images: Array.isArray(input.images) ? input.images : [],
             directory: trimString(input.directory),
@@ -2330,6 +2432,27 @@ export function createCursorSdkRuntime(options = {}) {
     });
   };
 
+  const resolveCursorSdkAgentDefinitionsForPrompt = async ({
+    requestedAgent,
+    directory,
+    modelID,
+    modelSelection,
+  }) => {
+    if (!resolveAgentDefinitions) return null;
+    try {
+      return cloneCursorSdkAgentDefinitions(await resolveAgentDefinitions({
+        agent: requestedAgent,
+        selectedAgent: requestedAgent,
+        directory,
+        modelID,
+        modelSelection: cloneCursorSdkModelSelection(modelSelection),
+      }));
+    } catch (error) {
+      logger.warn?.('[CursorSDK] failed to resolve agent definitions:', error);
+      return null;
+    }
+  };
+
   const getWorkspaceDiffSnapshot = async (directory) => {
     try {
       return normalizeDiffSnapshot(await getWorkspaceDiff(directory));
@@ -2386,6 +2509,14 @@ export function createCursorSdkRuntime(options = {}) {
           directory,
           modelID,
           isPlanModePrompt,
+        });
+    const agentDefinitions = unsupportedMessage
+      ? null
+      : await resolveCursorSdkAgentDefinitionsForPrompt({
+          requestedAgent,
+          directory,
+          modelID,
+          modelSelection,
         });
     const created = now();
     let partSequence = 0;
@@ -2789,15 +2920,28 @@ export function createCursorSdkRuntime(options = {}) {
         part?.type === 'text' && trimString(part.text || part.content)
       ));
       const hasToolActivity = assistantRecord.parts.some((part) => part?.type === 'tool');
+      const hasTaskToolActivity = assistantRecord.parts.some((part) => (
+        part?.type === 'tool' && isCursorTaskTool(part.tool)
+      ));
       if (finish === 'stop' && !hasAssistantText && hasToolActivity) {
+        const summaryText = hasTaskToolActivity
+          ? POST_TASK_EMPTY_FINISH_DIAGNOSTIC
+          : TOOL_ONLY_COMPLETION_SUMMARY;
+        if (hasTaskToolActivity) {
+          lastPostTaskEmptyFinish = {
+            sessionID,
+            assistantMessageID,
+            at: completed,
+          };
+        }
         const summaryPartId = nextPartID('text', 'tool_only_completion');
-        rawAssistantTextByPartId.set(summaryPartId, TOOL_ONLY_COMPLETION_SUMMARY);
+        rawAssistantTextByPartId.set(summaryPartId, summaryText);
         upsertAssistantPart({
           id: summaryPartId,
           sessionID,
           messageID: assistantMessageID,
           type: 'text',
-          text: TOOL_ONLY_COMPLETION_SUMMARY,
+          text: summaryText,
           time: { start: completed },
         });
       }
@@ -2886,6 +3030,7 @@ export function createCursorSdkRuntime(options = {}) {
         prompt: executionPrompt,
         directory,
         images,
+        agentDefinitions,
       });
     } catch (error) {
       const text = error instanceof Error ? error.message : 'Cursor SDK run failed.';
@@ -2981,6 +3126,68 @@ export function createCursorSdkRuntime(options = {}) {
         let activeTextPartID = null;
         let activeReasoningPartID = null;
         let previousContentKind = null;
+        let lastCursorTaskToolPartID = null;
+        const cursorTaskSummariesByPartId = new Map();
+
+        const finalizeActiveReasoningPart = async (completed = now()) => {
+          if (!activeReasoningPartID) return false;
+          const existing = assistantRecord.parts.find((part) => part.id === activeReasoningPartID);
+          if (!existing || existing.type !== 'reasoning') {
+            activeReasoningPartID = null;
+            return false;
+          }
+          if (typeof existing?.time?.end === 'number') {
+            activeReasoningPartID = null;
+            return false;
+          }
+          const changed = upsertAssistantPart({
+            ...existing,
+            metadata: {
+              ...(isPlainObject(existing.metadata) ? existing.metadata : {}),
+              providerID: CURSOR_PROVIDER_ID,
+              cursorSdk: true,
+            },
+            time: {
+              ...(existing.time || {}),
+              end: completed,
+            },
+          });
+          activeReasoningPartID = null;
+          previousContentKind = 'thinking_completed';
+          if (changed) {
+            await emitRecordDelta(assistantRecord);
+          }
+          return changed;
+        };
+
+        const applyCursorTaskSummary = async (text) => {
+          const summary = trimString(text);
+          if (!summary || !lastCursorTaskToolPartID) return false;
+          const existing = assistantRecord.parts.find((part) => part.id === lastCursorTaskToolPartID);
+          if (!existing || existing.type !== 'tool') return false;
+          cursorTaskSummariesByPartId.set(lastCursorTaskToolPartID, summary);
+          const metadata = {
+            ...(isPlainObject(existing.metadata) ? existing.metadata : {}),
+            ...(isPlainObject(existing.state?.metadata) ? existing.state.metadata : {}),
+            cursorTaskSummary: summary,
+          };
+          const updated = {
+            ...existing,
+            output: summary,
+            metadata,
+            state: {
+              ...(existing.state || {}),
+              output: summary,
+              metadata,
+            },
+          };
+          const changed = upsertAssistantPart(updated);
+          if (changed) {
+            await emitRecordDelta(assistantRecord);
+          }
+          return changed;
+        };
+
         for (;;) {
           const streamRead = await readNextStreamEvent(iterator);
           if ('finalError' in streamRead) {
@@ -3016,6 +3223,9 @@ export function createCursorSdkRuntime(options = {}) {
           const message = event?.type === 'message' ? event.message : event;
           if (!isPlainObject(message)) continue;
           if (message.type === 'assistant') {
+            if (previousContentKind === 'thinking') {
+              await finalizeActiveReasoningPart();
+            }
             const content = Array.isArray(message.message?.content) ? message.message.content : [];
             const text = content
               .filter((block) => block?.type === 'text' && typeof block.text === 'string')
@@ -3059,8 +3269,17 @@ export function createCursorSdkRuntime(options = {}) {
                   sessionID,
                   messageID: assistantMessageID,
                   type: 'reasoning',
+                  metadata: {
+                    providerID: CURSOR_PROVIDER_ID,
+                    cursorSdk: true,
+                  },
                   time: { start: now() },
                 }),
+                metadata: {
+                  ...(isPlainObject(existing?.metadata) ? existing.metadata : {}),
+                  providerID: CURSOR_PROVIDER_ID,
+                  cursorSdk: true,
+                },
                 text: mergeTextDelta(existingText, text),
               };
               const partChanged = upsertAssistantPart(reasoningPart);
@@ -3069,7 +3288,12 @@ export function createCursorSdkRuntime(options = {}) {
                 await emitRecordDelta(assistantRecord);
               }
             }
+          } else if (message.type === 'thinking_completed') {
+            await finalizeActiveReasoningPart();
           } else if (message.type === 'tool_call') {
+            if (previousContentKind === 'thinking') {
+              await finalizeActiveReasoningPart();
+            }
             const partID = getToolPartID(message.call_id);
             const existing = assistantRecord.parts.find((part) => part.id === partID);
             const input = isPlainObject(message.args) ? message.args : undefined;
@@ -3077,13 +3301,19 @@ export function createCursorSdkRuntime(options = {}) {
               toolName: message.name,
               input,
               selectedModelID: modelID,
+              selectedModelSelection: modelSelection,
             });
             const status = modelBoundaryViolation
               ? 'error'
               : normalizeToolCallStatus(message.status);
             const startedAt = existing?.state?.time?.start || now();
-            const output = modelBoundaryViolation || safeJson(message.result);
-            const metadata = isPlainObject(message.metadata) ? message.metadata : undefined;
+            const existingSummary = cursorTaskSummariesByPartId.get(partID);
+            const resultOutput = safeJson(message.result);
+            const output = modelBoundaryViolation || (trimString(resultOutput) ? resultOutput : existingSummary || resultOutput);
+            const metadata = {
+              ...(isPlainObject(message.metadata) ? message.metadata : {}),
+              ...(existingSummary ? { cursorTaskSummary: existingSummary } : {}),
+            };
             const toolPart = {
               id: partID,
               sessionID,
@@ -3096,13 +3326,16 @@ export function createCursorSdkRuntime(options = {}) {
                 status,
                 ...(input ? { input } : {}),
                 output,
-                ...(metadata ? { metadata } : {}),
+                ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
                 time: {
                   start: startedAt,
                   ...(status !== 'running' && status !== 'pending' ? { end: now() } : {}),
                 },
               },
             };
+            if (isCursorTaskTool(message.name)) {
+              lastCursorTaskToolPartID = partID;
+            }
             const partChanged = upsertAssistantPart(toolPart);
             const isTerminalToolStatus = status !== 'running' && status !== 'pending';
             const planTextChanged = isTerminalToolStatus
@@ -3130,6 +3363,8 @@ export function createCursorSdkRuntime(options = {}) {
               sawMutationCandidateTool = true;
               await syncWorkspacePatchPart();
             }
+          } else if (message.type === 'task') {
+            await applyCursorTaskSummary(message.text);
           } else if (message.type === 'status') {
             const terminalStatus = finalStatusFromSdkStatus(message.status);
             if (terminalStatus) {

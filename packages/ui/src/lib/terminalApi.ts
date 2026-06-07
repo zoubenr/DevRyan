@@ -964,6 +964,23 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   }
 }
 
+export async function keepAliveTerminal(sessionId: string): Promise<boolean> {
+  const response = await fetch(`/api/terminal/${sessionId}/touch`, {
+    method: 'POST',
+  });
+
+  if (response.status === 404) {
+    return false;
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Failed to keep terminal alive' }));
+    throw new Error(error.error || 'Failed to keep terminal alive');
+  }
+
+  return true;
+}
+
 export async function restartTerminalSession(
   currentSessionId: string,
   options: { cwd: string; cols?: number; rows?: number }

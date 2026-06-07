@@ -343,6 +343,72 @@ describe('Cursor SDK runtime', () => {
     });
   });
 
+  it('passes Cursor SDK subagent definitions with inherited models to direct agent creation', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let createOptions = null;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      useNodeWorkerForPrompts: false,
+      resolveAgentDefinitions: async () => ({
+        explorer: {
+          description: 'Read-only code explorer',
+          prompt: 'Inspect the repository and report findings.',
+          model: 'inherit',
+        },
+      }),
+      loadSdk: async () => ({
+        Agent: {
+          create: async (options = {}) => {
+            createOptions = options;
+            return {
+              agentId: 'agent-test',
+              send: async () => ({
+                stream: async function* stream() {
+                  yield {
+                    type: 'assistant',
+                    message: {
+                      content: [{ type: 'text', text: 'done' }],
+                    },
+                  };
+                },
+                wait: async () => ({ status: 'finished', result: '' }),
+              }),
+            };
+          },
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_cursor_agents',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        agent: 'builder',
+        messageID: 'msg_cursor_agents_user',
+        parts: [{ type: 'text', text: 'delegate safely' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_cursor_agents');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    expect(records?.[1]?.info.finish).toBe('stop');
+    expect(createOptions?.agents).toEqual({
+      explorer: {
+        description: 'Read-only code explorer',
+        prompt: 'Inspect the repository and report findings.',
+        model: 'inherit',
+      },
+    });
+  });
+
   it('uses the direct Cursor SDK wait result when the stream remains open', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     const runtime = createCursorSdkRuntime({
@@ -1565,6 +1631,58 @@ describe('Cursor SDK runtime', () => {
     expect(assistantParts.indexOf(reasoningParts[1])).toBeGreaterThan(toolIndex);
   });
 
+  it('finalizes a Cursor thinking block when the SDK reports thinking completion', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        stream: async function* stream() {
+          yield { type: 'message', message: { type: 'thinking', text: 'First thought.' } };
+          yield { type: 'message', message: { type: 'thinking_completed' } };
+          yield { type: 'message', message: { type: 'thinking', text: 'Second thought.' } };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'done' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_thinking_completed',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_thinking_completed_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_thinking_completed');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const reasoningParts = records?.[1]?.parts?.filter((part) => part.type === 'reasoning') ?? [];
+    expect(reasoningParts.map((part) => part.text)).toEqual(['First thought.', 'Second thought.']);
+    expect(typeof reasoningParts[0]?.time?.end).toBe('number');
+    expect(reasoningParts[0]?.metadata).toMatchObject({
+      providerID: 'cursor-acp',
+      cursorSdk: true,
+    });
+  });
+
   it('removes dangling Cursor thinking fragments left before tool activity', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     const runtime = createCursorSdkRuntime({
@@ -1967,6 +2085,220 @@ describe('Cursor SDK runtime', () => {
       input: {
         model: 'composer-2.5',
       },
+    });
+  });
+
+  it('allows Cursor task subagents that request the same effective fast model selection', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let cancelled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {
+          cancelled = true;
+        },
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_fast_1',
+              name: 'task',
+              status: 'completed',
+              args: {
+                description: 'Explore with a subagent',
+                prompt: 'Read-only exploration',
+                model: {
+                  id: 'composer-2.5',
+                  params: [{ id: 'fast', value: 'true' }],
+                },
+              },
+              result: 'Subagent completed on the inherited fast model.',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'continued after task' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_fast_model_boundary',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5-fast' },
+        messageID: 'msg_fast_model_boundary_user',
+        parts: [{ type: 'text', text: 'stay on composer 2.5 fast' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_fast_model_boundary');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const taskPart = assistant?.parts?.find((part) => part.type === 'tool' && part.tool === 'task');
+
+    expect(cancelled).toBe(false);
+    expect(assistant?.info.finish).toBe('stop');
+    expect(taskPart?.state?.status).toBe('completed');
+    expect(taskPart?.output).toBe('Subagent completed on the inherited fast model.');
+    expect(assistant?.parts?.find((part) => part.type === 'text')?.text).toBe('continued after task');
+    expect(runtime.getRuntimeStatus().lastCancellation).toBeNull();
+  });
+
+  it('attaches Cursor task summary events to the active task tool output', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_summary_1',
+              name: 'task',
+              status: 'running',
+              args: {
+                description: 'Inspect spacing',
+                prompt: 'Find spacing problems',
+              },
+            },
+          };
+          yield { type: 'message', message: { type: 'task', text: 'Explorer found the profile tab spacing issue.' } };
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_summary_1',
+              name: 'task',
+              status: 'completed',
+              args: {
+                description: 'Inspect spacing',
+                prompt: 'Find spacing problems',
+              },
+              result: '',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'I will fix it next.' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_task_summary',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_task_summary_user',
+        parts: [{ type: 'text', text: 'review profiles' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_task_summary');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const taskPart = assistant?.parts?.find((part) => part.type === 'tool' && part.tool === 'task');
+
+    expect(taskPart?.output).toBe('Explorer found the profile tab spacing issue.');
+    expect(taskPart?.state?.output).toBe('Explorer found the profile tab spacing issue.');
+    expect(taskPart?.state?.metadata).toMatchObject({
+      cursorTaskSummary: 'Explorer found the profile tab spacing issue.',
+    });
+    expect(assistant?.parts?.find((part) => part.type === 'text')?.text).toBe('I will fix it next.');
+  });
+
+  it('surfaces a diagnostic when Cursor ends the parent run immediately after a task', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {},
+        waitFinalResult: async () => ({
+          ok: true,
+          finalStatus: 'success',
+          finalText: '',
+        }),
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_empty_1',
+              name: 'task',
+              status: 'completed',
+              args: {
+                description: 'Inspect spacing',
+                prompt: 'Find spacing problems',
+              },
+              result: 'Subagent completed.',
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_task_empty_finish',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_task_empty_finish_user',
+        parts: [{ type: 'text', text: 'review profiles' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_task_empty_finish');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const text = assistant?.parts?.find((part) => part.type === 'text')?.text || '';
+
+    expect(assistant?.info.finish).toBe('stop');
+    expect(text).toContain('Cursor ended the parent run immediately after a subagent task completed');
+    expect(text).not.toBe('Completed the requested work. See the tool activity above for details.');
+    expect(runtime.getRuntimeStatus().lastPostTaskEmptyFinish).toMatchObject({
+      sessionID: 'ses_task_empty_finish',
+      assistantMessageID: 'msg_task_empty_finish_user_assistant',
+      at: expect.any(Number),
     });
   });
 

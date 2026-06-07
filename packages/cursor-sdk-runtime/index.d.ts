@@ -35,6 +35,11 @@ export type CursorRuntimeStatus = {
     finalStatus: string;
     at: number;
   } | null;
+  lastPostTaskEmptyFinish?: {
+    sessionID: string;
+    assistantMessageID: string;
+    at: number;
+  } | null;
 };
 
 export type CursorModelCapabilities = {
@@ -73,6 +78,19 @@ export type CursorModelRecord = {
   }>;
   capabilities: CursorModelCapabilities;
 };
+
+export type CursorSdkModelSelection = {
+  id: string;
+  params?: Array<{ id: string; value: string }>;
+};
+
+export type CursorSdkAgentDefinition = {
+  description: string;
+  prompt: string;
+  model?: CursorSdkModelSelection | 'inherit';
+};
+
+export type CursorSdkAgentDefinitions = Record<string, CursorSdkAgentDefinition>;
 
 export type CursorSdkRuntime = {
   getRuntimeStatus(): CursorRuntimeStatus;
@@ -122,5 +140,14 @@ export function resolveCursorSdkWorkerRuntimeConfig(options?: {
   workerCwd: string;
   workerEnv: Record<string, string>;
 };
-export function createCursorSdkRuntime(options: Record<string, unknown>): CursorSdkRuntime;
+export function createCursorSdkRuntime(options: Record<string, unknown> & {
+  resolveAgentPrompt?: (input: { agent?: string; directory?: string | null }) => Promise<string> | string;
+  resolveAgentDefinitions?: (input: {
+    agent?: string;
+    selectedAgent?: string;
+    directory?: string | null;
+    modelID?: string;
+    modelSelection?: CursorSdkModelSelection | null;
+  }) => Promise<CursorSdkAgentDefinitions | null | undefined> | CursorSdkAgentDefinitions | null | undefined;
+}): CursorSdkRuntime;
 export type CursorAuthFile = Record<string, Record<string, unknown>>;

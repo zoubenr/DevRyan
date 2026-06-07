@@ -4,6 +4,7 @@ import {
   resizeTerminal,
   sendTerminalInput,
   closeTerminal,
+  keepAliveTerminal,
   restartTerminalSession,
   forceKillTerminal,
 } from '@openchamber/ui/lib/terminalApi';
@@ -55,6 +56,10 @@ export const createWebTerminalAPI = (): TerminalAPI => ({
 
   async close(sessionId: string): Promise<void> {
     await closeTerminal(sessionId);
+  },
+
+  async keepAlive(sessionId: string): Promise<boolean> {
+    return keepAliveTerminal(sessionId);
   },
 
   async restartSession(

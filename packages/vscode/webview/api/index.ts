@@ -16,6 +16,7 @@ const createStubTerminalAPI = (): TerminalAPI => ({
   sendInput: async () => {},
   resize: async () => {},
   close: async () => {},
+  keepAlive: async () => false,
 });
 
 export const createVSCodeAPIs = (): RuntimeAPIs => ({

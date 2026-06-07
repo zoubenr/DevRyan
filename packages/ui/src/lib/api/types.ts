@@ -94,6 +94,7 @@ export interface TerminalAPI {
   sendInput(sessionId: string, input: string): Promise<void>;
   resize(payload: ResizeTerminalPayload): Promise<void>;
   close(sessionId: string): Promise<void>;
+  keepAlive?(sessionId: string): Promise<boolean>;
   restartSession?(currentSessionId: string, options: CreateTerminalOptions): Promise<TerminalSession>;
   forceKill?(options: ForceKillOptions): Promise<void>;
 }

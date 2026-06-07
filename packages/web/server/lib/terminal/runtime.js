@@ -649,6 +649,18 @@ export function createTerminalRuntime({
     }
   });
 
+  app.post('/api/terminal/:sessionId/touch', (req, res) => {
+    const { sessionId } = req.params;
+    const session = terminalSessions.get(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ error: 'Terminal session not found' });
+    }
+
+    session.lastActivity = Date.now();
+    res.json({ success: true, lastActivity: session.lastActivity });
+  });
+
   app.post('/api/terminal/:sessionId/resize', (req, res) => {
     const { sessionId } = req.params;
     const session = terminalSessions.get(sessionId);

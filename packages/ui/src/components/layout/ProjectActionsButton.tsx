@@ -69,6 +69,7 @@ const ANSI_ESCAPE_PREFIX = String.fromCharCode(27);
 const ANSI_ESCAPE_PATTERN = new RegExp(`${ANSI_ESCAPE_PREFIX}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 const URL_GLOBAL_PATTERN = /https?:\/\/[^\s<>'"`]+/gi;
 const AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS = 15_000;
+const PROJECT_ACTION_KEEPALIVE_INTERVAL_MS = 2 * 60 * 1000;
 
 const stripControlChars = (value: string): string => {
   let next = '';
@@ -344,6 +345,47 @@ export const ProjectActionsButton = ({
       }
     }
   }, [projectActionRuns, removeProjectActionRun, terminalSessions]);
+
+  React.useEffect(() => {
+    if (runtime.isVSCode || typeof terminal.keepAlive !== 'function') {
+      return;
+    }
+
+    if (Object.keys(projectActionRuns).length === 0) {
+      return;
+    }
+
+    const keepAlive = terminal.keepAlive;
+    const touchActiveRuns = () => {
+      const currentRuns = useTerminalStore.getState().projectActionRuns;
+      for (const [runKey, run] of Object.entries(currentRuns)) {
+        void keepAlive(run.sessionId)
+          .then((isAlive) => {
+            if (isAlive !== false) {
+              return;
+            }
+
+            const store = useTerminalStore.getState();
+            const tab = store.getDirectoryState(run.directory)?.tabs.find((entry) => entry.id === run.tabId);
+            if (tab?.terminalSessionId === run.sessionId) {
+              store.setTabSessionId(run.directory, run.tabId, null);
+              store.setConnecting(run.directory, run.tabId, false);
+            }
+            store.removeProjectActionRun(runKey);
+          })
+          .catch(() => {
+            // Transient keepalive failures should not clear a still-running action.
+          });
+      }
+    };
+
+    touchActiveRuns();
+    const intervalId = window.setInterval(touchActiveRuns, PROJECT_ACTION_KEEPALIVE_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [projectActionRuns, runtime.isVSCode, terminal]);
 
   React.useEffect(() => {
     for (const [runKey, entry] of Object.entries(projectActionRuns)) {

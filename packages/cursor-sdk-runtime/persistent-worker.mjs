@@ -63,6 +63,14 @@ const normalizeInteractionUpdateToSdkMessage = (input) => {
   }
 
   if (
+    update.type === 'thinking-completed'
+    || update.type === 'thinking_completed'
+    || update.type === 'thinking-complete'
+  ) {
+    return { type: 'thinking_completed' };
+  }
+
+  if (
     update.type === 'tool-call-started'
     || update.type === 'partial-tool-call'
     || update.type === 'tool-call-completed'
@@ -150,6 +158,41 @@ const normalizeModelSelection = (selection, fallbackModelID) => {
   };
 };
 
+const sortObjectKeys = (value) => {
+  if (Array.isArray(value)) return value.map(sortObjectKeys);
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortObjectKeys(entry)])
+  );
+};
+
+const stableJson = (value) => {
+  try {
+    return JSON.stringify(sortObjectKeys(value));
+  } catch {
+    return JSON.stringify(value);
+  }
+};
+
+const normalizeAgentDefinitions = (value) => {
+  if (!isPlainObject(value)) return null;
+  const definitions = {};
+  for (const [rawName, rawDefinition] of Object.entries(value)) {
+    const name = trimString(rawName);
+    if (!name || !isPlainObject(rawDefinition)) continue;
+    const prompt = trimString(rawDefinition.prompt);
+    if (!prompt) continue;
+    definitions[name] = {
+      description: trimString(rawDefinition.description) || `${name} subagent`,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return Object.keys(definitions).length > 0 ? definitions : null;
+};
+
 const isMissingCursorAgentError = (error) => /Agent .* not found/i.test(error instanceof Error ? error.message : String(error || ''));
 
 const writeEvent = (event) => {
@@ -166,18 +209,28 @@ const { Agent } = await import('@cursor/sdk');
 
 writeEvent({ type: 'ready' });
 
-const getAgentCacheKey = (sessionID, directory) => `${trimString(sessionID)}\u0000${trimString(directory)}`;
+const getAgentCacheKey = (sessionID, directory, model, agents) => `${trimString(sessionID)}\u0000${trimString(directory)}\u0000${stableJson({
+  model: normalizeModelSelection(model),
+  agents: normalizeAgentDefinitions(agents),
+})}`;
 
-const getOrCreateAgent = async ({ apiKey, sessionID, model, directory, agentID }) => {
-  const key = getAgentCacheKey(sessionID, directory);
+const getOrCreateAgent = async ({ apiKey, sessionID, model, directory, agentID, agents }) => {
+  const normalizedAgents = normalizeAgentDefinitions(agents);
+  const key = getAgentCacheKey(sessionID, directory, model, normalizedAgents);
   const cached = agentCache.get(key);
   if (cached) return cached;
 
   const local = directory ? { cwd: directory } : {};
+  const agentOptions = {
+    apiKey,
+    model,
+    local,
+    ...(normalizedAgents ? { agents: normalizedAgents } : {}),
+  };
   let agent = null;
   if (agentID) {
     try {
-      agent = await Agent.resume(agentID, { apiKey, model, local });
+      agent = await Agent.resume(agentID, agentOptions);
     } catch (error) {
       if (!isMissingCursorAgentError(error)) {
         throw error;
@@ -186,10 +239,8 @@ const getOrCreateAgent = async ({ apiKey, sessionID, model, directory, agentID }
   }
   if (!agent) {
     agent = await Agent.create({
-      apiKey,
-      model,
       name: `DevRyan ${trimString(sessionID) || Date.now()}`,
-      local,
+      ...agentOptions,
     });
   }
   agentCache.set(key, agent);
@@ -201,6 +252,7 @@ const handlePrompt = async (command) => {
   const apiKey = trimString(command.apiKey);
   const modelID = trimString(command.modelID) || 'auto';
   const model = normalizeModelSelection(command.modelSelection, modelID);
+  const agents = normalizeAgentDefinitions(command.agents);
   const prompt = trimString(command.prompt);
   const directory = trimString(command.directory);
   const sessionID = trimString(command.sessionID);
@@ -234,7 +286,7 @@ const handlePrompt = async (command) => {
 
   try {
     writeTiming('cursor_run_create_started');
-    const agent = await getOrCreateAgent({ apiKey, sessionID, model, directory, agentID });
+    const agent = await getOrCreateAgent({ apiKey, sessionID, model, directory, agentID, agents });
     if (agent?.agentId) {
       writeRequestEvent(requestID, { type: 'agent', agentID: agent.agentId });
     }
