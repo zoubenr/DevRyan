@@ -3,6 +3,8 @@ export type CursorRuntimeStatus = {
   bridge: { kind: 'cursor-sdk' };
   sdkAuthConfigured: boolean;
   usageAuthConfigured: boolean;
+  ripgrepConfigured?: boolean;
+  ripgrepSource?: 'explicit' | 'electron-resources' | 'package' | 'path' | 'unsupported' | 'missing';
   workerMode?: 'direct' | 'node-worker' | 'persistent-node-worker';
   workerReady?: boolean;
   workerRestarts?: number;
@@ -134,6 +136,7 @@ export function resolveCursorSdkWorkerRuntimeConfig(options?: {
   requestedWorkerCwd?: string;
   requestedWorkerEnv?: Record<string, unknown>;
   workerPath?: string;
+  ripgrepPath?: string;
 }): {
   useNodeWorkerForPrompts: boolean;
   nodeBinary: string;
@@ -141,6 +144,7 @@ export function resolveCursorSdkWorkerRuntimeConfig(options?: {
   workerEnv: Record<string, string>;
 };
 export function createCursorSdkRuntime(options: Record<string, unknown> & {
+  ripgrepPath?: string;
   resolveAgentPrompt?: (input: { agent?: string; directory?: string | null }) => Promise<string> | string;
   resolveAgentDefinitions?: (input: {
     agent?: string;

@@ -8,6 +8,10 @@ import {
   normalizePlanModeAssistantParts,
   PLAN_MODE_INSTRUCTION_PREFIX,
 } from './plan-card-normalize.js';
+import {
+  configureCursorSdkRipgrep,
+  resolveCursorRipgrepPath,
+} from './ripgrep-path.js';
 
 export const CURSOR_PROVIDER_ID = 'cursor-acp';
 
@@ -170,6 +174,7 @@ export const resolveCursorSdkWorkerRuntimeConfig = ({
   requestedWorkerCwd = '',
   requestedWorkerEnv,
   workerPath = '',
+  ripgrepPath = '',
 } = {}) => {
   const useNodeWorkerForPrompts = typeof requestedUseNodeWorkerForPrompts === 'boolean'
     ? requestedUseNodeWorkerForPrompts
@@ -178,7 +183,15 @@ export const resolveCursorSdkWorkerRuntimeConfig = ({
     || trimString(nodeBinaryEnv)
     || (isElectronRuntime ? trimString(execPath) : '')
     || 'node';
-  const defaultWorkerEnv = isElectronRuntime ? { ELECTRON_RUN_AS_NODE: '1' } : {};
+  const resolvedRipgrep = resolveCursorRipgrepPath({
+    explicitRipgrepPath: ripgrepPath,
+    env,
+    resourcesPath,
+  });
+  const defaultWorkerEnv = {
+    ...(isElectronRuntime ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+    ...(resolvedRipgrep.path ? { CURSOR_SDK_RIPGREP_PATH: resolvedRipgrep.path } : {}),
+  };
   const normalizedWorkerPath = trimString(workerPath);
   const workerCwd = trimString(requestedWorkerCwd)
     || (isElectronRuntime && trimString(resourcesPath)
@@ -1408,7 +1421,24 @@ export function createCursorSdkRuntime(options = {}) {
   const readAuth = typeof options.readAuth === 'function' ? options.readAuth : () => ({});
   const env = isPlainObject(options.env) ? options.env : process.env;
   const storageDir = trimString(options.storageDir) || defaultStorageDir();
-  const loadSdk = typeof options.loadSdk === 'function' ? options.loadSdk : () => importRuntimeModule('@cursor/sdk');
+  const rawLoadSdk = typeof options.loadSdk === 'function' ? options.loadSdk : () => importRuntimeModule('@cursor/sdk');
+  const ripgrepPath = trimString(options.ripgrepPath);
+  const initialRipgrepResolution = resolveCursorRipgrepPath({
+    explicitRipgrepPath: ripgrepPath,
+    env,
+  });
+  let lastRipgrepStatus = {
+    configured: Boolean(initialRipgrepResolution.path),
+    source: initialRipgrepResolution.source,
+  };
+  const loadSdk = async () => {
+    const sdk = await rawLoadSdk();
+    lastRipgrepStatus = configureCursorSdkRipgrep(sdk, {
+      explicitRipgrepPath: ripgrepPath,
+      env,
+    });
+    return sdk;
+  };
   const workerPath = trimString(options.workerPath) || fileURLToPath(new URL('./node-worker.mjs', import.meta.url));
   const persistentWorkerPath = trimString(options.persistentWorkerPath)
     || workerPath.replace(/node-worker\.mjs$/, 'persistent-worker.mjs');
@@ -1420,6 +1450,7 @@ export function createCursorSdkRuntime(options = {}) {
     requestedWorkerCwd: options.workerCwd,
     requestedWorkerEnv: options.workerEnv,
     workerPath,
+    ripgrepPath,
   });
   const {
     nodeBinary,
@@ -1427,6 +1458,12 @@ export function createCursorSdkRuntime(options = {}) {
     workerCwd,
     workerEnv,
   } = workerConfig;
+  if (useNodeWorkerForPrompts && trimString(workerEnv.CURSOR_SDK_RIPGREP_PATH)) {
+    lastRipgrepStatus = {
+      configured: true,
+      source: initialRipgrepResolution.path ? initialRipgrepResolution.source : 'explicit',
+    };
+  }
   const spawnImpl = typeof options.spawnImpl === 'function' ? options.spawnImpl : spawn;
   const usePersistentWorkerForPrompts = options.usePersistentWorkerForPrompts !== false;
   const getWorkspaceDiff = typeof options.getWorkspaceDiff === 'function' ? options.getWorkspaceDiff : defaultGetWorkspaceDiff;
@@ -1535,6 +1572,8 @@ export function createCursorSdkRuntime(options = {}) {
       lastError,
       lastCancellation,
       lastPostTaskEmptyFinish,
+      ripgrepConfigured: lastRipgrepStatus.configured,
+      ripgrepSource: lastRipgrepStatus.source,
     };
   };
 

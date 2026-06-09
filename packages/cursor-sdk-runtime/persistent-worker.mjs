@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import process from 'node:process';
+import { configureCursorSdkRipgrep } from './ripgrep-path.js';
 
 const trimString = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -205,7 +206,9 @@ const writeRequestEvent = (requestID, event) => {
 
 const agentCache = new Map();
 const activeRuns = new Map();
-const { Agent } = await import('@cursor/sdk');
+const cursorSdk = await import('@cursor/sdk');
+configureCursorSdkRipgrep(cursorSdk, { env: process.env });
+const { Agent } = cursorSdk;
 
 writeEvent({ type: 'ready' });
 

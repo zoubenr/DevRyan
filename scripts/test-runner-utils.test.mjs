@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import { discoverTestFiles, isIsolatedUiTestSource } from './test-runner-utils.mjs';
 import { discoverVscodeBunTestFiles } from './test-vscode.mjs';
+
+const repoRoot = new URL('..', import.meta.url);
 
 describe('isIsolatedUiTestSource', () => {
   test('isolates source that mutates global window through supported patterns', () => {
@@ -58,5 +60,18 @@ describe('test file discovery', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('release workflow', () => {
+  test('installs Electron macOS optional dependencies for runner and package target architectures', () => {
+    const workflow = readFileSync(new URL('.github/workflows/release.yml', repoRoot), 'utf8');
+    const electronJobMatch = workflow.match(/  build-desktop-electron-macos:\n(?<job>[\s\S]*?)(?:\n  [a-zA-Z0-9_-]+:\n|\n$)/);
+    assert.ok(electronJobMatch?.groups?.job, 'build-desktop-electron-macos job not found');
+
+    const installStepMatch = electronJobMatch.groups.job.match(/      - name: Install dependencies\n(?<step>[\s\S]*?)(?:\n      - name: |\n    [a-zA-Z0-9_-]+:|\n$)/);
+    assert.ok(installStepMatch?.groups?.step, 'Electron install dependencies step not found');
+
+    assert.match(installStepMatch.groups.step, /bun install --frozen-lockfile --cpu '\*' --os darwin/);
   });
 });

@@ -573,7 +573,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --cpu '*' --os darwin
 
       - name: Install Apple Certificate
         env:
@@ -634,6 +634,39 @@ jobs:
             ./node_modules/.bin/electron-builder --mac --${{ matrix.arch }} --publish=never
           else
             ./node_modules/.bin/electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.identity=null -c.mac.notarize=false -c.dmg.sign=false
+          fi
+
+      - name: Verify Electron Cursor SDK ripgrep binary
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.arch }}" in
+            arm64)
+              APP_DIR="packages/electron/dist/mac-arm64"
+              CURSOR_SDK_PLATFORM_PACKAGE="sdk-darwin-arm64"
+              ;;
+            x64)
+              APP_DIR="packages/electron/dist/mac"
+              CURSOR_SDK_PLATFORM_PACKAGE="sdk-darwin-x64"
+              ;;
+            *)
+              echo "Error: unsupported Electron architecture: ${{ matrix.arch }}"
+              exit 1
+              ;;
+          esac
+
+          APP_PATH=$(find "$APP_DIR" -maxdepth 2 -name "*.app" -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: .app not found under $APP_DIR"
+            ls -la packages/electron/dist/
+            exit 1
+          fi
+
+          RG_PATH="$APP_PATH/Contents/Resources/app.asar.unpacked/node_modules/@cursor/$CURSOR_SDK_PLATFORM_PACKAGE/bin/rg"
+          if [ ! -x "$RG_PATH" ]; then
+            echo "Error: executable Cursor SDK ripgrep binary missing: $RG_PATH"
+            find "$APP_PATH/Contents/Resources/app.asar.unpacked/node_modules/@cursor" -maxdepth 4 -print 2>/dev/null || true
+            exit 1
           fi
 
       - name: Verify Electron macOS usage descriptions

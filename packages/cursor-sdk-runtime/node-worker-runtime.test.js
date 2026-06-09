@@ -191,12 +191,16 @@ describe('Cursor SDK worker runtime config', () => {
       requestedWorkerCwd: '',
       requestedWorkerEnv: {},
       workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
+      ripgrepPath: '/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg',
     });
 
     expect(config.useNodeWorkerForPrompts).toBe(true);
     expect(config.nodeBinary).toBe('/Applications/DevRyan.app/Contents/MacOS/DevRyan');
     expect(config.workerCwd).toBe('/Applications/DevRyan.app/Contents/Resources');
-    expect(config.workerEnv).toEqual({ ELECTRON_RUN_AS_NODE: '1' });
+    expect(config.workerEnv).toEqual({
+      ELECTRON_RUN_AS_NODE: '1',
+      CURSOR_SDK_RIPGREP_PATH: '/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg',
+    });
   });
 
   test('passes configured worker process settings to spawned prompt workers', async () => {
@@ -212,6 +216,7 @@ describe('Cursor SDK worker runtime config', () => {
       workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
       workerCwd: '/Applications/DevRyan.app/Contents/Resources',
       workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      ripgrepPath: '/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg',
       spawnImpl: createFakeWorkerSpawn(capture),
     });
 
@@ -232,6 +237,7 @@ describe('Cursor SDK worker runtime config', () => {
     ]);
     expect(capture.calls[0].options.cwd).toBe('/Applications/DevRyan.app/Contents/Resources');
     expect(capture.calls[0].options.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    expect(capture.calls[0].options.env.CURSOR_SDK_RIPGREP_PATH).toBe('/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg');
     expect(capture.input.modelSelection).toEqual({
       id: 'composer-2.5',
       params: [{ id: 'fast', value: 'false' }],
@@ -542,6 +548,7 @@ describe('Cursor SDK worker runtime config', () => {
       workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
       workerCwd: '/Applications/DevRyan.app/Contents/Resources',
       workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      ripgrepPath: '/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg',
       spawnImpl: createFakePersistentWorkerSpawn(capture),
     });
 
@@ -578,6 +585,7 @@ describe('Cursor SDK worker runtime config', () => {
     expect(capture.calls[0].args).toEqual([
       '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/persistent-worker.mjs',
     ]);
+    expect(capture.calls[0].options.env.CURSOR_SDK_RIPGREP_PATH).toBe('/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg');
     expect(promptCommands).toHaveLength(2);
     expect(promptCommands[0].modelSelection).toEqual({
       id: 'composer-2.5',
@@ -587,6 +595,8 @@ describe('Cursor SDK worker runtime config', () => {
       workerMode: 'persistent-node-worker',
       workerReady: true,
       workerRestarts: 0,
+      ripgrepConfigured: true,
+      ripgrepSource: 'explicit',
     });
 
     await runtime.dispose();
@@ -776,6 +786,7 @@ describe('Cursor SDK worker runtime config', () => {
       workerPath: '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
       workerCwd: '/Applications/DevRyan.app/Contents/Resources',
       workerEnv: { ELECTRON_RUN_AS_NODE: '1' },
+      ripgrepPath: '/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg',
       spawnImpl,
       logger: { warn: () => {}, error: () => {} },
     });
@@ -804,6 +815,8 @@ describe('Cursor SDK worker runtime config', () => {
     expect(capture.calls[1].args).toEqual([
       '/Applications/DevRyan.app/Contents/Resources/app.asar/node_modules/@openchamber/cursor-sdk-runtime/node-worker.mjs',
     ]);
+    expect(capture.calls[0].options.env.CURSOR_SDK_RIPGREP_PATH).toBe('/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg');
+    expect(capture.calls[1].options.env.CURSOR_SDK_RIPGREP_PATH).toBe('/Applications/DevRyan.app/Contents/Resources/app.asar.unpacked/node_modules/@cursor/sdk-darwin-arm64/bin/rg');
     expect(records[1].parts.find((part) => part.type === 'text')?.text).toBe('worker ok');
     await runtime.dispose();
   });

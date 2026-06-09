@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { configureCursorSdkRipgrep } from './ripgrep-path.js';
 
 const readStdin = async () => {
   let raw = '';
@@ -210,7 +211,9 @@ const main = async () => {
   if (!apiKey) throw new Error('Cursor SDK API key is not configured.');
   if (!prompt) throw new Error('Cursor prompt is required.');
 
-  const { Agent } = await import('@cursor/sdk');
+  const cursorSdk = await import('@cursor/sdk');
+  configureCursorSdkRipgrep(cursorSdk, { env: process.env });
+  const { Agent } = cursorSdk;
   const model = modelSelection;
   const local = directory ? { cwd: directory } : {};
   const agentOptions = {

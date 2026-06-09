@@ -86,4 +86,24 @@ describe("useMcpConfigStore", () => {
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/recovery")}`,
     ]);
   });
+
+  test("updates MCP configs for the explicit directory", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      calls.push(`${init?.method || "GET"} ${String(input)} ${String(init?.headers ? JSON.stringify(init.headers) : "")} ${String(init?.body ?? "")}`);
+      return Response.json({ success: true, requiresReload: false });
+    }) as typeof fetch;
+
+    await useMcpConfigStore.getState().updateMcp(
+      "linear",
+      { enabled: true },
+      { directory: "/repo/project" },
+    );
+
+    expect(calls).toEqual([
+      `PATCH /api/config/mcp/linear?directory=${encodeURIComponent("/repo/project")} {"Content-Type":"application/json","x-opencode-directory":"/repo/project"} {"enabled":true}`,
+      `POST /api/config/mcp/recover?directory=${encodeURIComponent("/repo/project")} {"x-opencode-directory":"/repo/project"} `,
+      `GET /api/config/mcp?directory=${encodeURIComponent("/repo/project")} {"x-opencode-directory":"/repo/project"} `,
+    ]);
+  });
 });

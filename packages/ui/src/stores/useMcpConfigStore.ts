@@ -11,7 +11,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 
 export type McpScope = 'user' | 'project';
 
-type McpMutationResult = {
+export type McpMutationResult = {
   ok: boolean;
   reloadFailed?: boolean;
   message?: string;
@@ -141,7 +141,7 @@ interface McpConfigStore {
   setMcpDraft: (draft: McpDraft | null) => void;
   loadMcpConfigs: (options?: { force?: boolean; directory?: string | null }) => Promise<boolean>;
   createMcp: (config: McpDraft) => Promise<McpMutationResult>;
-  updateMcp: (name: string, config: Partial<McpDraft>) => Promise<McpMutationResult>;
+  updateMcp: (name: string, config: Partial<McpDraft>, options?: { directory?: string | null }) => Promise<McpMutationResult>;
   deleteMcp: (name: string) => Promise<McpMutationResult>;
   getMcpByName: (name: string) => McpServerWithScope | undefined;
 }
@@ -280,12 +280,12 @@ export const useMcpConfigStore = create<McpConfigStore>()(
           }
         },
 
-        updateMcp: async (name: string, config: Partial<McpDraft>) => {
+        updateMcp: async (name: string, config: Partial<McpDraft>, options?: { directory?: string | null }) => {
           startConfigUpdate('Updating MCP server configuration…');
           let requiresReload = false;
           try {
             const body = buildMcpBody(config);
-            const configDirectory = getConfigDirectory();
+            const configDirectory = getConfigDirectory(options?.directory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
             const response = await fetch(`/api/config/mcp/${encodeURIComponent(name)}${queryParams}`, {
               method: 'PATCH',
@@ -310,7 +310,7 @@ export const useMcpConfigStore = create<McpConfigStore>()(
                 delayMs: payload.reloadDelayMs ?? CLIENT_RELOAD_DELAY_MS,
                 scopes: ['all'],
               });
-              await get().loadMcpConfigs({ force: true });
+              await get().loadMcpConfigs({ force: true, directory: configDirectory });
               return {
                 ok: true,
                 reloadFailed: payload?.reloadFailed === true,
@@ -319,7 +319,7 @@ export const useMcpConfigStore = create<McpConfigStore>()(
               };
             }
 
-            await get().loadMcpConfigs({ force: true });
+            await get().loadMcpConfigs({ force: true, directory: configDirectory });
             return {
               ok: true,
               reloadFailed: payload?.reloadFailed === true,

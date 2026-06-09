@@ -24,6 +24,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { McpIcon } from '@/components/icons/McpIcon';
 import { useI18n } from '@/lib/i18n';
 import { formatMcpServerDisplayName } from '@/components/sections/mcp/McpSidebar.utils';
+import { toggleMcpServerEnabled } from './McpDropdown.actions';
 
 const statusTooltip = (
   status: McpStatus | undefined,
@@ -132,6 +133,7 @@ export const McpDropdownContent: React.FC<McpDropdownContentProps> = ({ active, 
   const disconnect = useMcpStore((state) => state.disconnect);
   const mcpServers = useMcpConfigStore((state) => state.mcpServers);
   const loadMcpConfigs = useMcpConfigStore((state) => state.loadMcpConfigs);
+  const updateMcp = useMcpConfigStore((state) => state.updateMcp);
   const [isSpinning, setIsSpinning] = React.useState(false);
   const [busyName, setBusyName] = React.useState<string | null>(null);
 
@@ -160,6 +162,10 @@ export const McpDropdownContent: React.FC<McpDropdownContentProps> = ({ active, 
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [mcpServers, status]);
+
+  const mcpServerByName = React.useMemo(() => {
+    return new Map(mcpServers.map((server) => [server.name, server]));
+  }, [mcpServers]);
 
   const handleRefresh = React.useCallback((e?: React.MouseEvent) => {
     e?.preventDefault();
@@ -202,8 +208,10 @@ export const McpDropdownContent: React.FC<McpDropdownContentProps> = ({ active, 
       <div className="max-h-64 overflow-y-auto py-2">
         {sortedNames.map((serverName) => {
           const serverStatus = status[serverName];
+          const serverConfig = mcpServerByName.get(serverName);
           const tone = statusTone(serverStatus);
           const isConnected = serverStatus?.status === 'connected';
+          const isEnabled = serverConfig ? serverConfig.enabled !== false : isConnected;
           const isBusy = busyName === serverName;
           const tooltip = statusTooltip(serverStatus, t);
 
@@ -236,17 +244,23 @@ export const McpDropdownContent: React.FC<McpDropdownContentProps> = ({ active, 
               </div>
 
               <Switch
-                checked={isConnected}
+                checked={isEnabled}
                 disabled={isBusy}
                 className="data-[checked]:bg-status-info"
                 onCheckedChange={async (checked) => {
                   setBusyName(serverName);
                   try {
-                    if (checked) {
-                      await connect(serverName, directory);
-                    } else {
-                      await disconnect(serverName, directory);
-                    }
+                    await toggleMcpServerEnabled({
+                      name: serverName,
+                      enabled: checked,
+                      directory,
+                      isConnected,
+                      updateMcp,
+                      loadMcpConfigs,
+                      refresh,
+                      connect,
+                      disconnect,
+                    });
                   } finally {
                     setBusyName(null);
                   }
@@ -280,6 +294,7 @@ export const McpDropdown: React.FC<McpDropdownProps> = ({ headerIconButtonClass 
   const disconnect = useMcpStore((state) => state.disconnect);
   const mcpServers = useMcpConfigStore((state) => state.mcpServers);
   const loadMcpConfigs = useMcpConfigStore((state) => state.loadMcpConfigs);
+  const updateMcp = useMcpConfigStore((state) => state.updateMcp);
 
   const handleDropdownOpenChange = React.useCallback((isOpen: boolean) => {
     if (!isOpen) {
@@ -328,6 +343,10 @@ export const McpDropdown: React.FC<McpDropdownProps> = ({ headerIconButtonClass 
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [mcpServers, status]);
 
+  const mcpServerByName = React.useMemo(() => {
+    return new Map(mcpServers.map((server) => [server.name, server]));
+  }, [mcpServers]);
+
   const handleRefresh = React.useCallback((e?: React.MouseEvent) => {
     e?.preventDefault();
     if (isSpinning) return;
@@ -346,8 +365,10 @@ export const McpDropdown: React.FC<McpDropdownProps> = ({ headerIconButtonClass 
     <>
       {sortedNames.map((serverName) => {
         const serverStatus = status[serverName];
+        const serverConfig = mcpServerByName.get(serverName);
         const tone = statusTone(serverStatus);
         const isConnected = serverStatus?.status === 'connected';
+        const isEnabled = serverConfig ? serverConfig.enabled !== false : isConnected;
         const isBusy = busyName === serverName;
         const tooltip = statusTooltip(serverStatus, t);
 
@@ -393,17 +414,23 @@ export const McpDropdown: React.FC<McpDropdownProps> = ({ headerIconButtonClass 
             </div>
 
             <Switch
-              checked={isConnected}
+              checked={isEnabled}
               disabled={isBusy}
               className="data-[checked]:bg-status-info"
               onCheckedChange={async (checked) => {
                 setBusyName(serverName);
                 try {
-                  if (checked) {
-                    await connect(serverName, directory);
-                  } else {
-                    await disconnect(serverName, directory);
-                  }
+                  await toggleMcpServerEnabled({
+                    name: serverName,
+                    enabled: checked,
+                    directory,
+                    isConnected,
+                    updateMcp,
+                    loadMcpConfigs,
+                    refresh,
+                    connect,
+                    disconnect,
+                  });
                 } finally {
                   setBusyName(null);
                 }
