@@ -1,0 +1,97 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, test } from 'bun:test';
+import {
+  createCursorSdkRuntime,
+  filterWorkspaceDiffFilesAgainstBaseline,
+  isLossyStreamedTextVariant,
+} from './index.js';
+
+const diffFor = (name, line) => [
+  `diff --git a/${name} b/${name}`,
+  'index 0000000..1111111 100644',
+  `--- a/${name}`,
+  `+++ b/${name}`,
+  '@@ -1,1 +1,2 @@',
+  ' context',
+  `+${line}`,
+  '',
+].join('\n');
+
+describe('filterWorkspaceDiffFilesAgainstBaseline', () => {
+  test('excludes files whose diff already existed before the run', () => {
+    const baseline = diffFor('math.js', 'pre-existing change');
+    const current = diffFor('math.js', 'pre-existing change') + diffFor('README.md', 'new change');
+    const files = filterWorkspaceDiffFilesAgainstBaseline(baseline, current);
+    expect(files.map((file) => file.relativePath)).toEqual(['README.md']);
+  });
+
+  test('keeps a file edited both before and during the run', () => {
+    const baseline = diffFor('math.js', 'pre-existing change');
+    const current = diffFor('math.js', 'pre-existing change\n+second change');
+    const files = filterWorkspaceDiffFilesAgainstBaseline(baseline, current);
+    expect(files.map((file) => file.relativePath)).toEqual(['math.js']);
+  });
+
+  test('returns empty when the workspace reverts to the baseline', () => {
+    const baseline = diffFor('math.js', 'pre-existing change');
+    const files = filterWorkspaceDiffFilesAgainstBaseline(baseline, baseline);
+    expect(files).toEqual([]);
+  });
+
+  test('returns all files when the baseline was clean', () => {
+    const current = diffFor('a.js', 'one') + diffFor('b.js', 'two');
+    const files = filterWorkspaceDiffFilesAgainstBaseline('', current);
+    expect(files.map((file) => file.relativePath)).toEqual(['a.js', 'b.js']);
+  });
+
+  test('returns empty for an empty current diff', () => {
+    expect(filterWorkspaceDiffFilesAgainstBaseline(diffFor('a.js', 'one'), '')).toEqual([]);
+  });
+});
+
+describe('isLossyStreamedTextVariant', () => {
+  test('detects streamed text that lost fragments of the final text', () => {
+    const streamed = 'AppendedMaintained with care.` to of`. No other files were changed.';
+    const final = 'Appended `Maintained with care.` to the end of `README.md`. No other files were changed.';
+    expect(isLossyStreamedTextVariant(streamed, final)).toBe(true);
+  });
+
+  test('rejects unrelated text', () => {
+    expect(isLossyStreamedTextVariant('Working on the database migration now.', 'Appended a line to README.md and verified the result.')).toBe(false);
+  });
+
+  test('rejects streamed text that is not shorter than the final text', () => {
+    expect(isLossyStreamedTextVariant('Same text.', 'Same text.')).toBe(false);
+  });
+
+  test('rejects short fragments that could embed by coincidence', () => {
+    expect(isLossyStreamedTextVariant('I did.', 'Importantly, dinner is ready tonight.')).toBe(false);
+  });
+
+  test('rejects streamed text under half the final length', () => {
+    expect(isLossyStreamedTextVariant('Appended a line.', 'Appended a line to README.md, verified the workspace diff, and confirmed no other files changed at all.')).toBe(false);
+  });
+});
+
+describe('deleteSessionState', () => {
+  test('removes the stored session state file and reports success', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cursor-sdk-test-'));
+    const runtime = createCursorSdkRuntime({ storageDir: dir, emitEvent: () => {} });
+    const sessionFile = path.join(dir, `${encodeURIComponent('ses_delete_me')}.json`);
+    await fs.writeFile(sessionFile, JSON.stringify({ sessionID: 'ses_delete_me', agentID: 'agent_1', records: [] }));
+
+    expect(await runtime.deleteSessionState('ses_delete_me')).toBe(true);
+    await expect(fs.stat(sessionFile)).rejects.toThrow();
+    expect(await runtime.getSessionMessages('ses_delete_me')).toEqual([]);
+  });
+
+  test('returns false for blank or already-deleted sessions', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cursor-sdk-test-'));
+    const runtime = createCursorSdkRuntime({ storageDir: dir, emitEvent: () => {} });
+    expect(await runtime.deleteSessionState('')).toBe(false);
+    expect(await runtime.deleteSessionState('ses_gone')).toBe(true);
+    expect(await runtime.deleteSessionState('ses_gone')).toBe(false);
+  });
+});

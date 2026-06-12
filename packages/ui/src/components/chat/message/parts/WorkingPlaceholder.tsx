@@ -6,7 +6,7 @@ interface WorkingPlaceholderProps {
   statusText: string | null;
   isGenericStatus?: boolean;
   isWaitingForPermission?: boolean;
-  retryInfo?: { attempt?: number; next?: number } | null;
+  retryInfo?: { attempt?: number; next?: number; message?: string } | null;
   agentName?: string;
 }
 
@@ -184,23 +184,28 @@ export function WorkingPlaceholder({
     return null;
   }
 
-  // Retry state: show countdown and attempt info
+  // Retry state: show countdown, attempt info, and the provider's reason
+  // (e.g. an out-of-usage / rate-limit message) so the user knows why.
   if (retryInfo) {
     const attemptLabel = retryInfo.attempt && retryInfo.attempt > 1 ? ` (attempt ${retryInfo.attempt})` : '';
     const countdownLabel = retryCountdown !== null && retryCountdown > 0
       ? ` in ${formatRetryCountdown(retryCountdown)}`
       : '';
     const retryText = `Retrying${countdownLabel}${attemptLabel}`;
+    const retryReason = typeof retryInfo.message === 'string' ? retryInfo.message.trim() : '';
 
     return (
       <div
-        className="flex h-full items-center text-muted-foreground pl-0.5"
+        className="flex h-full min-w-0 items-center text-muted-foreground pl-0.5"
         role="status"
         aria-live="polite"
-        aria-label={`${retryText}...`}
+        aria-label={retryReason ? `${retryText} — ${retryReason}` : `${retryText}...`}
       >
-        <span className="typography-ui-header">
-          {retryText}
+        <span className="typography-ui-header flex min-w-0 items-center">
+          <span className="whitespace-nowrap">{retryText}</span>
+          {retryReason ? (
+            <span className="truncate">&nbsp;— {retryReason}</span>
+          ) : null}
           <BusyDots />
         </span>
       </div>

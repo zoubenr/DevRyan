@@ -30,7 +30,7 @@ export function classifyAssistantError(
 
   if (errorName === "SessionRetry") {
     return {
-      text: `Opencode failed to send a message. Retry attempt info: \n\`${detail}\``,
+      text: `The provider rejected the request and OpenCode is retrying automatically. Press Stop to cancel and switch models.\n\`${detail}\``,
       variant: "info",
     }
   }

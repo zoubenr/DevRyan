@@ -189,6 +189,17 @@ Server compatibility events named `openchamber:session-status` are normalized in
 
 `sync-context.tsx` tracks the last observed `session.status` and message/part output event per `directory + sessionID`. A 5-second watchdog checks only the active viewed session; when that session remains `busy` or `retry` without fresh status or output activity for 20 seconds, it runs a targeted reconnect resync for that session only. A 15-second per-session cooldown prevents repeated recovery calls.
 
+## Stop-during-retry guard
+
+OpenCode ignores `session.abort` while a session sleeps between provider retry attempts (out of usage / rate limit) and keeps emitting `session.status: retry` — it never emits `session.idle`/`session.error` from inside the loop. `abort-retry-guard.ts` makes a manual Stop stick:
+
+- Every user-initiated abort path (`abortCurrentOperation`, queued-send interrupt, archive/delete pre-abort, revert/unrevert) registers a per-session guard via `registerManualAbortGuard`.
+- While active (60s TTL), `filterSessionStatusThroughAbortGuard` coerces incoming `retry` statuses to `idle` (event reducer and reconnect status merge both route through it) and schedules bounded, debounced re-aborts (max 3) so the server loop is cancelled the moment its next attempt creates an abortable in-flight request.
+- The guard clears on authoritative idle (`session.idle`, `session.error`, idle `session.status`) and on any new local send (`optimisticSend`, `usePromptSubmit`), so a legitimate new turn is never suppressed or re-aborted.
+- When the TTL expires without idle, live server state wins again — the guard never permanently masks real activity.
+
+`abortCurrentOperation` additionally settles a local `retry` status to `idle` right after the abort request (narrow optimistic transition mirroring `revertToMessage`), so the input and model picker unlock immediately.
+
 ## Selector hygiene
 
 Select leaf values, not containers:

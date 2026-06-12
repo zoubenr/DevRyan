@@ -31,6 +31,11 @@ import {
 import { hasMessageRecordInfo, unwrapMessageRecordsResult } from "./message-fetch"
 import { isSessionWorkingFromState } from "./session-working"
 import { isTransientError, retry } from "./retry"
+import {
+  clearAbortGuard,
+  registerManualAbortGuard,
+  setAbortGuardExecutor,
+} from "./abort-retry-guard"
 
 const MESSAGE_REFETCH_LIMIT = 200
 const MESSAGE_REFETCH_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
@@ -87,6 +92,16 @@ function sdk() {
   if (!_sdk) throw new Error("SDK not initialized — is SyncProvider mounted?")
   return _sdk
 }
+
+// Re-abort executor for the abort-retry guard: when a stopped session's
+// server-side retry loop fires another attempt, the guard re-issues abort at
+// the moment it can actually take effect (an in-flight request exists).
+setAbortGuardExecutor(async (sessionId, directory) => {
+  if (!_sdk) return
+  const targetDirectory = directory || getSessionDirectory(sessionId)
+  postAbortRequestedMark(sessionId, targetDirectory)
+  await _sdk.session.abort({ sessionID: sessionId, directory: targetDirectory })
+})
 
 function directoryStore(directory?: string) {
   if (!_childStores) throw new Error("Child stores not initialized")
@@ -734,9 +749,11 @@ async function abortWorkingSessionsBeforeRemoval(
 
       try {
         postAbortRequestedMark(sessionId, directory)
+        registerManualAbortGuard(sessionId, directory)
         await sdk().session.abort({ sessionID: sessionId, directory })
         markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, directory))
       } catch (error) {
+        clearAbortGuard(sessionId)
         console.error(`[session-actions] abort before removal failed for ${sessionId}`, error)
       }
     }
@@ -1333,6 +1350,10 @@ export async function optimisticSend(input: {
     return { session_user_activity: draft.session_user_activity }
   })
 
+  // A new user-initiated turn supersedes any pending stop-during-retry guard —
+  // its busy/retry statuses are authoritative again and must not be re-aborted.
+  clearAbortGuard(input.sessionId)
+
   // Set busy status
   const current = storeForMessage.getState()
   storeForMessage.setState({
@@ -1377,11 +1398,46 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
   useSessionUIStore.getState().abortPendingSend?.(sessionId)
   try {
     postAbortRequestedMark(sessionId, sessionDirectory)
+    registerManualAbortGuard(sessionId, sessionDirectory)
     await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
     markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, sessionDirectory))
+    forceSessionIdleAfterManualAbort(sessionId, sessionDirectory)
   } catch (error) {
+    // The stop never reached the server — do not mask live retry/busy state.
+    clearAbortGuard(sessionId)
     console.error("[session-actions] abort failed", error)
   }
+}
+
+/**
+ * After a manual abort, OpenCode never emits an idle status while the session
+ * sits in a provider retry loop (out of usage / rate limit) — abort during the
+ * backoff sleep is ignored upstream. Optimistically settle a `retry` status to
+ * idle so the UI unlocks; the abort-retry guard keeps stale `retry` statuses
+ * from resurrecting it and cancels the loop server-side when the next attempt
+ * fires. Plain `busy` aborts are left alone: the server confirms those with an
+ * authoritative idle event.
+ */
+function forceSessionIdleAfterManualAbort(sessionId: string, directoryOverride?: string): void {
+  let store: StoreApi<DirectoryStore>
+  try {
+    store = directoryStore(directoryOverride)
+  } catch {
+    return
+  }
+
+  store.setState((current) => {
+    const status = current.session_status[sessionId]
+    if (status?.type !== "retry") {
+      return current
+    }
+    return {
+      session_status: {
+        ...current.session_status,
+        [sessionId]: { type: "idle" as const },
+      },
+    }
+  })
 }
 
 export async function interruptCurrentOperationForQueuedSend(sessionId: string): Promise<void> {
@@ -1391,8 +1447,16 @@ export async function interruptCurrentOperationForQueuedSend(sessionId: string):
   if (status?.type === "idle") return
 
   postAbortRequestedMark(sessionId, sessionDirectory)
-  await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
+  registerManualAbortGuard(sessionId, sessionDirectory)
+  try {
+    await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
+  } catch (error) {
+    // The interrupt never reached the server — do not mask live status.
+    clearAbortGuard(sessionId)
+    throw error
+  }
   markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, sessionDirectory))
+  forceSessionIdleAfterManualAbort(sessionId, sessionDirectory)
   await waitForSessionIdleAfterQueuedInterrupt(sessionId, sessionDirectory)
 }
 
@@ -1570,6 +1634,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
+      registerManualAbortGuard(sessionId, sessionDirectory)
       await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
       store.setState((current) => {
         const currentTransaction = current.revert_transaction[sessionId]
@@ -1587,7 +1652,9 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
         }
       })
     } catch {
-      // ignore abort errors; scoped revert remains the authoritative operation
+      // ignore abort errors; scoped revert remains the authoritative operation.
+      // The abort never reached the server, so stop masking live status.
+      clearAbortGuard(sessionId)
     }
   }
 
@@ -1715,9 +1782,12 @@ export async function unrevertSession(sessionId: string): Promise<void> {
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
+      registerManualAbortGuard(sessionId, sessionDirectory)
       await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
     } catch {
-      // ignore
+      // ignore abort errors; the abort never reached the server, so stop
+      // masking live status.
+      clearAbortGuard(sessionId)
     }
   }
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Event, Message, Part, PermissionRequest, QuestionRequest, Session, SessionStatus } from "@opencode-ai/sdk/v2/client"
+import { registerManualAbortGuard, resetAbortGuardState } from "../abort-retry-guard"
 import { applyDirectoryEvent } from "../event-reducer"
 import { INITIAL_STATE, type State } from "../types"
 
@@ -533,6 +534,55 @@ describe("applyDirectoryEvent", () => {
 
     expect(applyDirectoryEvent(draft, event)).toBe(true)
     expect((draft.session_status.ses_1 as Extract<SessionStatus, { type: "retry" }>).attempt).toBe(2)
+  })
+
+  test("suppresses retry status resurrection after a manual abort", () => {
+    try {
+      registerManualAbortGuard("ses_1", "/dir")
+      const draft = state({
+        session_status: { ses_1: { type: "idle" } as SessionStatus },
+      })
+
+      const event = {
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "retry", attempt: 2, message: "out of usage", next: 20 } as SessionStatus,
+        },
+      } as Event
+
+      // Stale retry events for a user-stopped session are coerced to idle —
+      // no state change, no "Retrying…" flap.
+      expect(applyDirectoryEvent(draft, event)).toBe(false)
+      expect(draft.session_status.ses_1).toEqual({ type: "idle" })
+    } finally {
+      resetAbortGuardState()
+    }
+  })
+
+  test("session.idle clears the abort guard so later retry statuses apply", () => {
+    try {
+      registerManualAbortGuard("ses_1")
+      const draft = state()
+
+      expect(applyDirectoryEvent(draft, {
+        type: "session.idle",
+        properties: { sessionID: "ses_1" },
+      } as Event)).toBe(true)
+
+      const retryEvent = {
+        type: "session.status",
+        properties: {
+          sessionID: "ses_1",
+          status: { type: "retry", attempt: 1, message: "rate limited", next: 10 } as SessionStatus,
+        },
+      } as Event
+
+      expect(applyDirectoryEvent(draft, retryEvent)).toBe(true)
+      expect(draft.session_status.ses_1).toEqual({ type: "retry", attempt: 1, message: "rate limited", next: 10 })
+    } finally {
+      resetAbortGuardState()
+    }
   })
 
   test("indexes root user message timestamps for sidebar ordering", () => {

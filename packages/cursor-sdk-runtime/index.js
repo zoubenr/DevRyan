@@ -351,6 +351,24 @@ const mergeFinalText = (existing, incoming) => {
   return mergeTextDelta(previous, next);
 };
 
+// Streamed deltas can lose fragments (the SDK delivers text via both the
+// delta callback and the stream, and cross-source dedupe occasionally drops a
+// legitimate repeat), leaving streamed text that is an in-order subset of the
+// final run result. Appending the final text on top of it would show the
+// message twice — once garbled, once clean — so that shape must be replaced.
+export const isLossyStreamedTextVariant = (streamedText, finalText) => {
+  const candidate = typeof streamedText === 'string' ? streamedText : '';
+  const full = typeof finalText === 'string' ? finalText : '';
+  if (!candidate || !full || candidate.length >= full.length) return false;
+  if (candidate.length < 16 || candidate.length * 2 < full.length) return false;
+  let index = 0;
+  for (const char of full) {
+    if (char === candidate[index]) index += 1;
+    if (index === candidate.length) return true;
+  }
+  return false;
+};
+
 const getSdkMessageTextFingerprint = (message) => {
   if (!isPlainObject(message)) return '';
   if (message.type === 'assistant') {
@@ -504,14 +522,38 @@ const execFileText = (command, args, options = {}) => new Promise((resolve) => {
   });
 });
 
+const MAX_UNTRACKED_DIFF_FILES = 100;
+
 const defaultGetWorkspaceDiff = async (directory) => {
   const cwd = trimString(directory);
   if (!cwd) return '';
-  const result = await execFileText('git', ['diff', '--no-ext-diff', '--no-color', '--binary'], {
+  const tracked = await execFileText('git', ['diff', '--no-ext-diff', '--no-color', '--binary'], {
     cwd,
     timeoutMs: 10000,
   });
-  return result.ok ? result.stdout : '';
+  if (!tracked.ok) return '';
+  // `git diff` never lists untracked files, so files created during a run
+  // would be invisible to the synthetic workspace patch without this pass.
+  const untracked = await execFileText('git', ['ls-files', '--others', '--exclude-standard'], {
+    cwd,
+    timeoutMs: 10000,
+  });
+  if (!untracked.ok) return tracked.stdout;
+  const names = untracked.stdout
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .slice(0, MAX_UNTRACKED_DIFF_FILES);
+  const sections = [tracked.stdout];
+  for (const name of names) {
+    // `git diff --no-index` exits 1 whenever the files differ; judge by output.
+    const fileDiff = await execFileText('git', ['diff', '--no-ext-diff', '--no-color', '--binary', '--no-index', '--', '/dev/null', name], {
+      cwd,
+      timeoutMs: 10000,
+    });
+    if (fileDiff.stdout) sections.push(fileDiff.stdout);
+  }
+  return sections.filter(Boolean).join('');
 };
 
 const normalizeDiffSnapshot = (value) => trimString(value).replace(/\r\n/g, '\n');
@@ -561,6 +603,20 @@ const parseUnifiedDiffFiles = (diff) => {
   flush();
 
   return files.filter((file) => trimString(file.relativePath) && trimString(file.patch));
+};
+
+// The synthetic workspace patch must only describe changes made during this
+// prompt run: the worktree can already hold uncommitted edits from other
+// sessions (including chats in the Cursor app itself), and those must not be
+// replayed as if this run applied them. A file edited both before and during
+// the run keeps its full per-file diff — per-file granularity is the tradeoff.
+export const filterWorkspaceDiffFilesAgainstBaseline = (baselineDiff, currentDiff) => {
+  const currentFiles = parseUnifiedDiffFiles(currentDiff);
+  if (currentFiles.length === 0) return currentFiles;
+  const baselinePatchesByPath = new Map(
+    parseUnifiedDiffFiles(baselineDiff).map((file) => [file.relativePath, file.patch]),
+  );
+  return currentFiles.filter((file) => baselinePatchesByPath.get(file.relativePath) !== file.patch);
 };
 
 const buildWorkspaceDiffSummary = (files) => {
@@ -1476,6 +1532,7 @@ export function createCursorSdkRuntime(options = {}) {
   const modelDiscoveryTtlMs = Math.max(0, Number(options.modelDiscoveryTtlMs) || DEFAULT_MODEL_DISCOVERY_TTL_MS);
   const modelDiscoveryTimeoutMs = Math.max(0, Number(options.modelDiscoveryTimeoutMs) || DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS);
   const recordTimingMark = typeof options.recordTimingMark === 'function' ? options.recordTimingMark : null;
+  const MAX_CACHED_AGENTS = 32;
   const activeRuns = new Map();
   const sessionStatuses = new Map();
   const agentsBySession = new Map();
@@ -1506,7 +1563,12 @@ export function createCursorSdkRuntime(options = {}) {
     return normalizeStoredSessionState(state).state;
   };
 
-  const writeSessionState = async (sessionID, state) => writeJsonFile(getSessionPath(sessionID), state);
+  const deletedSessionIds = new Set();
+
+  const writeSessionState = async (sessionID, state) => {
+    if (deletedSessionIds.has(sessionID)) return;
+    await writeJsonFile(getSessionPath(sessionID), state);
+  };
 
   const persistQueues = new Map();
 
@@ -1538,6 +1600,35 @@ export function createCursorSdkRuntime(options = {}) {
     const state = await readSessionState(sessionID);
     if (state.agentID === agentID) return;
     await writeSessionState(sessionID, { ...state, agentID });
+  };
+
+  const deleteSessionState = async (sessionID) => {
+    const id = trimString(sessionID);
+    if (!id || deletedSessionIds.has(id)) return false;
+    deletedSessionIds.add(id);
+    agentsBySession.delete(id);
+    sessionStatuses.delete(id);
+    const active = activeRuns.get(id);
+    activeRuns.delete(id);
+    if (active?.run && typeof active.run.cancel === 'function') {
+      try {
+        active.markAbortRequested?.('session_deleted');
+        await active.run.cancel();
+      } catch {
+      }
+    }
+    // Serialize behind any in-flight persist so the state file cannot be
+    // re-created by a write that was already queued.
+    const previous = persistQueues.get(id) || Promise.resolve();
+    const removal = previous
+      .catch(() => {})
+      .then(() => fs.rm(getSessionPath(id), { force: true }))
+      .catch((error) => {
+        logger.error?.('[CursorSDK] failed to delete session state:', error);
+      });
+    await removal;
+    persistQueues.delete(id);
+    return true;
   };
 
   const emit = (payload, directory) => {
@@ -1691,7 +1782,11 @@ export function createCursorSdkRuntime(options = {}) {
     const agents = cloneCursorSdkAgentDefinitions(agentDefinitions);
     const fingerprint = createAgentRuntimeFingerprint({ directory, model, agents });
     const cached = agentsBySession.get(sessionID);
-    if (cached?.fingerprint === fingerprint && cached?.agent) return cached.agent;
+    if (cached?.fingerprint === fingerprint && cached?.agent) {
+      agentsBySession.delete(sessionID);
+      agentsBySession.set(sessionID, cached);
+      return cached.agent;
+    }
 
     const { Agent } = await loadSdk();
     const state = await readSessionState(sessionID);
@@ -1719,6 +1814,11 @@ export function createCursorSdkRuntime(options = {}) {
       });
     }
     agentsBySession.set(sessionID, { agent, fingerprint });
+    while (agentsBySession.size > MAX_CACHED_AGENTS) {
+      const oldestSessionID = agentsBySession.keys().next().value;
+      if (oldestSessionID === undefined || activeRuns.has(oldestSessionID)) break;
+      agentsBySession.delete(oldestSessionID);
+    }
     if (agent?.agentId) {
       await updateAgentId(sessionID, agent.agentId);
     }
@@ -2819,7 +2919,11 @@ export function createCursorSdkRuntime(options = {}) {
       }
       lastSyntheticWorkspaceDiff = currentWorkspaceDiff;
 
-      if (!currentWorkspaceDiff || currentWorkspaceDiff === baselineWorkspaceDiff) {
+      const files = currentWorkspaceDiff && currentWorkspaceDiff !== baselineWorkspaceDiff
+        ? filterWorkspaceDiffFilesAgainstBaseline(baselineWorkspaceDiff, currentWorkspaceDiff)
+        : [];
+
+      if (files.length === 0) {
         const summaryChanged = await syncUserRecordDiffSummary([]);
         if (!syntheticPatchPartID) {
           return summaryChanged;
@@ -2833,12 +2937,9 @@ export function createCursorSdkRuntime(options = {}) {
         return true;
       }
 
-      const files = parseUnifiedDiffFiles(currentWorkspaceDiff);
-      if (files.length === 0) {
-        return syncUserRecordDiffSummary([]);
-      }
       await syncUserRecordDiffSummary(files);
 
+      const patchText = files.map((file) => file.patch).join('\n');
       const output = `Applied ${files.length} ${files.length === 1 ? 'patch' : 'patches'}.`;
       const patchPartID = ensureSyntheticPatchPartID();
       const patchPart = {
@@ -2847,14 +2948,14 @@ export function createCursorSdkRuntime(options = {}) {
         messageID: assistantMessageID,
         type: 'tool',
         tool: 'apply_patch',
-        input: { patchText: currentWorkspaceDiff },
+        input: { patchText },
         output,
         state: {
           status: 'completed',
-          input: { patchText: currentWorkspaceDiff },
+          input: { patchText },
           output,
           metadata: {
-            patchText: currentWorkspaceDiff,
+            patchText,
             files,
           },
           time: {
@@ -2902,7 +3003,9 @@ export function createCursorSdkRuntime(options = {}) {
         : combinedTextWithBreaks && finalText.startsWith(combinedTextWithBreaks)
           ? `${existingText}${finalText.slice(combinedTextWithBreaks.length)}`
           : finalText;
-      const nextText = mergeFinalText(existingText, enrichedFinalText);
+      const nextText = isLossyStreamedTextVariant(existingText, enrichedFinalText)
+        ? enrichedFinalText
+        : mergeFinalText(existingText, enrichedFinalText);
       if (nextText === existingText) return false;
 
       const nextPartId = textPart?.id || nextPartID('text');
@@ -3522,6 +3625,9 @@ export function createCursorSdkRuntime(options = {}) {
     async getSessionMessages(sessionID) {
       const state = await readSessionState(sessionID);
       return Array.isArray(state.records) ? state.records : [];
+    },
+    async deleteSessionState(sessionID) {
+      return deleteSessionState(sessionID);
     },
     async dispose() {
       await persistentWorkerRuntime.dispose();

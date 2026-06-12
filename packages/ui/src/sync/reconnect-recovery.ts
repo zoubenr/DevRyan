@@ -1,5 +1,6 @@
 import type { SessionStatus, Message, Part } from "@opencode-ai/sdk/v2/client"
 import type { Session } from "@opencode-ai/sdk/v2"
+import { filterSessionStatusThroughAbortGuard } from "./abort-retry-guard"
 import { getSessionMaterializationStatus } from "./materialization"
 
 export { unwrapSdkResult } from "./sdk-result"
@@ -105,8 +106,11 @@ export function mergeAuthoritativeSessionStatuses(input: {
 }): Record<string, SessionStatus> {
   let next: Record<string, SessionStatus> | undefined
   for (const sessionId of input.candidateSessionIds) {
-    const status = toAuthoritativeSessionStatus(input.authoritative[sessionId])
-    if (!status) continue
+    const rawStatus = toAuthoritativeSessionStatus(input.authoritative[sessionId])
+    if (!rawStatus) continue
+    // Reconnect snapshots go through the same stop-during-retry guard as live
+    // events so a user-stopped retry loop cannot resurrect via resync.
+    const status = filterSessionStatusThroughAbortGuard(sessionId, rawStatus)
     const currentStatus = input.current[sessionId]
     if (currentStatus === status || currentStatus?.type === status.type) {
       if (status.type !== "retry" || (

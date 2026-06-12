@@ -692,6 +692,22 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     }
   });
 
+  app.delete('/api/session/:sessionID', (req, res, next) => {
+    if (cursorSdkRuntime && typeof cursorSdkRuntime.deleteSessionState === 'function') {
+      const { sessionID } = req.params;
+      // Clean up only after the proxied OpenCode deletion succeeded, so a
+      // failed delete does not orphan the session from its Cursor agent.
+      res.once('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          cursorSdkRuntime.deleteSessionState(sessionID).catch((error) => {
+            console.warn('[CursorSDK] Failed to clean up deleted session state:', error);
+          });
+        }
+      });
+    }
+    return next();
+  });
+
   app.all('/api/session/:sessionID/message', async (req, res, next) => {
     try {
       if (!cursorSdkRuntime || typeof cursorSdkRuntime.getSessionMessages !== 'function') {

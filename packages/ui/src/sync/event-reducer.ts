@@ -34,6 +34,7 @@ import {
   isMessageHiddenByRevert,
   getSessionRevertMessageID,
 } from "./revert-transactions"
+import { clearAbortGuard, filterSessionStatusThroughAbortGuard } from "./abort-retry-guard"
 import { isFinalToolStatus } from "../lib/toolStatus"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
@@ -584,15 +585,22 @@ export function applyDirectoryEvent(
 
     case "session.status": {
       const props = event.properties as { sessionID: string; status: SessionStatus }
-      if (areSessionStatusesEqual(draft.session_status[props.sessionID], props.status)) {
+      // While the user has explicitly stopped this session, OpenCode's retry
+      // loop (out of usage / rate limit) keeps emitting `retry` statuses
+      // because abort during the backoff sleep is ignored upstream. The guard
+      // coerces those to idle for a bounded window and schedules bounded
+      // re-aborts so the loop is cancelled when its next attempt fires.
+      const status = filterSessionStatusThroughAbortGuard(props.sessionID, props.status)
+      if (areSessionStatusesEqual(draft.session_status[props.sessionID], status)) {
         return false
       }
-      draft.session_status[props.sessionID] = props.status
+      draft.session_status[props.sessionID] = status
       return true
     }
 
     case "session.idle": {
       const props = event.properties as { sessionID: string }
+      clearAbortGuard(props.sessionID)
       const status = { type: "idle" } as const
       if (areSessionStatusesEqual(draft.session_status[props.sessionID], status)) {
         return false
@@ -603,6 +611,7 @@ export function applyDirectoryEvent(
 
     case "session.error": {
       const props = event.properties as { sessionID: string }
+      clearAbortGuard(props.sessionID)
       const status = { type: "idle" } as const
       if (areSessionStatusesEqual(draft.session_status[props.sessionID], status)) {
         return false

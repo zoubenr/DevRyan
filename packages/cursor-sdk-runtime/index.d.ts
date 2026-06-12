@@ -107,8 +107,20 @@ export type CursorSdkRuntime = {
   }): Promise<{ handled: boolean; status?: number; body?: Record<string, unknown> }>;
   abortSession(sessionID: string): Promise<boolean>;
   getSessionMessages(sessionID: string): Promise<Array<{ info: Record<string, unknown>; parts: Record<string, unknown>[] }>>;
+  deleteSessionState(sessionID: string): Promise<boolean>;
   dispose(): Promise<void>;
 };
+
+export type WorkspaceDiffFile = {
+  relativePath: string;
+  filePath: string;
+  additions: number;
+  deletions: number;
+  patch: string;
+};
+
+export function filterWorkspaceDiffFilesAgainstBaseline(baselineDiff: string, currentDiff: string): WorkspaceDiffFile[];
+export function isLossyStreamedTextVariant(streamedText: string, finalText: string): boolean;
 
 export const CURSOR_PROVIDER_ID: 'cursor-acp';
 export function getCursorSdkApiKey(options?: { env?: Record<string, unknown>; readAuth?: () => CursorAuthFile }): string | null;

@@ -863,6 +863,14 @@ const openCodeWatcherRuntime = createOpenCodeWatcherRuntime({
     void maybeSendPushForTrigger(payload);
     sessionRuntime.processOpenCodeSsePayload(payload);
     turnTimingRuntime.processOpenCodeEvent(payload);
+    if (payload?.type === 'session.deleted') {
+      const deletedSessionId = payload?.properties?.info?.id;
+      if (typeof deletedSessionId === 'string' && deletedSessionId) {
+        cursorSdkRuntime.deleteSessionState(deletedSessionId).catch((error) => {
+          console.warn('[CursorSDK] Failed to clean up deleted session state:', error);
+        });
+      }
+    }
   },
 });
 

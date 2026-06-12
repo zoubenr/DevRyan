@@ -31,7 +31,7 @@ interface WorkingSummary {
     abortActive: boolean;
     lastCompletionId: string | null;
     isComplete: boolean;
-    retryInfo: { attempt?: number; next?: number } | null;
+    retryInfo: { attempt?: number; next?: number; message?: string } | null;
 }
 
 interface FormingSummary {
@@ -285,6 +285,10 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
         ? (currentSessionStatus as { type: 'retry'; next?: number }).next
         : undefined;
 
+    const sessionRetryMessage = currentSessionStatus?.type === 'retry'
+        ? (currentSessionStatus as { type: 'retry'; message?: string }).message
+        : undefined;
+
     interface ParsedStatusResult {
         activePartType: AssistantActivePartType;
         activeToolName: string | undefined;
@@ -399,7 +403,7 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
         }
 
         const retryInfo = isRetry
-            ? { attempt: sessionRetryAttempt, next: sessionRetryNext }
+            ? { attempt: sessionRetryAttempt, next: sessionRetryNext, message: sessionRetryMessage }
             : null;
 
         return {
@@ -423,7 +427,7 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             isComplete: false,
             retryInfo,
         };
-    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext]);
+    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext, sessionRetryMessage]);
 
     const forming = React.useMemo<FormingSummary>(() => {
 
