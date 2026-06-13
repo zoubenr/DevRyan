@@ -17,6 +17,26 @@ const firstStringValue = (...candidates) => {
   return '';
 };
 
+// Upper bound on how long we wait for an SDK run cancel to settle before we
+// force the request to finish. Prevents a hung cancel from leaving the host
+// stream stuck mid-tool (a cause of the "stop then switch models" freeze).
+const CANCEL_TIMEOUT_MS = 4000;
+
+const withTimeout = (promise, timeoutMs) => {
+  if (!promise || !timeoutMs) return Promise.resolve(promise);
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; resolve(null); }
+    }, timeoutMs);
+    timer.unref?.();
+    Promise.resolve(promise).then(
+      (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } },
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(null); } },
+    );
+  });
+};
+
 const sdkStatusFromRunStatus = (status) => {
   if (status === 'finished') return 'FINISHED';
   if (status === 'error') return 'ERROR';
@@ -333,6 +353,14 @@ const handlePrompt = async (command) => {
       }
     };
 
+    // Let a cancel force a terminal "done" even if the SDK cancel is slow or
+    // never settles, so the host stream is never left hanging mid-tool. writeDone
+    // is idempotent, so this is safe alongside the natural completion path.
+    state.finishCancelled = () => {
+      writeDone('cancelled');
+      void closeStreamIterator();
+    };
+
     const waitPromise = run.wait()
       .then((result) => {
         const finalText = trimString(result?.result);
@@ -413,8 +441,12 @@ const cancelRun = async (requestID) => {
   if (!active) return;
   active.cancelRequested = true;
   if (active.run && typeof active.run.cancel === 'function') {
-    await active.run.cancel();
+    // Bound the SDK cancel so a hung cancel cannot keep the request alive.
+    await withTimeout(Promise.resolve(active.run.cancel()), CANCEL_TIMEOUT_MS);
   }
+  // Always emit a terminal done so the host never waits forever for a stream
+  // that stopped producing events after cancellation.
+  active.finishCancelled?.();
 };
 
 const shutdown = async () => {

@@ -121,6 +121,9 @@ export type WorkspaceDiffFile = {
 
 export function filterWorkspaceDiffFilesAgainstBaseline(baselineDiff: string, currentDiff: string): WorkspaceDiffFile[];
 export function isLossyStreamedTextVariant(streamedText: string, finalText: string): boolean;
+export const MAX_UNTRACKED_FILE_BYTES: number;
+export function resetUntrackedDiffCacheForTests(): void;
+export function defaultGetWorkspaceDiff(directory: string): Promise<string>;
 
 export const CURSOR_PROVIDER_ID: 'cursor-acp';
 export function getCursorSdkApiKey(options?: { env?: Record<string, unknown>; readAuth?: () => CursorAuthFile }): string | null;

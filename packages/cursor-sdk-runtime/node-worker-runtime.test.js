@@ -745,6 +745,91 @@ describe('Cursor SDK worker runtime config', () => {
     await runtime.dispose();
   });
 
+  test('abortSession frees the session immediately even when the underlying cancel never settles', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-abort-nonblock-'));
+    const events = [];
+    let cancelInvoked = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (payload) => { events.push(payload); },
+      // A run whose stream blocks forever and whose cancel never resolves. The
+      // pre-fix abortSession awaited cancel and would hang here, wedging the
+      // session so a follow-up model switch / prompt froze.
+      createPromptRun: async () => ({
+        async *stream() { await new Promise(() => {}); },
+        cancel() { cancelInvoked = true; return new Promise(() => {}); },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_hang',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_hang_user',
+        parts: [{ type: 'text', text: 'stop me midway' }],
+      },
+    });
+
+    await waitFor(() => (runtime.getRuntimeStatus().activeRuns === 1 ? true : null));
+
+    // Must resolve promptly — the test times out against the pre-fix code.
+    const aborted = await runtime.abortSession('ses_hang');
+
+    expect(aborted).toBe(true);
+    expect(cancelInvoked).toBe(true);
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
+    const idleEvent = events.find(
+      (event) => event?.type === 'session.status'
+        && event?.properties?.sessionID === 'ses_hang'
+        && event?.properties?.status?.type === 'idle',
+    );
+    expect(idleEvent).toBeTruthy();
+    await runtime.dispose();
+  });
+
+  test('a new prompt supersedes and cancels a prior active run for the same session', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-supersede-'));
+    const created = [];
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => {
+        const run = {
+          cancelCalled: false,
+          async *stream() { await new Promise(() => {}); },
+          cancel() { this.cancelCalled = true; return Promise.resolve(); },
+        };
+        created.push(run);
+        return run;
+      },
+    });
+
+    const send = (text, messageID) => runtime.handlePromptAsync({
+      sessionID: 'ses_supersede',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID,
+        parts: [{ type: 'text', text }],
+      },
+    });
+
+    await send('first', 'msg_one');
+    await waitFor(() => (created.length === 1 ? true : null));
+    await send('second', 'msg_two');
+    await waitFor(() => (created.length === 2 ? true : null));
+
+    // The superseded run was cancelled, and only the new run remains active.
+    expect(created[0].cancelCalled).toBe(true);
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(1);
+    await runtime.dispose();
+  });
+
   test('falls back to the one-shot worker when persistent worker startup fails before prompt submission', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-persistent-fallback-'));
     const capture = { calls: [], input: null };

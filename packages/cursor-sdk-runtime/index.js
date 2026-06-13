@@ -523,8 +523,110 @@ const execFileText = (command, args, options = {}) => new Promise((resolve) => {
 });
 
 const MAX_UNTRACKED_DIFF_FILES = 100;
+export const MAX_UNTRACKED_FILE_BYTES = 512 * 1024;
+const UNTRACKED_DIFF_CONCURRENCY = 8;
+const UNTRACKED_DIFF_CACHE_MAX_ENTRIES = 500;
 
-const defaultGetWorkspaceDiff = async (directory) => {
+/** @type {Map<string, string>} */
+const untrackedDiffCache = new Map();
+
+export function resetUntrackedDiffCacheForTests() {
+  untrackedDiffCache.clear();
+}
+
+export function getUntrackedDiffCacheSizeForTests() {
+  return untrackedDiffCache.size;
+}
+
+const getUntrackedDiffCacheKey = (directory, relativePath, stat) => (
+  `${directory}\0${relativePath}\0${stat.mtimeMs}:${stat.size}`
+);
+
+const touchUntrackedDiffCache = (key, value) => {
+  if (untrackedDiffCache.has(key)) {
+    untrackedDiffCache.delete(key);
+  }
+  untrackedDiffCache.set(key, value);
+  while (untrackedDiffCache.size > UNTRACKED_DIFF_CACHE_MAX_ENTRIES) {
+    const oldest = untrackedDiffCache.keys().next().value;
+    untrackedDiffCache.delete(oldest);
+  }
+};
+
+const getCachedUntrackedDiff = (key) => {
+  if (!untrackedDiffCache.has(key)) return undefined;
+  const value = untrackedDiffCache.get(key);
+  untrackedDiffCache.delete(key);
+  untrackedDiffCache.set(key, value);
+  return value;
+};
+
+const mapWithConcurrency = async (items, concurrency, fn) => {
+  if (items.length === 0) return [];
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await fn(items[index], index);
+    }
+  }));
+  return results;
+};
+
+const diffUntrackedFileNoIndex = async (cwd, name) => {
+  // `git diff --no-index` exits 1 whenever the files differ; judge by output.
+  const fileDiff = await execFileText(
+    'git',
+    ['diff', '--no-ext-diff', '--no-color', '--binary', '--no-index', '--', '/dev/null', name],
+    { cwd, timeoutMs: 10000 },
+  );
+  return fileDiff.stdout || '';
+};
+
+const collectUntrackedFileDiffs = async (cwd, names) => {
+  const sections = [];
+  const pending = [];
+
+  for (const name of names.slice(0, MAX_UNTRACKED_DIFF_FILES)) {
+    let stat;
+    try {
+      stat = await fs.stat(path.join(cwd, name));
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.size > MAX_UNTRACKED_FILE_BYTES) {
+      continue;
+    }
+
+    const cacheKey = getUntrackedDiffCacheKey(cwd, name, stat);
+    const cached = getCachedUntrackedDiff(cacheKey);
+    if (cached !== undefined) {
+      if (cached) sections.push(cached);
+      continue;
+    }
+    pending.push({ name, cacheKey });
+  }
+
+  const pendingDiffs = await mapWithConcurrency(
+    pending,
+    UNTRACKED_DIFF_CONCURRENCY,
+    async ({ name, cacheKey }) => {
+      const diff = await diffUntrackedFileNoIndex(cwd, name);
+      touchUntrackedDiffCache(cacheKey, diff);
+      return diff;
+    },
+  );
+
+  for (const diff of pendingDiffs) {
+    if (diff) sections.push(diff);
+  }
+  return sections;
+};
+
+export const defaultGetWorkspaceDiff = async (directory) => {
   const cwd = trimString(directory);
   if (!cwd) return '';
   const tracked = await execFileText('git', ['diff', '--no-ext-diff', '--no-color', '--binary'], {
@@ -534,26 +636,14 @@ const defaultGetWorkspaceDiff = async (directory) => {
   if (!tracked.ok) return '';
   // `git diff` never lists untracked files, so files created during a run
   // would be invisible to the synthetic workspace patch without this pass.
-  const untracked = await execFileText('git', ['ls-files', '--others', '--exclude-standard'], {
+  const untracked = await execFileText('git', ['ls-files', '-z', '--others', '--exclude-standard'], {
     cwd,
     timeoutMs: 10000,
   });
   if (!untracked.ok) return tracked.stdout;
-  const names = untracked.stdout
-    .split('\n')
-    .map((name) => name.trim())
-    .filter(Boolean)
-    .slice(0, MAX_UNTRACKED_DIFF_FILES);
-  const sections = [tracked.stdout];
-  for (const name of names) {
-    // `git diff --no-index` exits 1 whenever the files differ; judge by output.
-    const fileDiff = await execFileText('git', ['diff', '--no-ext-diff', '--no-color', '--binary', '--no-index', '--', '/dev/null', name], {
-      cwd,
-      timeoutMs: 10000,
-    });
-    if (fileDiff.stdout) sections.push(fileDiff.stdout);
-  }
-  return sections.filter(Boolean).join('');
+  const names = untracked.stdout.split('\0').filter(Boolean);
+  const untrackedSections = await collectUntrackedFileDiffs(cwd, names);
+  return [tracked.stdout, ...untrackedSections].filter(Boolean).join('');
 };
 
 const normalizeDiffSnapshot = (value) => trimString(value).replace(/\r\n/g, '\n');
@@ -610,13 +700,17 @@ const parseUnifiedDiffFiles = (diff) => {
 // sessions (including chats in the Cursor app itself), and those must not be
 // replayed as if this run applied them. A file edited both before and during
 // the run keeps its full per-file diff — per-file granularity is the tradeoff.
-export const filterWorkspaceDiffFilesAgainstBaseline = (baselineDiff, currentDiff) => {
+const filterWorkspaceDiffFilesAgainstBaselineMap = (baselinePatchesByPath, currentDiff) => {
   const currentFiles = parseUnifiedDiffFiles(currentDiff);
   if (currentFiles.length === 0) return currentFiles;
+  return currentFiles.filter((file) => baselinePatchesByPath.get(file.relativePath) !== file.patch);
+};
+
+export const filterWorkspaceDiffFilesAgainstBaseline = (baselineDiff, currentDiff) => {
   const baselinePatchesByPath = new Map(
     parseUnifiedDiffFiles(baselineDiff).map((file) => [file.relativePath, file.patch]),
   );
-  return currentFiles.filter((file) => baselinePatchesByPath.get(file.relativePath) !== file.patch);
+  return filterWorkspaceDiffFilesAgainstBaselineMap(baselinePatchesByPath, currentDiff);
 };
 
 const buildWorkspaceDiffSummary = (files) => {
@@ -1638,6 +1732,34 @@ export function createCursorSdkRuntime(options = {}) {
     });
   };
 
+  // Maximum time to wait for an underlying run cancel. The cancel runs in the
+  // background so this never blocks the caller; the bound only stops a hung
+  // cancel from leaking forever.
+  const CURSOR_CANCEL_TIMEOUT_MS = 5000;
+
+  // Release the active run for a session WITHOUT blocking on the underlying
+  // cancel. The session is freed immediately (and optionally marked idle) so a
+  // user stop or a rapid model switch / resend can never collide with a run that
+  // is still tearing down — the cause of the "stop mid-stream then change models"
+  // freeze. The cancel itself is fired in the background, bounded by a timeout so
+  // a slow or hung SDK cancel can never wedge the session.
+  const releaseActiveRun = (sessionID, { source = 'user_abort', emitIdle = false } = {}) => {
+    const active = activeRuns.get(sessionID);
+    if (!active?.run || typeof active.run.cancel !== 'function') return false;
+    active.markAbortRequested?.(source);
+    activeRuns.delete(sessionID);
+    if (emitIdle) {
+      sessionStatuses.set(sessionID, { type: 'idle' });
+      emit({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } }, active.directory);
+    }
+    Promise.resolve()
+      .then(() => withTimeout(Promise.resolve(active.run.cancel()), CURSOR_CANCEL_TIMEOUT_MS))
+      .catch((error) => {
+        logger.warn?.('[CursorSDK] background run cancel failed:', error instanceof Error ? error.message : error);
+      });
+    return true;
+  };
+
   const getStatus = () => {
     const auth = readAuth();
     const sdkAuthConfigured = Boolean(getCursorSdkApiKey({ env, readAuth }));
@@ -2610,6 +2732,12 @@ export function createCursorSdkRuntime(options = {}) {
       };
     }
 
+    // Defensive: if a prior run for this session is still active (e.g. a rapid
+    // stop + model switch + resend before the previous run finished tearing
+    // down), release it first so we never orphan its activeRuns entry or run two
+    // streams against the same session.
+    releaseActiveRun(sessionID, { source: 'superseded', emitIdle: false });
+
     const {
       executionText: prompt,
       visibleText,
@@ -2640,24 +2768,35 @@ export function createCursorSdkRuntime(options = {}) {
       modelID,
     });
     const unsupportedMessage = unsupportedAttachmentMessage || unsupportedAgentMessage;
-    const executionPrompt = unsupportedMessage
-      ? prompt
-      : await buildExecutionPrompt({
+    let executionPrompt;
+    let agentDefinitions;
+    let baselineWorkspaceDiff;
+    if (unsupportedMessage) {
+      executionPrompt = prompt;
+      agentDefinitions = null;
+      baselineWorkspaceDiff = await getWorkspaceDiffSnapshot(directory);
+    } else {
+      [executionPrompt, agentDefinitions, baselineWorkspaceDiff] = await Promise.all([
+        buildExecutionPrompt({
           requestedAgent,
           prompt,
           directory,
           modelID,
           isPlanModePrompt,
-        });
-    const agentDefinitions = unsupportedMessage
-      ? null
-      : await resolveCursorSdkAgentDefinitionsForPrompt({
+        }),
+        resolveCursorSdkAgentDefinitionsForPrompt({
           requestedAgent,
           directory,
           modelID,
           modelSelection,
-        });
-    const created = now();
+        }),
+        getWorkspaceDiffSnapshot(directory),
+      ]);
+    }
+    const baselinePatchesByPath = new Map(
+      parseUnifiedDiffFiles(baselineWorkspaceDiff).map((file) => [file.relativePath, file.patch]),
+    );
+    let lastSyntheticWorkspaceDiff = baselineWorkspaceDiff;
     let partSequence = 0;
     let cancellationSource = null;
     let syntheticPatchPartID = null;
@@ -2682,8 +2821,7 @@ export function createCursorSdkRuntime(options = {}) {
       toolPartIdsByCallId.set(normalizedCallID, partID);
       return partID;
     };
-    const baselineWorkspaceDiff = await getWorkspaceDiffSnapshot(directory);
-    let lastSyntheticWorkspaceDiff = baselineWorkspaceDiff;
+    const created = now();
     const userParts = [{
       id: `${userMessageID}_text`,
       sessionID,
@@ -2920,7 +3058,7 @@ export function createCursorSdkRuntime(options = {}) {
       lastSyntheticWorkspaceDiff = currentWorkspaceDiff;
 
       const files = currentWorkspaceDiff && currentWorkspaceDiff !== baselineWorkspaceDiff
-        ? filterWorkspaceDiffFilesAgainstBaseline(baselineWorkspaceDiff, currentWorkspaceDiff)
+        ? filterWorkspaceDiffFilesAgainstBaselineMap(baselinePatchesByPath, currentWorkspaceDiff)
         : [];
 
       if (files.length === 0) {
@@ -2970,6 +3108,33 @@ export function createCursorSdkRuntime(options = {}) {
       ];
       await emitRecordDelta(assistantRecord);
       return true;
+    };
+
+    let workspacePatchSyncInFlight = null;
+    let workspacePatchSyncDirty = false;
+
+    const scheduleWorkspacePatchSync = () => {
+      if (workspacePatchSyncInFlight) {
+        workspacePatchSyncDirty = true;
+        return;
+      }
+      workspacePatchSyncInFlight = (async () => {
+        try {
+          do {
+            workspacePatchSyncDirty = false;
+            await syncWorkspacePatchPart();
+          } while (workspacePatchSyncDirty);
+        } finally {
+          workspacePatchSyncInFlight = null;
+        }
+      })();
+    };
+
+    const awaitWorkspacePatchSync = async (completed = now()) => {
+      if (workspacePatchSyncInFlight) {
+        await workspacePatchSyncInFlight;
+      }
+      await syncWorkspacePatchPart(completed);
     };
 
     const applyFinalAssistantText = (text) => {
@@ -3055,7 +3220,7 @@ export function createCursorSdkRuntime(options = {}) {
         };
       }
       if (finish === 'stop' && sawMutationCandidateTool) {
-        await syncWorkspacePatchPart(completed);
+        await awaitWorkspacePatchSync(completed);
       }
 
       const hasAssistantText = assistantRecord.parts.some((part) => (
@@ -3503,7 +3668,7 @@ export function createCursorSdkRuntime(options = {}) {
             }
             if (isTerminalToolStatus && isWorkspaceMutationCandidateTool(message.name)) {
               sawMutationCandidateTool = true;
-              await syncWorkspacePatchPart();
+              scheduleWorkspacePatchSync();
             }
           } else if (message.type === 'task') {
             await applyCursorTaskSummary(message.text);
@@ -3611,16 +3776,10 @@ export function createCursorSdkRuntime(options = {}) {
       return runPrompt(input);
     },
     async abortSession(sessionID) {
-      const active = activeRuns.get(sessionID);
-      if (!active?.run || typeof active.run.cancel !== 'function') {
-        return false;
-      }
-      active.markAbortRequested?.('user_abort');
-      await active.run.cancel();
-      activeRuns.delete(sessionID);
-      sessionStatuses.set(sessionID, { type: 'idle' });
-      emit({ type: 'session.status', properties: { sessionID, status: { type: 'idle' } } }, active.directory);
-      return true;
+      // Free the session and return immediately; the underlying cancel runs in
+      // the background (bounded) so the stop button never hangs and a follow-up
+      // model switch / prompt cannot race a run that is still cancelling.
+      return releaseActiveRun(sessionID, { source: 'user_abort', emitIdle: true });
     },
     async getSessionMessages(sessionID) {
       const state = await readSessionState(sessionID);
