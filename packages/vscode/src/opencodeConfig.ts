@@ -29,6 +29,7 @@ const USER_CONFIG_PATHS = [
 ];
 const PROMPT_FILE_PATTERN = /^\{file:(.+)\}$/i;
 const PLUGIN_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/;
+const RUNTIME_PLUGIN_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts']);
 const ANTHROPIC_OAUTH_PROVIDER_IDS = new Set([
   'anthropic',
   'claude',
@@ -1376,6 +1377,53 @@ const getPackagedAgentRoots = (): string[] => {
   return candidates.filter((candidate, index) => fs.existsSync(candidate) && candidates.indexOf(candidate) === index);
 };
 
+type PackagedRuntimePlugin = {
+  fileName: string;
+  spec: string;
+  content: string;
+};
+
+const getPackagedPluginRoots = (): string[] => {
+  const candidates = [
+    path.resolve(__dirname, '..', '..', 'web', 'server', 'default-config', 'plugins'),
+    path.resolve(__dirname, '..', 'web', 'server', 'default-config', 'plugins'),
+    path.resolve(__dirname, 'default-config', 'plugins'),
+  ];
+  return candidates.filter((candidate, index) => fs.existsSync(candidate) && candidates.indexOf(candidate) === index);
+};
+
+const isRuntimePluginFileName = (fileName: string): boolean => (
+  !fileName.endsWith('.d.ts')
+  && !/(^|[.-])(test|spec)\./.test(fileName)
+  && RUNTIME_PLUGIN_EXTENSIONS.has(path.extname(fileName))
+);
+
+const listPackagedRuntimePlugins = (): PackagedRuntimePlugin[] => {
+  const pluginsByName = new Map<string, PackagedRuntimePlugin>();
+  for (const pluginRoot of getPackagedPluginRoots()) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(pluginRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (!entry.isFile() || !isRuntimePluginFileName(entry.name) || pluginsByName.has(entry.name)) {
+        continue;
+      }
+      const content = fs.readFileSync(path.join(pluginRoot, entry.name), 'utf8');
+      pluginsByName.set(entry.name, {
+        fileName: entry.name,
+        spec: `./plugins/${entry.name}`,
+        content,
+      });
+    }
+  }
+  return Array.from(pluginsByName.values()).sort((a, b) => a.fileName.localeCompare(b.fileName));
+};
+
 const listPackagedConfigAgents = (): ConfigAgent[] => {
   const agentsByName = new Map<string, ConfigAgent>();
   for (const agentRoot of getPackagedAgentRoots()) {
@@ -1590,9 +1638,12 @@ export const getRuntimeAgentOverlayConfigDirectory = (workingDirectory?: string)
   return path.join(RUNTIME_AGENT_OVERLAY_ROOT, hashRuntimeOverlayKey(workingDirectory));
 };
 
-const buildRuntimeConfigOverlay = (workingDirectory?: string): Record<string, unknown> | null => {
+const buildRuntimeConfigOverlay = (workingDirectory?: string, packagedPluginSpecs: string[] = []): Record<string, unknown> | null => {
   void workingDirectory;
-  return null;
+  const plugin = [
+    ...new Set(packagedPluginSpecs.filter((entry) => typeof entry === 'string' && entry.trim())),
+  ];
+  return plugin.length > 0 ? { plugin } : null;
 };
 
 export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
@@ -1609,11 +1660,13 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
   const projectKey = hashRuntimeOverlayKey(workingDirectory);
   const targetConfigDirectory = path.join(RUNTIME_AGENT_OVERLAY_ROOT, projectKey);
   const targetAgentDirectory = path.join(targetConfigDirectory, 'agents');
+  const targetPluginDirectory = path.join(targetConfigDirectory, 'plugins');
   fs.mkdirSync(targetAgentDirectory, { recursive: true });
 
   const baseAgents = new Map(getBaseConfigAgents(workingDirectory).map((agent) => [agent.name, agent]));
   const overrides = listAgentModelOverrides();
   const runtimeExternalDirectories = buildRuntimeExternalDirectories(workingDirectory);
+  const packagedPlugins = listPackagedRuntimePlugins();
   const manifest = readRuntimeOverlayManifest();
   const projects = isPlainObject(manifest.projects) ? manifest.projects : {};
   const projectManifest = isPlainObject(projects[projectKey]) ? projects[projectKey] as Record<string, unknown> : {};
@@ -1622,7 +1675,7 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
   const desired = new Map<string, { content: string; hash: string }>();
   const result = { changed: false, targetConfigDirectory, written: [] as string[], updated: [] as string[], removed: [] as string[] };
   const targetConfigFile = path.join(targetConfigDirectory, 'opencode.json');
-  const desiredRuntimeConfig = buildRuntimeConfigOverlay(workingDirectory);
+  const desiredRuntimeConfig = buildRuntimeConfigOverlay(workingDirectory, packagedPlugins.map((plugin) => plugin.spec));
 
   if (desiredRuntimeConfig) {
     const desiredContent = `${JSON.stringify(desiredRuntimeConfig, null, 2)}\n`;
@@ -1695,6 +1748,39 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
       // ignore missing stale files
     }
     delete nextManifestAgents[agentName];
+  }
+
+  const desiredPluginNames = new Set(packagedPlugins.map((plugin) => plugin.fileName));
+  if (packagedPlugins.length > 0) {
+    fs.mkdirSync(targetPluginDirectory, { recursive: true });
+  }
+  for (const plugin of packagedPlugins) {
+    const targetPath = path.join(targetPluginDirectory, plugin.fileName);
+    let current: string | null = null;
+    try {
+      current = fs.readFileSync(targetPath, 'utf8');
+    } catch {
+      current = null;
+    }
+
+    if (current !== plugin.content) {
+      fs.writeFileSync(targetPath, plugin.content, 'utf8');
+      result.changed = true;
+    }
+  }
+
+  try {
+    for (const entry of fs.readdirSync(targetPluginDirectory, { withFileTypes: true })) {
+      if (!entry.isFile() || desiredPluginNames.has(entry.name)) {
+        continue;
+      }
+      if (isRuntimePluginFileName(entry.name) || entry.name.endsWith('.d.ts') || /(^|[.-])(test|spec)\./.test(entry.name)) {
+        fs.unlinkSync(path.join(targetPluginDirectory, entry.name));
+        result.changed = true;
+      }
+    }
+  } catch {
+    // ignore missing plugin directory
   }
 
   const nextManifest = {

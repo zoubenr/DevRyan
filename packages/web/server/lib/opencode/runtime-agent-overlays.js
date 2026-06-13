@@ -245,10 +245,18 @@ const buildRemoteMcpTimeoutOverlay = (workingDirectory, options = {}) => {
   };
 };
 
+const buildPackagedPluginOverlay = (pluginSpecs = []) => {
+  const plugin = [
+    ...new Set(pluginSpecs.filter((entry) => typeof entry === 'string' && entry.trim())),
+  ];
+  return plugin.length > 0 ? { plugin } : null;
+};
+
 const buildRuntimeConfigOverlay = (workingDirectory, options = {}) => {
   const overlays = [
     buildRemoteMcpTimeoutOverlay(workingDirectory, options),
     buildAnthropicOAuthProxyOverlay(workingDirectory, options),
+    buildPackagedPluginOverlay(options.packagedPluginSpecs),
   ].filter(Boolean);
 
   if (overlays.length === 0) {
@@ -330,6 +338,8 @@ const listAgentFiles = async (agentRoot, scope) => {
 
 const isPackagedPluginFile = (entry) => (
   entry.isFile()
+  && !entry.name.endsWith('.d.ts')
+  && !/(^|[.-])(test|spec)\./.test(entry.name)
   && ['.js', '.mjs', '.cjs', '.ts'].includes(path.extname(entry.name))
 );
 
@@ -352,6 +362,7 @@ const listPackagedPluginFiles = async (pluginRoot) => {
     const content = await fs.readFile(path.join(pluginRoot, entry.name), 'utf8');
     plugins.push({
       fileName: entry.name,
+      spec: `./plugins/${entry.name}`,
       content,
       hash: hashContent(content),
     });
@@ -504,7 +515,11 @@ export const syncRuntimeAgentOverlays = async (options = {}) => {
 
   await fs.mkdir(targetAgentDirectory, { recursive: true });
   const targetConfigFile = path.join(targetConfigDirectory, 'opencode.json');
-  const desiredRuntimeConfig = buildRuntimeConfigOverlay(workingDirectory, options);
+  const packagedPlugins = await listPackagedPluginFiles(packagedPluginDirectory);
+  const desiredRuntimeConfig = buildRuntimeConfigOverlay(workingDirectory, {
+    ...options,
+    packagedPluginSpecs: packagedPlugins.map((plugin) => plugin.spec),
+  });
 
   if (desiredRuntimeConfig) {
     const desiredContent = `${JSON.stringify(desiredRuntimeConfig, null, 2)}\n`;
@@ -617,7 +632,6 @@ export const syncRuntimeAgentOverlays = async (options = {}) => {
     manifestChanged = true;
   }
 
-  const packagedPlugins = await listPackagedPluginFiles(packagedPluginDirectory);
   const desiredPlugins = new Map(packagedPlugins.map((plugin) => [plugin.fileName, plugin]));
   if (desiredPlugins.size > 0) {
     await fs.mkdir(targetPluginDirectory, { recursive: true });

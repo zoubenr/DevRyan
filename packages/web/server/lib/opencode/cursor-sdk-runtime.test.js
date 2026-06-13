@@ -2371,6 +2371,98 @@ describe('Cursor SDK runtime', () => {
     });
   });
 
+  it('stops forwarding Cursor stream deltas the moment a user abort lands (no post-stop flood)', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    const emitted = [];
+    let firstDeltaYielded;
+    const firstDelta = new Promise((resolve) => {
+      firstDeltaYielded = resolve;
+    });
+    let releaseTail;
+    const tailGate = new Promise((resolve) => {
+      releaseTail = resolve;
+    });
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: (event) => emitted.push(event),
+      createPromptRun: async () => ({
+        // A slow SDK cancel that does NOT unblock the stream — mimics the
+        // cursor-agent continuing to flush buffered deltas after Stop while the
+        // underlying cancel is still settling. The pump must not wait on it.
+        cancel: async () => {},
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: 'before-stop' }] },
+            },
+          };
+          firstDeltaYielded();
+          await tailGate;
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: 'AFTER-STOP-TAIL' }] },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_abort_no_flood',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_no_flood_user',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+    });
+
+    await firstDelta;
+    await waitFor(async () => (
+      emitted.some((event) => (
+        event?.type === 'message.part.updated'
+        && event.properties?.part?.text === 'before-stop'
+      )) ? true : null
+    ));
+
+    expect(await runtime.abortSession('ses_abort_no_flood')).toBe(true);
+
+    // The run finalizes as cancelled from the abort signal alone — the tail is
+    // still gated, so reaching `finish` here proves the pump did not wait to
+    // drain the stream.
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_abort_no_flood');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+    expect(records?.find((record) => record.info?.role === 'assistant')?.info.finish).toBe('cancelled');
+    expect(runtime.getRuntimeStatus().activeRuns).toBe(0);
+    expect(runtime.getRuntimeStatus().lastCancellation).toMatchObject({
+      sessionID: 'ses_abort_no_flood',
+      source: 'user_abort',
+      finalStatus: 'cancelled',
+    });
+
+    // Release the buffered tail the cursor-agent had queued behind the cancel.
+    // The pump already left, so this delta must never reach the renderer — that
+    // post-stop forwarding is exactly what froze the UI.
+    releaseTail();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const tailForwarded = emitted.some((event) => (
+      event?.type === 'message.part.updated'
+      && typeof event.properties?.part?.text === 'string'
+      && event.properties.part.text.includes('AFTER-STOP-TAIL')
+    ));
+    expect(tailForwarded).toBe(false);
+  });
+
   it('repairs persisted SDK assistant parent ids and stale running tools on read', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     writeFileSync(

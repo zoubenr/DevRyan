@@ -472,6 +472,7 @@ describe('syncRuntimeAgentOverlays', () => {
     const result = await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
       packagedAgentDirectory,
+      packagedPluginDirectory,
       overlayRoot,
       manifestPath,
       readConfig: () => ({}),
@@ -551,6 +552,7 @@ describe('syncRuntimeAgentOverlays', () => {
     const result = await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
       packagedAgentDirectory,
+      packagedPluginDirectory,
       overlayRoot,
       manifestPath,
       readConfig: () => activeConfig,
@@ -593,6 +595,7 @@ describe('syncRuntimeAgentOverlays', () => {
     const result = await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
       packagedAgentDirectory,
+      packagedPluginDirectory,
       overlayRoot,
       manifestPath,
       readConfig: () => ({}),
@@ -637,6 +640,7 @@ describe('syncRuntimeAgentOverlays', () => {
     await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
       packagedAgentDirectory,
+      packagedPluginDirectory,
       overlayRoot,
       manifestPath,
       readConfig: () => ({}),
@@ -654,6 +658,7 @@ describe('syncRuntimeAgentOverlays', () => {
     const result = await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
       packagedAgentDirectory,
+      packagedPluginDirectory,
       overlayRoot,
       manifestPath,
       readConfig: () => ({}),
@@ -673,13 +678,45 @@ describe('syncRuntimeAgentOverlays', () => {
     expect(result.configRemoved).toBe(true);
   });
 
-  it('materializes packaged plugins into the active runtime config directory', async () => {
+  it('copies and registers packaged runtime plugins while skipping test files', async () => {
     await fs.mkdir(packagedPluginDirectory, { recursive: true });
     await fs.writeFile(
       path.join(packagedPluginDirectory, 'council-session.js'),
       'export const CouncilSessionPlugin = async () => ({ tool: { council_session: {} } });\n',
       'utf8',
     );
+    await fs.writeFile(
+      path.join(packagedPluginDirectory, 'openai-tool-schema-sanitizer.mjs'),
+      'export default async () => ({ "tool.definition": async () => {} });\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(packagedPluginDirectory, 'openai-tool-schema-sanitizer.test.mjs'),
+      'throw new Error("test files must not be loaded as runtime plugins");\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(packagedPluginDirectory, 'council-session.spec.js'),
+      'throw new Error("spec files must not be loaded as runtime plugins");\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(packagedPluginDirectory, 'types.d.ts'),
+      'export type RuntimeOnly = never;\n',
+      'utf8',
+    );
+
+    const activeConfig = {
+      plugin: ['opencode-with-claude'],
+      provider: {
+        anthropic: {
+          options: {
+            baseURL: 'http://127.0.0.1:3456',
+            apiKey: 'dummy',
+          },
+        },
+      },
+    };
 
     const result = await syncRuntimeAgentOverlays({
       workingDirectory: projectDirectory,
@@ -687,10 +724,49 @@ describe('syncRuntimeAgentOverlays', () => {
       packagedPluginDirectory,
       overlayRoot,
       manifestPath,
+      readConfig: () => activeConfig,
+      listMcpConfigs: () => [
+        {
+          name: 'slow-remote',
+          type: 'remote',
+          url: 'https://mcp.example.test/mcp',
+          enabled: true,
+          scope: 'user',
+        },
+      ],
     });
 
+    await expect(fs.readdir(result.targetPluginDirectory).then((files) => files.sort()))
+      .resolves.toEqual(['council-session.js', 'openai-tool-schema-sanitizer.mjs']);
     await expect(fs.readFile(path.join(result.targetConfigDirectory, 'plugins', 'council-session.js'), 'utf8'))
       .resolves.toContain('council_session');
-    expect(result.pluginsWritten).toEqual(['council-session.js']);
+    await expect(fs.readFile(path.join(result.targetConfigDirectory, 'plugins', 'openai-tool-schema-sanitizer.mjs'), 'utf8'))
+      .resolves.toContain('tool.definition');
+    await expect(fs.readFile(path.join(result.targetConfigDirectory, 'opencode.json'), 'utf8')
+      .then((content) => JSON.parse(content)))
+      .resolves.toEqual({
+        mcp: {
+          'slow-remote': {
+            type: 'remote',
+            url: 'https://mcp.example.test/mcp',
+            enabled: true,
+            timeout: 5_000,
+          },
+        },
+        plugin: [
+          'opencode-with-claude',
+          './plugins/council-session.js',
+          './plugins/openai-tool-schema-sanitizer.mjs',
+        ],
+        provider: {
+          anthropic: {
+            options: {
+              baseURL: 'http://127.0.0.1:3456',
+              apiKey: 'dummy',
+            },
+          },
+        },
+      });
+    expect(result.pluginsWritten).toEqual(['council-session.js', 'openai-tool-schema-sanitizer.mjs']);
   });
 });

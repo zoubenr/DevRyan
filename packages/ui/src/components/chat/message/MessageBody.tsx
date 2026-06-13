@@ -48,7 +48,6 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useSessions } from '@/sync/sync-context';
 import { useI18n } from '@/lib/i18n';
 import { extractLoopbackUrls } from '@/lib/url';
-import { sanitizeChatSelectionCopyText } from '../lib/selectionClipboard';
 
 const CONTAIN_LAYOUT_STYLE = { contain: 'layout' as const, transform: 'translateZ(0)' };
 const MESSAGE_FOOTER_CONTAINER_STYLE = { containerType: 'inline-size' as const, containerName: 'message-footer' };
@@ -383,25 +382,6 @@ const writeRevealedToolIds = (messageId: string, value: Set<string>): void => {
     revealedToolIdsByMessage.set(messageId, new Set(value));
 };
 
-const selectionIntersectsElement = (selection: Selection, element: HTMLElement): boolean => {
-    for (let index = 0; index < selection.rangeCount; index += 1) {
-        const range = selection.getRangeAt(index);
-        if (element.contains(range.commonAncestorContainer)) {
-            return true;
-        }
-
-        try {
-            if (range.intersectsNode(element)) {
-                return true;
-            }
-        } catch {
-            // Some browser selection ranges can throw for detached nodes. Treat those
-            // as non-intersecting so native copy semantics remain untouched.
-        }
-    }
-
-    return false;
-};
 
 const UserMessageBody = React.memo(({ messageId, parts, isMobile, alwaysShowActions = isMobile, hasTouchInput, hasTextContent, onCopyMessage, copiedMessage, onShowPopup, agentMention, onRevert, isReverting = false, onFork, userActionsMode = 'inline', stickyUserHeaderEnabled = true }: {
     messageId: string;
@@ -424,7 +404,6 @@ const UserMessageBody = React.memo(({ messageId, parts, isMobile, alwaysShowActi
     const chatSurfaceMode = useChatSurfaceMode();
     const [copyHintVisible, setCopyHintVisible] = React.useState(false);
     const copyHintTimeoutRef = React.useRef<number | null>(null);
-    const userMessageRootRef = React.useRef<HTMLDivElement | null>(null);
 
     const userContentParts = React.useMemo(() => {
         return parts.filter((part) => {
@@ -495,27 +474,6 @@ const UserMessageBody = React.memo(({ messageId, parts, isMobile, alwaysShowActi
         },
         [hasCopyableText, isTouchContext, onCopyMessage, revealCopyHint]
     );
-
-    const handleNativeSelectionCopy = React.useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
-        const root = userMessageRootRef.current;
-        const clipboardData = event.clipboardData;
-        if (!root || !clipboardData || typeof window === 'undefined') {
-            return;
-        }
-
-        const selection = window.getSelection();
-        if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !selectionIntersectsElement(selection, root)) {
-            return;
-        }
-
-        const sanitizedText = sanitizeChatSelectionCopyText(selection.toString());
-        if (!sanitizedText) {
-            return;
-        }
-
-        event.preventDefault();
-        clipboardData.setData('text/plain', sanitizedText);
-    }, []);
 
     const effectiveOnFork = chatSurfaceMode === 'mini-chat' ? undefined : onFork;
     const actionsBlock = ((canCopyMessage && hasCopyableText) || onRevert || effectiveOnFork) && showUserActions ? (
@@ -628,10 +586,9 @@ const UserMessageBody = React.memo(({ messageId, parts, isMobile, alwaysShowActi
 
     return (
         <div
-            ref={userMessageRootRef}
+            data-chat-user-message="true"
             className="relative w-full group/message"
             style={CONTAIN_LAYOUT_STYLE}
-            onCopyCapture={handleNativeSelectionCopy}
             onTouchStart={isTouchContext && canCopyMessage && hasCopyableText ? revealCopyHint : undefined}
         >
             <div

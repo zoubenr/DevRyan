@@ -1711,6 +1711,19 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
             retireDraftTarget(submittedDraftTarget);
 
+            // Optimistically clear the visible composer the instant we commit to
+            // sending, so a late revert/draft restore (which sets pendingInputText
+            // after its own async round-trip) cannot leave stale text behind that
+            // then gets re-sent on the next Enter. On a hard failure the catch below
+            // restores inputSnapshot.message; soft network errors intentionally do not.
+            if (!queuedOnly) {
+                setMessage("");
+                if (textareaRef.current) {
+                    textareaRef.current.value = "";
+                }
+                setPendingInputText(null);
+            }
+
             await sendMessage(
                 primaryText,
                 sendProviderId,
@@ -1779,7 +1792,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 normalized === 'failed to send message';
 
             const restoreSubmittedDraftMessage = () => {
-                if (submittedDraftTarget.kind !== 'draft' || !inputSnapshot.message) {
+                // The composer is now cleared optimistically before the send (for any
+                // target, not just drafts), so restore the original text on a hard
+                // failure regardless of whether this was a new-session draft.
+                if (!inputSnapshot.message) {
                     return;
                 }
                 setMessage(inputSnapshot.message);

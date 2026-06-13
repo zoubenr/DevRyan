@@ -12,7 +12,7 @@ import { useDirectorySync } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useDeviceInfo } from '@/lib/device';
 import { opencodeClient } from '@/lib/opencode/client';
-import { RiAddLine, RiArrowDownSLine, RiCloseLine, RiInformationLine, RiSaveLine, RiSubtractLine } from '@remixicon/react';
+import { RiAddLine, RiArrowDownSLine, RiCloseLine, RiFlashlightFill, RiInformationLine, RiSaveLine, RiSubtractLine } from '@remixicon/react';
 import { cn } from '@/lib/utils';
 import { ModelSelector } from './ModelSelector';
 import { BehaviorPage } from '@/components/sections/behavior/BehaviorPage';
@@ -21,7 +21,8 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { useI18n } from '@/lib/i18n';
 import { formatAgentDisplayName } from '@/lib/agentDisplay';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
-import { getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
+import { getModelVariantDisplayState, getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
+import { formatEffortLabel, formatVisibleEffortLabel } from '@/components/chat/mobileControlsUtils';
 import {
   Select,
   SelectContent,
@@ -279,10 +280,6 @@ export const AgentsPage: React.FC = () => {
     const providerModel = provider?.models.find((entry) => entry.id === parsedModel.modelId) as { variants?: Record<string, unknown> } | undefined;
     return getOrderedThinkingVariants(providerModel?.variants);
   }, [providers]);
-  const formatVariantLabel = React.useCallback((value: string) => {
-    return value.charAt(0).toUpperCase() + value.slice(1);
-  }, []);
-
   const setCouncilModelAt = React.useCallback((index: number, value: string) => {
     setCouncilModels((prev) => {
       const next = [...prev];
@@ -653,6 +650,16 @@ export const AgentsPage: React.FC = () => {
     const rowSupportsVariants = rowAvailableVariants.length > 0;
     const resolvedValue = resolveThinkingVariant(value, rowAvailableVariants);
     const selectValue = resolvedValue ?? NO_VARIANT_VALUE;
+    const parsedRowModel = parseModelIdentifier(modelRef);
+    const rowProvider = parsedRowModel ? providers.find((entry) => entry.id === parsedRowModel.providerId) : undefined;
+    const rowVariantDisplayState = parsedRowModel
+      ? getModelVariantDisplayState(rowProvider, parsedRowModel.modelId, value)
+      : null;
+    const rowFastEnabled = Boolean(rowVariantDisplayState?.fastEnabled);
+    const rowEffortLabel = formatVisibleEffortLabel(
+      rowVariantDisplayState?.selectedVariant ?? value,
+      rowVariantDisplayState?.visibleVariantOptions ?? rowAvailableVariants,
+    );
 
     return (
       <div key={key} className="flex flex-col gap-1 py-1 sm:flex-row sm:items-center sm:gap-3">
@@ -675,13 +682,20 @@ export const AgentsPage: React.FC = () => {
           >
             <SelectTrigger className="w-fit min-w-[120px]">
               <SelectValue placeholder={t('settings.agents.page.field.thinkingPlaceholder')}>
-                {resolvedValue ? formatVariantLabel(resolvedValue) : t('settings.agents.page.field.thinkingPlaceholder')}
+                {(rowEffortLabel || rowFastEnabled) ? (
+                  <span className="inline-flex items-center gap-1">
+                    {rowEffortLabel ?? null}
+                    {rowFastEnabled ? (
+                      <RiFlashlightFill className="h-3.5 w-3.5 text-[var(--status-warning)]" aria-label="Fast mode" />
+                    ) : null}
+                  </span>
+                ) : t('settings.agents.page.field.thinkingPlaceholder')}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {rowAvailableVariants.map((availableVariant) => (
                 <SelectItem key={availableVariant} value={availableVariant}>
-                  {formatVariantLabel(availableVariant)}
+                  {formatEffortLabel(availableVariant)}
                 </SelectItem>
               ))}
             </SelectContent>

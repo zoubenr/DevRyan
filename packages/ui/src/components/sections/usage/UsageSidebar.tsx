@@ -6,7 +6,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { getSortedQuotaProviders, resolveUsageTone } from '@/lib/quota';
+import { getSortedQuotaProviders } from '@/lib/quota';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { RiRefreshLine } from '@remixicon/react';
@@ -15,17 +15,6 @@ import { useI18n } from '@/lib/i18n';
 interface UsageSidebarProps {
   onItemSelect?: () => void;
 }
-
-const getUsagePercent = (usage: { windows?: Record<string, { usedPercent: number | null }> } | null | undefined) => {
-  const windows = usage?.windows ?? {};
-  const values = Object.values(windows)
-    .map((window) => window.usedPercent)
-    .filter((value): value is number => typeof value === 'number');
-  if (values.length === 0) {
-    return null;
-  }
-  return Math.max(...values);
-};
 
 export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
   const { t } = useI18n();
@@ -177,18 +166,8 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
       <ScrollableOverlay outerClassName="flex-1 min-h-0" className="space-y-1 px-3 py-2 overflow-x-hidden">
         {visibleProviders.map((provider) => {
           const result = results.find((entry) => entry.providerId === provider.id);
-          const percent = getUsagePercent(result?.usage);
-          const tone = resolveUsageTone(percent);
           const isSelected = provider.id === selectedProviderId;
           const configured = result?.configured ?? false;
-
-          const statusStyle = !configured
-            ? { backgroundColor: 'var(--surface-muted-foreground)', opacity: 0.4 }
-            : tone === 'critical'
-              ? { backgroundColor: 'var(--status-error)' }
-              : tone === 'warn'
-                ? { backgroundColor: 'var(--status-warning)' }
-                : { backgroundColor: 'var(--status-success)' };
 
           return (
             <div
@@ -206,7 +185,6 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
                 }}
                 className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
               >
-                <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={statusStyle} />
                 <ProviderLogo providerId={provider.id} className="h-4 w-4 flex-shrink-0" />
                 <span className="typography-ui-label font-normal truncate flex-1 min-w-0 text-foreground">
                   {provider.name}

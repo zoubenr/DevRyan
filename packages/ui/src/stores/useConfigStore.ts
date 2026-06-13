@@ -1074,6 +1074,41 @@ export const useConfigStore = create<ConfigStore>()(
                                     nextState.defaultProviders = defaults;
                                     nextState.providersLoadStatus = "ready";
                                     nextState.providersLoadError = undefined;
+
+                                    // Ensure a valid model stays selected after (re)loading providers.
+                                    // Otherwise switching to an uncached directory (which blanks the
+                                    // selection in activateDirectory) leaves the composer stuck on
+                                    // "Not selected" even though a model is available. Only resolve a
+                                    // default when the current selection is missing/unavailable — never
+                                    // override a still-valid explicit choice.
+                                    const selectionIsValid = Boolean(state.currentProviderId)
+                                        && Boolean(state.currentModelId)
+                                        && processedProviders.some((p) => p.id === state.currentProviderId
+                                            && p.models.some((m) => m.id === state.currentModelId));
+                                    if (!selectionIsValid) {
+                                        let resolved: { providerId: string; modelId: string } | null = null;
+                                        for (const p of processedProviders) {
+                                            const def = defaults?.[p.id];
+                                            if (def && p.models.some((m) => m.id === def)) {
+                                                resolved = { providerId: p.id, modelId: def };
+                                                break;
+                                            }
+                                        }
+                                        if (!resolved) {
+                                            const firstWithModel = processedProviders.find((p) => p.models.length > 0);
+                                            if (firstWithModel) {
+                                                resolved = { providerId: firstWithModel.id, modelId: firstWithModel.models[0].id };
+                                            }
+                                        }
+                                        if (resolved) {
+                                            nextState.currentProviderId = resolved.providerId;
+                                            nextState.currentModelId = resolved.modelId;
+                                            nextState.selectedProviderId = resolved.providerId;
+                                            nextSnapshot.currentProviderId = resolved.providerId;
+                                            nextSnapshot.currentModelId = resolved.modelId;
+                                            nextSnapshot.selectedProviderId = resolved.providerId;
+                                        }
+                                    }
                                 }
 
                                 return nextState;

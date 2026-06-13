@@ -127,7 +127,15 @@ export const createServerStartupRuntime = (dependencies) => {
     process.on('uncaughtException', (error) => {
       console.error('Uncaught Exception:', error);
       if (process.env.OPENCHAMBER_DEV_MODE === 'true') {
-        process.exit(1);
+        // Previously this called process.exit(1) directly, which orphaned the
+        // managed `opencode serve` child on every dev-mode crash/HMR restart (the
+        // child is not detached and has no die-with-parent guarantee on macOS, so
+        // these orphans accumulate across runs and leak hundreds of MB each).
+        // Reap it via gracefulShutdown first, with a hard cap so a hung shutdown
+        // still exits the dev process promptly.
+        const forceExit = setTimeout(() => process.exit(1), 4000);
+        forceExit.unref?.();
+        void gracefulShutdown({ exitProcess: true }).catch(() => process.exit(1));
         return;
       }
       gracefulShutdown();

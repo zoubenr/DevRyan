@@ -585,6 +585,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
   const showBackButton = isMobile && mobileStage !== 'nav';
   const showFullPageBackButton = !isMobile && Boolean(onClose);
+  const reserveSettingsNavTopChrome = showFullPageBackButton || shouldAvoidMacTrafficLights;
 
   const handleBack = React.useCallback(() => {
     setMobileStage((stage) => resolveMobileSettingsBackStage(stage, activePageMeta));
@@ -598,8 +599,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     return (
       <div className="flex h-full flex-col overflow-hidden">
         {/* Scrollable nav items */}
-        <div className={getSettingsNavScrollClassName({ reserveTopChrome: showFullPageBackButton })}>
-          <div className={cn('flex flex-col gap-3 pb-2 px-2', showFullPageBackButton ? 'pt-0' : 'pt-4')}>
+        <div className={getSettingsNavScrollClassName({ reserveTopChrome: reserveSettingsNavTopChrome })}>
+          <div className={cn('flex flex-col gap-3 pb-2 px-2', reserveSettingsNavTopChrome ? 'pt-0' : 'pt-4')}>
             {groupedVisiblePages.map((section) => (
               <div key={section.labelKey} className="space-y-0.5">
                 <div className="px-2 pb-1 typography-micro text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground/70">

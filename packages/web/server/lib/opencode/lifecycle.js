@@ -253,19 +253,30 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       return;
     }
 
-    try {
-      child.kill('SIGTERM');
-    } catch {
-    }
+    // Kill the whole process group (negative pid) so the opencode server's
+    // spawned MCP children (npm exec mobbin-mcp, railway mcp, resend-mcp, etc.)
+    // are reaped together. The server is launched detached as its own group
+    // leader (see spawn below); without this, each shutdown orphans the MCP
+    // fleet and they accumulate into hundreds of processes / GBs of RSS. Fall
+    // back to a direct child kill if the group signal cannot be delivered.
+    const killManaged = (signal) => {
+      try {
+        process.kill(-pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+        }
+      }
+    };
+
+    killManaged('SIGTERM');
 
     if (await waitForChildProcessClose(child, 2500)) {
       return;
     }
 
-    try {
-      child.kill('SIGKILL');
-    } catch {
-    }
+    killManaged('SIGKILL');
 
     await waitForChildProcessClose(child, 1000);
   };
@@ -343,6 +354,11 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       env: processEnv,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Launch the server as its own process-group leader on Unix so shutdown
+      // can kill the entire group (server + every MCP child it spawns) in one
+      // signal. Windows uses taskkill /t for tree termination instead, so it
+      // stays attached there.
+      detached: process.platform !== 'win32',
     });
 
     const url = await new Promise((resolve, reject) => {

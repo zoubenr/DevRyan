@@ -2799,6 +2799,14 @@ export function createCursorSdkRuntime(options = {}) {
     let lastSyntheticWorkspaceDiff = baselineWorkspaceDiff;
     let partSequence = 0;
     let cancellationSource = null;
+    // Resolves the instant a host/user stop is requested (markAbortRequested).
+    // The cursor-agent keeps emitting buffered deltas for up to the cancel bound
+    // after Stop, and forwarding that tail to the renderer is what makes the UI
+    // freeze for a beat — racing the stream read against this lets the pump break
+    // out immediately instead of draining it.
+    let resolveAbortRequested = null;
+    const abortRequestedPromise = new Promise((resolve) => { resolveAbortRequested = resolve; });
+    const abortRacePromise = abortRequestedPromise.then(() => ({ aborted: true }));
     let syntheticPatchPartID = null;
     let sawMutationCandidateTool = false;
     const toolPartIdsByCallId = new Map();
@@ -3356,6 +3364,7 @@ export function createCursorSdkRuntime(options = {}) {
       directory,
       markAbortRequested: (source = 'user_abort') => {
         cancellationSource = source;
+        resolveAbortRequested?.();
       },
     });
 
@@ -3387,13 +3396,15 @@ export function createCursorSdkRuntime(options = {}) {
         const nextPromise = iterator.next();
         const finalPromise = finalResultPromise && !finalResultConsumed ? finalResultPromise : null;
         if (!streamIdleTimeoutMs || !shouldFinishOnIdle()) {
-          if (!finalPromise) {
-            return { next: await nextPromise, idle: false };
+          const racers = [nextPromise.then((next) => ({ next, idle: false })), abortRacePromise];
+          if (finalPromise) {
+            racers.push(finalPromise);
           }
-          const result = await Promise.race([
-            nextPromise.then((next) => ({ next, idle: false })),
-            finalPromise,
-          ]);
+          const result = await Promise.race(racers);
+          if (result.aborted) {
+            nextPromise.catch(() => {});
+            return result;
+          }
           if ('finalResult' in result && !result.finalResult) {
             finalResultConsumed = true;
             return { next: await nextPromise, idle: false };
@@ -3412,12 +3423,17 @@ export function createCursorSdkRuntime(options = {}) {
         const pending = [
           nextPromise.then((next) => ({ next, idle: false })),
           idlePromise,
+          abortRacePromise,
         ];
         if (finalPromise) {
           pending.push(finalPromise);
         }
         const result = await Promise.race(pending);
         if (timeout) clearTimeout(timeout);
+        if (result.aborted) {
+          nextPromise.catch(() => {});
+          return result;
+        }
         if ('finalResult' in result && !result.finalResult) {
           finalResultConsumed = true;
           return { next: await nextPromise, idle: false };
@@ -3497,6 +3513,17 @@ export function createCursorSdkRuntime(options = {}) {
 
         for (;;) {
           const streamRead = await readNextStreamEvent(iterator);
+          if (streamRead.aborted) {
+            // Host/user pressed Stop: leave the pump now rather than forwarding the
+            // cursor-agent's buffered cancel tail to the renderer (the freeze). The
+            // underlying run.cancel() was already fired in the background by
+            // releaseActiveRun; here we just stop consuming and finalize.
+            if (typeof iterator.return === 'function') {
+              iterator.return().catch(() => {});
+            }
+            finalStatus = 'cancelled';
+            break;
+          }
           if ('finalError' in streamRead) {
             finalResultConsumed = true;
             throw streamRead.finalError || new Error('Cursor SDK run failed.');
@@ -3695,7 +3722,12 @@ export function createCursorSdkRuntime(options = {}) {
         }
         lastError = text;
       } finally {
-        activeRuns.delete(sessionID);
+        // releaseActiveRun already drops this entry on abort, and a fast resend may
+        // have installed a new run for the same session — only clear it when it
+        // still points at this run so we never evict a freshly-started one.
+        if (activeRuns.get(sessionID)?.run === run) {
+          activeRuns.delete(sessionID);
+        }
         await finalizeAssistantRun(finalStatus);
       }
     })();

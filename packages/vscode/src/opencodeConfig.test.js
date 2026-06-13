@@ -170,10 +170,33 @@ describe('VS Code Cursor SDK config handling', () => {
 
     const result = syncRuntimeAgentOverlays(projectDir);
     const overlayConfigPath = path.join(result.targetConfigDirectory, 'opencode.json');
+    const overlayConfig = readJson(overlayConfigPath);
 
-    expect(fs.existsSync(overlayConfigPath)).toBe(false);
+    expect(overlayConfig.plugin).toContain('./plugins/openai-tool-schema-sanitizer.mjs');
+    expect(JSON.stringify(overlayConfig)).not.toContain('@rama_nigg/open-cursor@latest');
     expect(JSON.stringify(readJson(configPath))).toContain('@rama_nigg/open-cursor@latest');
     fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('copies and registers packaged runtime plugins in managed overlays', async () => {
+    const { syncRuntimeAgentOverlays } = await loadRuntime();
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-packaged-plugins-'));
+
+    try {
+      const result = syncRuntimeAgentOverlays(projectDir);
+      const overlayConfigPath = path.join(result.targetConfigDirectory, 'opencode.json');
+      const pluginDirectory = path.join(result.targetConfigDirectory, 'plugins');
+      const config = readJson(overlayConfigPath);
+      const pluginFiles = fs.readdirSync(pluginDirectory).sort();
+
+      expect(config.plugin).toContain('./plugins/council-session.js');
+      expect(config.plugin).toContain('./plugins/openai-tool-schema-sanitizer.mjs');
+      expect(pluginFiles).toContain('council-session.js');
+      expect(pluginFiles).toContain('openai-tool-schema-sanitizer.mjs');
+      expect(pluginFiles.some((fileName) => fileName.includes('.test.') || fileName.includes('.spec.') || fileName.endsWith('.d.ts'))).toBe(false);
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('adds active project external-directory allows to VS Code runtime agent overlays', async () => {

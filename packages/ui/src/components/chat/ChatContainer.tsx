@@ -7,6 +7,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { Skeleton } from '@/components/ui/skeleton';
 import ChatEmptyState from './ChatEmptyState';
 import MessageList, { type MessageListHandle } from './MessageList';
+import { useChatSelectionCopySanitizer } from './lib/useChatSelectionCopySanitizer';
 import { PermissionCard } from './PermissionCard';
 import { QuestionCard } from './QuestionCard';
 import { StatusRowContainer } from './StatusRowContainer';
@@ -333,6 +334,9 @@ type ChatContainerProps = {
 
 export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = true }) => {
     const { t } = useI18n();
+    // Strip trailing block-serialization newlines when a chat message is copied
+    // via native Cmd/Ctrl+C, so pasting it elsewhere doesn't gain blank lines.
+    useChatSelectionCopySanitizer();
     // Session UI state
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const currentDraftId = useSessionUIStore((s) => s.currentDraftId);
