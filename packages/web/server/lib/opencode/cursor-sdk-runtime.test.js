@@ -343,7 +343,7 @@ describe('Cursor SDK runtime', () => {
     });
   });
 
-  it('passes Cursor SDK subagent definitions with inherited models to direct agent creation', async () => {
+  it('pins Cursor SDK subagent definitions to the session model selection on direct agent creation', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
     let createOptions = null;
     const runtime = createCursorSdkRuntime({
@@ -400,11 +400,16 @@ describe('Cursor SDK runtime', () => {
     });
 
     expect(records?.[1]?.info.finish).toBe('stop');
+    // Subagents are pinned to the session's exact model selection (composer-2.5,
+    // fast=false) instead of the SDK's "inherit", which resolves a subagent's
+    // model from cursor-agent's desktop-app default and could trip the
+    // model-boundary guard (e.g. fast=false -> fast=true). Pinning keeps the
+    // DevRyan-selected model authoritative and independent of the Cursor app.
     expect(createOptions?.agents).toEqual({
       explorer: {
         description: 'Read-only code explorer',
         prompt: 'Inspect the repository and report findings.',
-        model: 'inherit',
+        model: { id: 'composer-2.5', params: [{ id: 'fast', value: 'false' }] },
       },
     });
   });
@@ -2157,6 +2162,82 @@ describe('Cursor SDK runtime', () => {
     expect(taskPart?.state?.status).toBe('completed');
     expect(taskPart?.output).toBe('Subagent completed on the inherited fast model.');
     expect(assistant?.parts?.find((part) => part.type === 'text')?.text).toBe('continued after task');
+    expect(runtime.getRuntimeStatus().lastCancellation).toBeNull();
+  });
+
+  it('does not abort a non-fast Cursor session when a subagent delegates with fast=true', async () => {
+    // Regression: cursor-agent's default (which tracks the Cursor desktop app)
+    // makes an orchestrator delegate to composer-2.5 (fast=true) even when the
+    // DevRyan session is pinned to composer-2.5 (fast=false). `fast` is a pure
+    // speed/cost toggle, not a distinct model, so this must NOT trip the
+    // model-boundary guard or abort the run.
+    tempDir = mkdtempSync(join(tmpdir(), 'cursor-sdk-runtime-'));
+    let cancelled = false;
+    const runtime = createCursorSdkRuntime({
+      storageDir: tempDir,
+      readAuth: () => ({ 'cursor-acp': { key: 'cursor-sdk-key' } }),
+      env: {},
+      emitEvent: () => {},
+      createPromptRun: async () => ({
+        cancel: async () => {
+          cancelled = true;
+        },
+        stream: async function* stream() {
+          yield {
+            type: 'message',
+            message: {
+              type: 'tool_call',
+              call_id: 'task_fast_mismatch_1',
+              name: 'task',
+              status: 'completed',
+              args: {
+                description: 'Explore with a subagent',
+                prompt: 'Read-only exploration',
+                model: {
+                  id: 'composer-2.5',
+                  params: [{ id: 'fast', value: 'true' }],
+                },
+              },
+              result: 'Subagent completed despite the fast toggle.',
+            },
+          };
+          yield {
+            type: 'message',
+            message: {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: 'continued without abort' }],
+              },
+            },
+          };
+        },
+      }),
+    });
+
+    await runtime.handlePromptAsync({
+      sessionID: 'ses_fast_mismatch_boundary',
+      directory: '/tmp/project',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_fast_mismatch_boundary_user',
+        parts: [{ type: 'text', text: 'stay on composer 2.5 (non-fast)' }],
+      },
+    });
+
+    const records = await waitFor(async () => {
+      const current = await runtime.getSessionMessages('ses_fast_mismatch_boundary');
+      return current.some((record) => record.info?.role === 'assistant' && record.info?.finish)
+        ? current
+        : null;
+    });
+
+    const assistant = records?.find((record) => record.info?.role === 'assistant');
+    const taskPart = assistant?.parts?.find((part) => part.type === 'tool' && part.tool === 'task');
+
+    expect(cancelled).toBe(false);
+    expect(assistant?.info.finish).toBe('stop');
+    expect(taskPart?.state?.status).toBe('completed');
+    expect(assistant?.parts?.find((part) => part.type === 'text')?.text).toBe('continued without abort');
     expect(runtime.getRuntimeStatus().lastCancellation).toBeNull();
   });
 

@@ -214,6 +214,24 @@ const normalizeAgentDefinitions = (value) => {
   return Object.keys(definitions).length > 0 ? definitions : null;
 };
 
+// Pin custom subagents to the parent session's exact model selection (id + params
+// such as `fast`). The Cursor SDK's `"inherit"` resolves a subagent's model from
+// cursor-agent's own default, which tracks the Cursor *desktop app* selection. An
+// orchestrator delegation could therefore silently switch e.g. fast=false ->
+// fast=true and trip DevRyan's model-boundary guard (aborting the run). Pinning
+// the concrete selection keeps the DevRyan-chosen model authoritative and fully
+// independent of the desktop app. `auto` sessions stay on `"inherit"`.
+const pinSubagentModelSelection = (definitions, modelSelection) => {
+  if (!isPlainObject(definitions)) return definitions;
+  const selection = normalizeModelSelection(modelSelection);
+  if (!selection?.id || selection.id === 'auto') return definitions;
+  const pinned = {};
+  for (const [name, definition] of Object.entries(definitions)) {
+    pinned[name] = { ...definition, model: selection };
+  }
+  return pinned;
+};
+
 const isMissingCursorAgentError = (error) => /Agent .* not found/i.test(error instanceof Error ? error.message : String(error || ''));
 
 const writeEvent = (event) => {
@@ -238,7 +256,7 @@ const getAgentCacheKey = (sessionID, directory, model, agents) => `${trimString(
 })}`;
 
 const getOrCreateAgent = async ({ apiKey, sessionID, model, directory, agentID, agents }) => {
-  const normalizedAgents = normalizeAgentDefinitions(agents);
+  const normalizedAgents = pinSubagentModelSelection(normalizeAgentDefinitions(agents), model);
   const key = getAgentCacheKey(sessionID, directory, model, normalizedAgents);
   const cached = agentCache.get(key);
   if (cached) return cached;

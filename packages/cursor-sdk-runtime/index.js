@@ -888,6 +888,24 @@ const cloneCursorSdkAgentDefinitions = (definitions) => {
   return normalized ? sortObjectKeys(normalized) : null;
 };
 
+// Pin custom subagents to the parent session's exact model selection (id + params
+// such as `fast`) instead of the Cursor SDK's `"inherit"`. `"inherit"` resolves a
+// subagent's model from cursor-agent's own default, which tracks the Cursor
+// *desktop app* selection — so an orchestrator delegation could silently switch
+// fast=false -> fast=true and trip the model-boundary guard. Pinning the concrete
+// selection keeps the DevRyan-chosen model authoritative and independent of the
+// desktop app. `auto` sessions keep `"inherit"`.
+const pinCursorSdkSubagentModels = (definitions, modelSelection) => {
+  if (!isPlainObject(definitions)) return definitions;
+  const selection = cloneCursorSdkModelSelection(modelSelection);
+  if (!selection || selection.id === 'auto') return definitions;
+  const pinned = {};
+  for (const [name, definition] of Object.entries(definitions)) {
+    pinned[name] = { ...definition, model: selection };
+  }
+  return pinned;
+};
+
 const createAgentRuntimeFingerprint = ({ directory, model, agents }) => stableJson({
   directory: trimString(directory),
   model: cloneCursorSdkModelSelection(model),
@@ -1421,10 +1439,20 @@ const normalizeCursorSdkModelSelectionForBoundary = (selection, fallbackModelID)
   return id ? createFallbackCursorSdkModelSelection(id) : null;
 };
 
+// Params that are pure Cursor speed/cost toggles rather than a distinct model.
+// They must NOT count toward model identity for the task model-boundary guard:
+// `fast` in particular tracks cursor-agent's own default, which mirrors the
+// Cursor *desktop app* selection, so an orchestrator delegating to
+// composer-2.5 (fast=true) against a fast=false session would otherwise abort the
+// run even though it is the same model. The guard still blocks genuine model
+// switches (different id, or behavior-changing params like effort/thinking).
+const BOUNDARY_IGNORED_MODEL_PARAMS = new Set([CURSOR_MODEL_PARAM_FAST]);
+
 const canonicalCursorSdkModelSelection = (selection) => {
   const normalized = normalizeCursorSdkModelSelectionForBoundary(selection, '');
   if (!normalized?.id) return '';
   const params = normalizeModelSelectionParams(normalized.params)
+    .filter((param) => !BOUNDARY_IGNORED_MODEL_PARAMS.has(param.id))
     .sort((left, right) => left.id.localeCompare(right.id) || left.value.localeCompare(right.value));
   return stableJson({ id: normalized.id, params });
 };
@@ -1901,7 +1929,7 @@ export function createCursorSdkRuntime(options = {}) {
 
   const getOrCreateAgent = async ({ sessionID, apiKey, modelID, modelSelection, directory, agentDefinitions }) => {
     const model = cloneCursorSdkModelSelection(modelSelection) || createFallbackCursorSdkModelSelection(modelID);
-    const agents = cloneCursorSdkAgentDefinitions(agentDefinitions);
+    const agents = pinCursorSdkSubagentModels(cloneCursorSdkAgentDefinitions(agentDefinitions), model);
     const fingerprint = createAgentRuntimeFingerprint({ directory, model, agents });
     const cached = agentsBySession.get(sessionID);
     if (cached?.fingerprint === fingerprint && cached?.agent) {
