@@ -1,0 +1,21 @@
+# packages/web/server/lib/tunnels/
+
+## Responsibility
+Public tunnel management subsystem: provider registry, tunnel mode/intent typing, request normalization/validation, and managed configuration support.
+
+## Design
+- **Provider registry pattern** (`registry.js`) enforces required provider capabilities (`start/stop/checkAvailability/resolvePublicUrl`).
+- **Strong request normalization** (`types.js`) canonicalizes provider/mode/intent/token/hostname/configPath.
+- **Capability-driven validation**: request validity depends on provider-declared mode requirements.
+- **Managed config runtime** persists remote/local managed tunnel presets and lifecycle metadata.
+
+## Flow
+1. API/CLI receives tunnel request (quick or managed modes).
+2. `normalizeTunnelStartRequest` + `validateTunnelStartRequest` sanitize and enforce constraints.
+3. Registry resolves concrete provider implementation (currently Cloudflare).
+4. Provider runtime starts/stops tunnel; managed config runtime updates persistent state.
+
+## Integration
+- Used by `server/index.js` tunnel routes and CLI tunnel commands.
+- Provider implementations live under `tunnels/providers/*`.
+- Integrates with OpenCode project directory and auth/settings normalization pipelines.

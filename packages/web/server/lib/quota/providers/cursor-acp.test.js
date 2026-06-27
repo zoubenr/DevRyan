@@ -1,0 +1,181 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { readAuthFile } from '../../opencode/auth.js';
+import { fetchQuotaForProvider } from './index.js';
+
+vi.mock('../../opencode/auth.js', () => ({
+  readAuthFile: vi.fn(() => ({})),
+}));
+
+const makeUsageSummary = () => ({
+  billingCycleStart: '2026-04-02T14:11:55.000Z',
+  billingCycleEnd: '2026-05-02T14:11:55.000Z',
+  individualUsage: {
+    plan: {
+      autoPercentUsed: 82,
+      apiPercentUsed: 100,
+      totalPercentUsed: 86,
+    },
+  },
+});
+
+describe('Cursor ACP quota provider', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns not configured when the Cursor usage session token is missing', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { access: 'chat-auth-token' } });
+    const fetchImpl = vi.fn();
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      providerId: 'cursor-acp',
+      providerName: 'Cursor',
+      ok: false,
+      configured: false,
+      error: 'Cursor usage tracking is not configured.',
+    });
+  });
+
+  it('maps Cursor dashboard usage buckets to quota windows', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'secret-token' } });
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => makeUsageSummary(),
+    }));
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(fetchImpl).toHaveBeenCalledWith('https://cursor.com/api/dashboard/get-current-period-usage', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({
+        Origin: 'https://cursor.com',
+        Referer: 'https://cursor.com/dashboard?tab=spending',
+        Cookie: 'WorkosCursorSessionToken=secret-token',
+      }),
+      body: '{}',
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(result.usage.windows.total).toBeUndefined();
+    expect(result.usage.windows['auto-composer'].usedPercent).toBe(82);
+    expect(result.usage.windows['auto-composer'].resetAt).toBe(Date.parse('2026-05-02T14:11:55.000Z'));
+    expect(result.usage.windows['auto-composer'].windowSeconds).toBe(30 * 24 * 60 * 60);
+    expect(result.usage.windows['auto-composer'].description).toBe('Additional usage beyond limits consumes API quota or on-demand spend.');
+    expect(result.usage.windows.api.usedPercent).toBe(100);
+    expect(result.usage.windows.api.description).toBe('Additional usage beyond limits consumes on-demand spend.');
+  });
+
+  it('maps Cursor current-period dashboard response buckets to quota windows', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'secret-token' } });
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        planUsage: {
+          autoPercentUsed: 82,
+          apiPercentUsed: 100,
+          limit: 7000,
+        },
+      }),
+    }));
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(result.usage.windows.total).toBeUndefined();
+    expect(result.usage.windows['auto-composer'].usedPercent).toBe(82);
+    expect(result.usage.windows.api.usedPercent).toBe(100);
+  });
+
+  it('returns a Cursor-specific expired-session error without exposing the token', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'secret-token' } });
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 401 }));
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(true);
+    expect(result.error).toBe('Cursor session expired. Update the Cursor usage session token.');
+    expect(JSON.stringify(result)).not.toContain('secret-token');
+  });
+
+  it('retries decoded Cursor session tokens with a cookie-encoded separator', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'user_123::jwt-token' } });
+    const fetchImpl = vi.fn(async (_url, init) => {
+      if (init.headers.Cookie === 'WorkosCursorSessionToken=user_123%3A%3Ajwt-token') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => makeUsageSummary(),
+        };
+      }
+      return { ok: false, status: 401 };
+    });
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, 'https://cursor.com/api/dashboard/get-current-period-usage', expect.objectContaining({
+      headers: expect.objectContaining({
+        Cookie: 'WorkosCursorSessionToken=user_123::jwt-token',
+      }),
+    }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'https://cursor.com/api/dashboard/get-current-period-usage', expect.objectContaining({
+      headers: expect.objectContaining({
+        Cookie: 'WorkosCursorSessionToken=user_123%3A%3Ajwt-token',
+      }),
+    }));
+  });
+
+  it('retries encoded Cursor session tokens with a decoded separator', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'user_123%3A%3Ajwt-token' } });
+    const fetchImpl = vi.fn(async (_url, init) => {
+      if (init.headers.Cookie === 'WorkosCursorSessionToken=user_123::jwt-token') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => makeUsageSummary(),
+        };
+      }
+      return { ok: false, status: 401 };
+    });
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, 'https://cursor.com/api/dashboard/get-current-period-usage', expect.objectContaining({
+      headers: expect.objectContaining({
+        Cookie: 'WorkosCursorSessionToken=user_123%3A%3Ajwt-token',
+      }),
+    }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'https://cursor.com/api/dashboard/get-current-period-usage', expect.objectContaining({
+      headers: expect.objectContaining({
+        Cookie: 'WorkosCursorSessionToken=user_123::jwt-token',
+      }),
+    }));
+  });
+
+  it('returns a deterministic error when the Cursor summary payload is missing usage buckets', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'secret-token' } });
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ billingCycleEnd: '2026-05-02T14:11:55.000Z' }),
+    }));
+
+    const result = await fetchQuotaForProvider('cursor-acp', { fetchImpl });
+
+    expect(result).toMatchObject({
+      providerId: 'cursor-acp',
+      providerName: 'Cursor',
+      ok: false,
+      configured: true,
+      error: 'Cursor usage response did not include plan usage buckets.',
+    });
+  });
+});

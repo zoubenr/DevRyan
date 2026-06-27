@@ -1,0 +1,700 @@
+import express from 'express';
+import request from 'supertest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { readAuthFile, writeAuthFile } from './auth.js';
+import { registerCommonRequestMiddleware } from './core-routes.js';
+import { registerOpenCodeRoutes } from './routes.js';
+
+vi.mock('./auth.js', () => ({
+  readAuthFile: vi.fn(() => ({})),
+  writeAuthFile: vi.fn(),
+  getProviderAuth: vi.fn(() => null),
+  removeProviderAuth: vi.fn(() => false),
+}));
+
+const createApp = (overrides = {}) => {
+  const app = express();
+  if (overrides.useJsonParser !== false) {
+    app.use(express.json());
+  }
+
+  const dependencies = {
+    clientReloadDelayMs: 0,
+    getOpenCodeResolutionSnapshot: vi.fn(async () => ({})),
+    formatSettingsResponse: vi.fn((settings) => settings),
+    readSettingsFromDisk: vi.fn(async () => ({})),
+    readSettingsFromDiskMigrated: vi.fn(async () => ({})),
+    persistSettings: vi.fn(async (settings) => settings),
+    sanitizeProjects: vi.fn((projects) => projects),
+    validateDirectoryPath: vi.fn(async (directory) => ({ ok: true, directory })),
+    resolveProjectDirectory: vi.fn(async () => ({ directory: '/tmp/project' })),
+    getProviderSources: vi.fn(() => ({
+      sources: {
+        auth: { exists: false },
+        user: { exists: false, path: '/tmp/user-config.json' },
+        project: { exists: false, path: null },
+        custom: { exists: false, path: null },
+        anthropicOAuth: { exists: false, path: null },
+      },
+    })),
+    removeProviderConfig: vi.fn(() => false),
+    ensureAnthropicOAuthProviderConfig: vi.fn(() => ({
+      changed: false,
+      path: '/tmp/user-config.json',
+      config: {},
+    })),
+    ensureDefaultCursorAcpProviderConfig: vi.fn(() => ({
+      changed: false,
+      path: '/tmp/user-config.json',
+      config: {},
+    })),
+    refreshOpenCodeAfterConfigChange: vi.fn(async () => undefined),
+    buildAugmentedPath: vi.fn(() => process.env.PATH || ''),
+    getOpenCodeWorkingDirectory: vi.fn(() => '/tmp/project'),
+    setOpenCodeWorkingDirectory: vi.fn(),
+    restartOpenCode: vi.fn(async () => undefined),
+    waitForOpenCodeReady: vi.fn(async () => true),
+    isExternalOpenCode: vi.fn(() => false),
+    terminateCursorAcpProxy: vi.fn(() => ({ terminated: false, pids: [] })),
+    fetchCursorAcpProxyHealth: vi.fn(async () => ({
+      ok: true,
+      workspaceDirectory: '/tmp/project',
+    })),
+    cursorSdkRuntime: {
+      getRuntimeStatus: vi.fn(() => ({
+        providerId: 'cursor-acp',
+        bridge: { kind: 'cursor-sdk' },
+        sdkAuthConfigured: false,
+        usageAuthConfigured: false,
+        activeRuns: 0,
+        modelsSource: 'fallback',
+      })),
+      verifyConnection: vi.fn(async () => ({
+        ok: true,
+        sdkAuthConfigured: true,
+        modelCount: 2,
+        modelsSource: 'sdk',
+      })),
+      getVirtualProvider: vi.fn(async () => ({
+        id: 'cursor-acp',
+        name: 'Cursor',
+        models: { auto: { id: 'auto', name: 'Auto' } },
+      })),
+      prewarmSession: vi.fn(async () => ({ ok: true, agentID: 'agent-prepared', cacheHit: false })),
+      handlePromptAsync: vi.fn(async () => ({ handled: false })),
+      abortSession: vi.fn(async () => false),
+      getSessionMessages: vi.fn(async () => []),
+    },
+    ...overrides,
+  };
+  delete dependencies.useJsonParser;
+  if (overrides.useCommonRequestMiddleware === true) {
+    registerCommonRequestMiddleware(app, { express });
+  }
+  delete dependencies.useCommonRequestMiddleware;
+
+  registerOpenCodeRoutes(app, dependencies);
+  return { app, dependencies };
+};
+
+describe('OpenCode provider routes', () => {
+  let tempDir = null;
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
+  });
+
+  it('loads provider sources globally when no directory is requested', async () => {
+    const { app, dependencies } = createApp({
+      resolveProjectDirectory: vi.fn(async () => ({ directory: '/tmp/project' })),
+    });
+
+    const response = await request(app).get('/api/provider/anthropic/source').expect(200);
+
+    expect(response.body.providerId).toBe('anthropic');
+    expect(dependencies.getProviderSources).toHaveBeenCalledWith('anthropic', null);
+  });
+
+  it('does not remove project provider config for global disconnect-all requests', async () => {
+    const removeProviderConfig = vi.fn(() => true);
+    const { app } = createApp({
+      resolveProjectDirectory: vi.fn(async () => ({ directory: '/tmp/project' })),
+      removeProviderConfig,
+    });
+
+    await request(app).delete('/api/provider/anthropic/auth?scope=all').expect(200);
+
+    expect(removeProviderConfig).toHaveBeenCalledWith('anthropic', null, 'user');
+    expect(removeProviderConfig).toHaveBeenCalledWith('anthropic', null, 'custom');
+    expect(removeProviderConfig).not.toHaveBeenCalledWith('anthropic', '/tmp/project', 'project');
+  });
+
+  it('requires an explicit directory for project-scoped provider disconnects', async () => {
+    const removeProviderConfig = vi.fn(() => true);
+    const { app } = createApp({
+      resolveProjectDirectory: vi.fn(async () => ({ directory: '/tmp/project' })),
+      removeProviderConfig,
+    });
+
+    await request(app).delete('/api/provider/anthropic/auth?scope=project').expect(400);
+
+    expect(removeProviderConfig).not.toHaveBeenCalled();
+  });
+
+  it('writes Claude OAuth provider config to the supplied project directory', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'openchamber-claude-route-'));
+    const fakeBinDir = join(tempDir, 'bin');
+    const fakeClaude = join(fakeBinDir, 'claude');
+    mkdirSync(fakeBinDir, { recursive: true });
+    writeFileSync(fakeClaude, '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(fakeClaude, 0o755);
+
+    const ensureAnthropicOAuthProviderConfig = vi.fn(() => ({
+      changed: false,
+      path: '/tmp/user-config.json',
+      config: {},
+    }));
+    const { app } = createApp({
+      buildAugmentedPath: vi.fn(() => fakeBinDir),
+      resolveProjectDirectory: vi.fn(async () => ({ directory: '/tmp/project' })),
+      ensureAnthropicOAuthProviderConfig,
+    });
+
+    await request(app)
+      .post('/api/provider/anthropic/check-oauth?directory=%2Ftmp%2Fproject')
+      .expect(200);
+
+    expect(ensureAnthropicOAuthProviderConfig).toHaveBeenCalledWith({ workingDirectory: '/tmp/project' });
+  });
+
+  it('verifies the Cursor SDK connection without writing the old OpenCode bridge config', async () => {
+    const ensureDefaultCursorAcpProviderConfig = vi.fn();
+    const refreshOpenCodeAfterConfigChange = vi.fn(async () => undefined);
+    const verifyConnection = vi.fn(async () => ({
+      ok: true,
+      sdkAuthConfigured: true,
+      modelCount: 2,
+      modelsSource: 'sdk',
+    }));
+    const { app } = createApp({
+      ensureDefaultCursorAcpProviderConfig,
+      refreshOpenCodeAfterConfigChange,
+      clientReloadDelayMs: 25,
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection,
+      },
+    });
+
+    const response = await request(app)
+      .post('/api/provider/cursor-acp/configure')
+      .expect(200);
+
+    expect(ensureDefaultCursorAcpProviderConfig).not.toHaveBeenCalled();
+    expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
+    expect(verifyConnection).toHaveBeenCalledWith();
+    expect(response.body).toMatchObject({
+      success: true,
+      configured: true,
+      changed: false,
+      requiresReload: false,
+      bridge: { kind: 'cursor-sdk' },
+      sdkAuthConfigured: true,
+      usageAuthConfigured: false,
+      modelCount: 2,
+    });
+  });
+
+  it('reports Cursor SDK and usage auth separately in runtime status', async () => {
+    const getRuntimeStatus = vi.fn(() => ({
+      providerId: 'cursor-acp',
+      bridge: { kind: 'cursor-sdk' },
+      sdkAuthConfigured: true,
+      usageAuthConfigured: true,
+      activeRuns: 1,
+      modelsSource: 'sdk',
+    }));
+    const { app } = createApp({
+      cursorSdkRuntime: {
+        getRuntimeStatus,
+        verifyConnection: vi.fn(),
+      },
+    });
+
+    const response = await request(app)
+      .get('/api/provider/cursor-acp/runtime-status')
+      .expect(200);
+
+    expect(getRuntimeStatus).toHaveBeenCalledWith();
+    expect(response.body).toMatchObject({
+      providerId: 'cursor-acp',
+      bridge: { kind: 'cursor-sdk' },
+      sdkAuthConfigured: true,
+      usageAuthConfigured: true,
+      activeRuns: 1,
+      modelsSource: 'sdk',
+    });
+  });
+
+  it('prewarms a Cursor SDK session through the provider route', async () => {
+    const prewarmSession = vi.fn(async () => ({
+      ok: true,
+      agentID: 'agent-prepared',
+      cacheHit: false,
+    }));
+    const { app } = createApp({
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        prewarmSession,
+      },
+    });
+
+    const response = await request(app)
+      .post('/api/provider/cursor-acp/session-prewarm')
+      .send({
+        sessionID: 'ses_cursor_draft',
+        directory: '/tmp/project',
+        modelID: 'composer-2.5',
+        variant: 'fast',
+        agent: 'builder',
+      })
+      .expect(200);
+
+    expect(prewarmSession).toHaveBeenCalledWith({
+      sessionID: 'ses_cursor_draft',
+      directory: '/tmp/project',
+      modelID: 'composer-2.5',
+      variant: 'fast',
+      agent: 'builder',
+    });
+    expect(response.body).toEqual({
+      ok: true,
+      agentID: 'agent-prepared',
+      cacheHit: false,
+    });
+  });
+
+  it('merges cached Cursor provider metadata without awaiting slow SDK discovery', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: vi.fn(async () => ({
+        providers: [
+          {
+            id: 'openai',
+            name: 'OpenAI',
+            models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'GPT-5.5' } },
+          },
+        ],
+        default: { openai: 'gpt-5.5' },
+      })),
+    });
+    const getVirtualProvider = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        id: 'cursor-acp',
+        name: 'Cursor',
+        models: { slow: { id: 'slow', name: 'Slow Discovery' } },
+      };
+    });
+    const getCachedVirtualProvider = vi.fn(() => ({
+      id: 'cursor-acp',
+      name: 'Cursor',
+      models: { cached: { id: 'cached', name: 'Cached Cursor' } },
+    }));
+    const refreshVirtualProvider = vi.fn(() => Promise.resolve());
+    const { app } = createApp({
+      buildOpenCodeUrl: vi.fn((requestPath) => `http://opencode.test${requestPath}`),
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider,
+        getCachedVirtualProvider,
+        refreshVirtualProvider,
+        handlePromptAsync: vi.fn(),
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+
+    const response = await request(app)
+      .get('/api/config/providers')
+      .expect(200);
+
+    expect(response.body.providers).toEqual([
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'GPT-5.5' } },
+      },
+      {
+        id: 'cursor-acp',
+        name: 'Cursor',
+        models: { cached: { id: 'cached', name: 'Cached Cursor' } },
+      },
+    ]);
+    expect(getCachedVirtualProvider).toHaveBeenCalledWith();
+    expect(refreshVirtualProvider).toHaveBeenCalledWith({ reason: 'providers_route' });
+    expect(getVirtualProvider).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+
+  it('treats Cursor workspace repair as an SDK-managed compatibility no-op', async () => {
+    const restartOpenCode = vi.fn(async () => undefined);
+    const setOpenCodeWorkingDirectory = vi.fn();
+    const { app } = createApp({
+      getOpenCodeWorkingDirectory: vi.fn(() => '/tmp/project'),
+      setOpenCodeWorkingDirectory,
+      restartOpenCode,
+      fetchCursorAcpProxyHealth: vi.fn(async () => ({
+        ok: true,
+        workspaceDirectory: '/tmp/project',
+      })),
+    });
+
+    const response = await request(app)
+      .post('/api/provider/cursor-acp/workspace')
+      .send({ directory: '/tmp/project' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      success: true,
+      sdkManaged: true,
+      changed: false,
+      restarted: false,
+      path: '/tmp/project',
+    });
+    expect(setOpenCodeWorkingDirectory).not.toHaveBeenCalled();
+    expect(restartOpenCode).not.toHaveBeenCalled();
+  });
+
+  it('saves, reports, and clears Cursor usage auth without exposing the token', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { key: 'sdk-key' } });
+    const { app } = createApp();
+
+    const saveResponse = await request(app)
+      .put('/api/provider/cursor-acp/usage-auth')
+      .send({ sessionToken: 'cursor-session-token' })
+      .expect(200);
+
+    expect(writeAuthFile).toHaveBeenCalledWith({
+      'cursor-acp': {
+        key: 'sdk-key',
+        usageSessionToken: 'cursor-session-token',
+      },
+    });
+    expect(saveResponse.body).toMatchObject({ success: true, configured: true });
+    expect(JSON.stringify(saveResponse.body)).not.toContain('cursor-session-token');
+
+    readAuthFile.mockReturnValue({ 'cursor-acp': { key: 'sdk-key', usageSessionToken: 'cursor-session-token' } });
+    const statusResponse = await request(app)
+      .get('/api/provider/cursor-acp/usage-auth/status')
+      .expect(200);
+
+    expect(statusResponse.body).toEqual({ configured: true });
+    expect(JSON.stringify(statusResponse.body)).not.toContain('cursor-session-token');
+
+    const clearResponse = await request(app)
+      .delete('/api/provider/cursor-acp/usage-auth')
+      .expect(200);
+
+    expect(clearResponse.body).toEqual({ success: true, configured: false });
+    expect(writeAuthFile).toHaveBeenLastCalledWith({ 'cursor-acp': { key: 'sdk-key' } });
+  });
+
+  it('saves Cursor SDK auth without deleting the usage quota token', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'cursor-session-token' } });
+    const { app } = createApp();
+
+    const response = await request(app)
+      .put('/api/auth/cursor-acp')
+      .send({ type: 'api', key: 'cursor-sdk-key' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({ success: true, configured: true });
+    expect(JSON.stringify(response.body)).not.toContain('cursor-sdk-key');
+    expect(writeAuthFile).toHaveBeenCalledWith({
+      'cursor-acp': {
+        usageSessionToken: 'cursor-session-token',
+        type: 'api',
+        key: 'cursor-sdk-key',
+      },
+    });
+  });
+
+  it('parses Cursor SDK auth requests through the production middleware', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { usageSessionToken: 'cursor-session-token' } });
+    const { app } = createApp({
+      useJsonParser: false,
+      useCommonRequestMiddleware: true,
+    });
+
+    await request(app)
+      .put('/api/auth/cursor-acp')
+      .send({ type: 'api', key: 'cursor-sdk-key' })
+      .expect(200);
+
+    expect(writeAuthFile).toHaveBeenCalledWith({
+      'cursor-acp': {
+        usageSessionToken: 'cursor-session-token',
+        type: 'api',
+        key: 'cursor-sdk-key',
+      },
+    });
+  });
+
+  it('disconnects Cursor SDK auth without deleting the usage quota token', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': {
+      type: 'api',
+      key: 'cursor-sdk-key',
+      token: 'legacy-sdk-token',
+      usageSessionToken: 'cursor-session-token',
+    } });
+    const { app } = createApp();
+
+    const response = await request(app)
+      .delete('/api/provider/cursor-acp/auth?scope=auth')
+      .expect(200);
+
+    expect(response.body).toMatchObject({ success: true, removed: true });
+    expect(writeAuthFile).toHaveBeenCalledWith({
+      'cursor-acp': {
+        usageSessionToken: 'cursor-session-token',
+      },
+    });
+  });
+
+  it('requires the server common middleware JSON parser for Cursor usage auth saves', async () => {
+    const { app } = createApp({ useJsonParser: false });
+
+    await request(app)
+      .put('/api/provider/cursor-acp/usage-auth')
+      .send({ sessionToken: 'cursor-session-token' })
+      .expect(400);
+
+    expect(writeAuthFile).not.toHaveBeenCalled();
+  });
+
+  it('parses Cursor usage auth JSON through the server common middleware', async () => {
+    readAuthFile.mockReturnValue({ 'cursor-acp': { key: 'sdk-key' } });
+    const { app } = createApp({ useJsonParser: false, useCommonRequestMiddleware: true });
+
+    await request(app)
+      .put('/api/provider/cursor-acp/usage-auth')
+      .send({ sessionToken: 'cursor-session-token' })
+      .expect(200);
+
+    expect(writeAuthFile).toHaveBeenCalledWith({
+      'cursor-acp': {
+        key: 'sdk-key',
+        usageSessionToken: 'cursor-session-token',
+      },
+    });
+  });
+
+  it('sends Cursor prompts through the SDK runtime before the OpenCode proxy', async () => {
+    const handlePromptAsync = vi.fn(async () => ({ handled: true, status: 204 }));
+    const { app } = createApp({
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider: vi.fn(),
+        handlePromptAsync,
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+    const downstream = vi.fn((_req, res) => res.status(599).json({ proxied: true }));
+    app.post('/api/session/:sessionID/prompt_async', downstream);
+
+    await request(app)
+      .post('/api/session/ses_1/prompt_async')
+      .send({
+        model: { providerID: 'cursor-acp', modelID: 'auto' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      })
+      .expect(204);
+
+    expect(handlePromptAsync).toHaveBeenCalledWith({
+      sessionID: 'ses_1',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'auto' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+      directory: '/tmp/project',
+    });
+    expect(downstream).not.toHaveBeenCalled();
+  });
+
+  it('unarchives the upstream OpenCode session when Cursor SDK handles a prompt', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: vi.fn(async () => ({
+        id: 'ses_1',
+        time: { archived: 0 },
+      })),
+    });
+    const handlePromptAsync = vi.fn(async () => ({ handled: true, status: 204 }));
+    const { app } = createApp({
+      buildOpenCodeUrl: vi.fn((requestPath) => `http://opencode.test${requestPath}`),
+      getOpenCodeAuthHeaders: vi.fn(() => ({ authorization: 'Bearer test' })),
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider: vi.fn(),
+        handlePromptAsync,
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+
+    await request(app)
+      .post('/api/session/ses_1/prompt_async')
+      .send({
+        model: { providerID: 'cursor-acp', modelID: 'auto' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      })
+      .expect(204);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://opencode.test/session/ses_1?directory=%2Ftmp%2Fproject',
+      expect.objectContaining({
+        method: 'PATCH',
+        headers: expect.objectContaining({
+          authorization: 'Bearer test',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({ time: { archived: 0 } }),
+      }),
+    );
+
+    fetchSpy.mockRestore();
+  });
+
+  it('parses Cursor prompt JSON through the production middleware before SDK interception', async () => {
+    const handlePromptAsync = vi.fn(async () => ({ handled: true, status: 204 }));
+    const { app } = createApp({
+      useJsonParser: false,
+      useCommonRequestMiddleware: true,
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider: vi.fn(),
+        handlePromptAsync,
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+    const downstream = vi.fn((_req, res) => res.status(599).json({ proxied: true }));
+    app.post('/api/session/:sessionID/prompt_async', downstream);
+
+    await request(app)
+      .post('/api/session/ses_1/prompt_async')
+      .send({
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      })
+      .expect(204);
+
+    expect(handlePromptAsync).toHaveBeenCalledWith({
+      sessionID: 'ses_1',
+      body: {
+        model: { providerID: 'cursor-acp', modelID: 'composer-2.5' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      },
+      directory: '/tmp/project',
+    });
+    expect(downstream).not.toHaveBeenCalled();
+  });
+
+  it('lets non-Cursor prompt sends continue to the OpenCode proxy path', async () => {
+    const handlePromptAsync = vi.fn(async () => ({ handled: false }));
+    const { app } = createApp({
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider: vi.fn(),
+        handlePromptAsync,
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+      },
+    });
+    app.post('/api/session/:sessionID/prompt_async', (_req, res) => res.json({ proxied: true }));
+
+    const response = await request(app)
+      .post('/api/session/ses_1/prompt_async')
+      .send({
+        model: { providerID: 'anthropic', modelID: 'claude-sonnet' },
+        messageID: 'msg_1',
+        parts: [{ type: 'text', text: 'hello' }],
+      })
+      .expect(200);
+
+    expect(handlePromptAsync).toHaveBeenCalled();
+    expect(response.body).toEqual({ proxied: true });
+  });
+
+  it('merges Cursor SDK session statuses into the session status route with Cursor taking precedence', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: vi.fn(async () => ({
+        ses_cursor: { type: 'busy' },
+        ses_opencode: { type: 'busy' },
+      })),
+    });
+    const getSessionStatus = vi.fn(() => ({
+      ses_cursor: { type: 'idle' },
+      ses_cursor_active: { type: 'busy' },
+    }));
+    const { app } = createApp({
+      buildOpenCodeUrl: vi.fn((requestPath) => `http://opencode.test${requestPath}`),
+      getOpenCodeAuthHeaders: vi.fn(() => ({ authorization: 'Bearer test' })),
+      cursorSdkRuntime: {
+        getRuntimeStatus: vi.fn(),
+        verifyConnection: vi.fn(),
+        getVirtualProvider: vi.fn(),
+        handlePromptAsync: vi.fn(),
+        abortSession: vi.fn(),
+        getSessionMessages: vi.fn(async () => []),
+        getSessionStatus,
+      },
+    });
+
+    const response = await request(app)
+      .get('/api/session/status?directory=%2Ftmp%2Fproject')
+      .expect(200);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://opencode.test/session/status?directory=%2Ftmp%2Fproject',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          authorization: 'Bearer test',
+          Accept: 'application/json',
+        }),
+      }),
+    );
+    expect(getSessionStatus).toHaveBeenCalledWith();
+    expect(response.body).toEqual({
+      ses_cursor: { type: 'idle' },
+      ses_cursor_active: { type: 'busy' },
+      ses_opencode: { type: 'busy' },
+    });
+
+    fetchSpy.mockRestore();
+  });
+});

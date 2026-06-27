@@ -1,0 +1,902 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
+import { spawn } from 'child_process';
+import {
+  removeProviderConfig,
+  getProviderSources,
+  ensureAnthropicOAuthProviderConfig,
+  getAgentConfig,
+  listConfigAgents,
+} from './opencodeConfig';
+import { getProviderAuth, readAuthFile, removeProviderAuth, writeAuthFile } from './opencodeAuth';
+import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProviders';
+import { getSessionActivitySnapshot } from './sessionActivityWatcher';
+import type { BridgeContext, BridgeResponse } from './bridge';
+import {
+  clearCursorSdkAuth,
+  createCursorSdkRuntime,
+  saveCursorSdkAuth,
+} from '@openchamber/cursor-sdk-runtime';
+
+type BridgeMessageInput = {
+  id: string;
+  type: string;
+  payload?: unknown;
+};
+
+type SystemRuntimeDeps = {
+  resolveUserPath: (value: string, baseDirectory: string) => string;
+  fetchModelsMetadata: () => Promise<unknown>;
+  updateCheckUrl: string;
+  clientReloadDelayMs: number;
+};
+
+type NotificationBridgePayload = {
+  title?: string;
+  body?: string;
+  tag?: string;
+};
+
+type NotificationsNotifyRequestPayload = {
+  payload?: NotificationBridgePayload;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const ZEN_MODELS_URL = 'https://opencode.ai/zen/v1/models';
+const ZEN_MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+const CLAUDE_AUTH_CHECK_TIMEOUT_MS = 25000;
+const CLAUDE_AUTH_CHECK_PROMPT = 'Reply with exactly: OK';
+const CURSOR_ACP_PROVIDER_ID = 'cursor-acp';
+const CURSOR_USAGE_TOKEN_MAX_LENGTH = 16_384;
+let cachedZenModels: { models: Array<{ id: string; owned_by?: string }>; at: number } | null = null;
+
+const resolveCursorSdkAgentDefinitions = ({ directory }: { directory?: string | null } = {}) => {
+  const definitions: Record<string, { description: string; prompt: string; model: 'inherit' }> = {};
+  for (const agent of listConfigAgents(directory || undefined)) {
+    const name = typeof agent?.name === 'string' ? agent.name.trim() : '';
+    const prompt = typeof agent?.prompt === 'string' ? agent.prompt.trim() : '';
+    if (!name || !prompt || name.toLowerCase() === 'council') continue;
+    definitions[name] = {
+      description: typeof agent.description === 'string' && agent.description.trim()
+        ? agent.description.trim()
+        : `${name} DevRyan agent`,
+      prompt,
+      model: 'inherit',
+    };
+  }
+  return definitions;
+};
+
+const cursorSdkRuntime = createCursorSdkRuntime({
+  readAuth: readAuthFile,
+  env: process.env,
+  logger: console,
+  resolveAgentPrompt: async ({ agent, directory }: { agent?: string; directory?: string | null }) => {
+    if (!agent) return '';
+    const result = getAgentConfig(agent, directory || undefined);
+    return typeof result?.config?.prompt === 'string' ? result.config.prompt : '';
+  },
+  resolveAgentDefinitions: resolveCursorSdkAgentDefinitions,
+});
+
+const runClaudeCliAuthCheck = () => new Promise<{ ok: boolean; error?: string }>((resolve) => {
+  let settled = false;
+  let stderr = '';
+  let timer: NodeJS.Timeout | null = null;
+  const finish = (result: { ok: boolean; error?: string }) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    resolve(result);
+  };
+
+  const child = spawn(process.env.CLAUDE_CODE_CLI || 'claude', ['-p', CLAUDE_AUTH_CHECK_PROMPT, '--output-format', 'text'], {
+    env: process.env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+
+  timer = setTimeout(() => {
+    child.kill?.('SIGTERM');
+    finish({ ok: false, error: 'Timed out while checking Claude OAuth.' });
+  }, CLAUDE_AUTH_CHECK_TIMEOUT_MS);
+
+  child.stderr?.on?.('data', (chunk) => {
+    stderr += String(chunk);
+    if (stderr.length > 2000) stderr = stderr.slice(-2000);
+  });
+
+  child.on?.('error', (error: NodeJS.ErrnoException) => {
+    finish({
+      ok: false,
+      error: error.code === 'ENOENT'
+        ? 'Claude CLI was not found on PATH.'
+        : error.message || 'Failed to check Claude OAuth with the Claude CLI.',
+    });
+  });
+
+  child.on?.('close', (code) => {
+    if (code === 0) {
+      finish({ ok: true });
+      return;
+    }
+    finish({ ok: false, error: stderr.trim() || `Claude CLI exited with code ${code}.` });
+  });
+});
+
+const getOpenChamberConfigDir = (): string => {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA;
+    if (appData) return path.join(appData, 'openchamber');
+  }
+  return path.join(os.homedir(), '.config', 'openchamber');
+};
+
+const sanitizeInstallScope = (scope: string): 'desktop-tauri' | 'vscode' | 'web' => {
+  if (scope === 'desktop-tauri' || scope === 'vscode' || scope === 'web') return scope;
+  return 'web';
+};
+
+const getOrCreateInstallId = (scope: string): string => {
+  const configDir = getOpenChamberConfigDir();
+  const normalizedScope = sanitizeInstallScope(scope);
+  const idPath = path.join(configDir, `install-id-${normalizedScope}`);
+
+  try {
+    const existing = fs.readFileSync(idPath, 'utf8').trim();
+    if (existing) return existing;
+  } catch {
+    // Generate new id.
+  }
+
+  const installId = randomUUID();
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(idPath, `${installId}\n`, { encoding: 'utf8', mode: 0o600 });
+  return installId;
+};
+
+const mapNodePlatformToApiPlatform = (value: string): 'macos' | 'windows' | 'linux' | 'web' => {
+  if (value === 'darwin') return 'macos';
+  if (value === 'win32') return 'windows';
+  if (value === 'linux') return 'linux';
+  return 'web';
+};
+
+const mapNodeArchToApiArch = (value: string): 'arm64' | 'x64' | 'unknown' => {
+  if (value === 'arm64' || value === 'aarch64') return 'arm64';
+  if (value === 'x64' || value === 'amd64') return 'x64';
+  return 'unknown';
+};
+
+type ParsedDiffHunk = {
+  newStart: number;
+  oldLines: string[];
+  newLines: string[];
+};
+
+const VIRTUAL_DIFF_SCHEME = 'openchamber-diff';
+const virtualDiffContents = new Map<string, string>();
+let virtualDiffCounter = 0;
+let virtualDiffProviderDisposable: vscode.Disposable | null = null;
+
+const asObject = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const normalizeCursorUsageSessionToken = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const token = value.trim();
+  if (!token || token.length > CURSOR_USAGE_TOKEN_MAX_LENGTH) {
+    return null;
+  }
+  return token;
+};
+
+const normalizeWorkspaceDirectory = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return path.resolve(trimmed);
+};
+
+const readCursorUsageAuthConfigured = (): boolean => {
+  const auth = readAuthFile();
+  const entry = asObject(auth[CURSOR_ACP_PROVIDER_ID]);
+  return Boolean(normalizeCursorUsageSessionToken(entry?.usageSessionToken));
+};
+
+const ensureVirtualDiffProviderRegistered = (ctx?: BridgeContext): void => {
+  if (virtualDiffProviderDisposable) {
+    return;
+  }
+
+  virtualDiffProviderDisposable = vscode.workspace.registerTextDocumentContentProvider(
+    VIRTUAL_DIFF_SCHEME,
+    {
+      provideTextDocumentContent: (uri: vscode.Uri) => {
+        const key = new URLSearchParams(uri.query).get('key') || '';
+        return virtualDiffContents.get(key) ?? '';
+      },
+    },
+  );
+
+  if (ctx?.context) {
+    ctx.context.subscriptions.push(virtualDiffProviderDisposable);
+  }
+};
+
+const createVirtualOriginalDiffUri = (modifiedPath: string, content: string): vscode.Uri => {
+  const key = `${Date.now()}-${++virtualDiffCounter}`;
+  virtualDiffContents.set(key, content);
+
+  if (virtualDiffContents.size > 100) {
+    const firstKey = virtualDiffContents.keys().next().value;
+    if (firstKey) {
+      virtualDiffContents.delete(firstKey);
+    }
+  }
+
+  return vscode.Uri.from({
+    scheme: VIRTUAL_DIFF_SCHEME,
+    path: `/${path.basename(modifiedPath) || 'original'}`,
+    query: `key=${encodeURIComponent(key)}`,
+  });
+};
+
+const parseUnifiedDiffHunks = (patch: string): ParsedDiffHunk[] => {
+  const lines = patch.split(/\r?\n/);
+  const hunks: ParsedDiffHunk[] = [];
+
+  let current: ParsedDiffHunk | null = null;
+
+  for (const line of lines) {
+    const headerMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (headerMatch) {
+      if (current) {
+        hunks.push(current);
+      }
+      current = {
+        newStart: Number(headerMatch[1] || 1),
+        oldLines: [],
+        newLines: [],
+      };
+      continue;
+    }
+
+    if (!current) continue;
+
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('\\ No newline')) {
+      continue;
+    }
+
+    if (line.startsWith('-')) {
+      current.oldLines.push(line.slice(1));
+      continue;
+    }
+
+    if (line.startsWith('+')) {
+      current.newLines.push(line.slice(1));
+      continue;
+    }
+
+    if (line.startsWith(' ')) {
+      const content = line.slice(1);
+      current.oldLines.push(content);
+      current.newLines.push(content);
+    }
+  }
+
+  if (current) {
+    hunks.push(current);
+  }
+
+  return hunks;
+};
+
+const reconstructOriginalContentFromPatch = (modifiedContent: string, patch: string): string | null => {
+  const hunks = parseUnifiedDiffHunks(patch);
+  if (hunks.length === 0) {
+    return null;
+  }
+
+  const lines = modifiedContent.split('\n');
+  for (let index = hunks.length - 1; index >= 0; index -= 1) {
+    const hunk = hunks[index];
+    if (!hunk) {
+      continue;
+    }
+    const startIndex = Math.max(0, hunk.newStart - 1);
+    const replaceCount = hunk.newLines.length;
+    lines.splice(startIndex, replaceCount, ...hunk.oldLines);
+  }
+
+  return lines.join('\n');
+};
+
+const fetchFreeZenModels = async (): Promise<Array<{ id: string; owned_by?: string }>> => {
+  const now = Date.now();
+  if (cachedZenModels && now - cachedZenModels.at < ZEN_MODELS_CACHE_TTL_MS) {
+    return cachedZenModels.models;
+  }
+
+  const signal = AbortSignal.timeout(8_000);
+  const [response, metadataResponse] = await Promise.all([
+    fetch(ZEN_MODELS_URL, {
+      headers: { Accept: 'application/json' },
+      signal,
+    }),
+    fetch('https://models.dev/api.json', {
+      headers: { Accept: 'application/json' },
+      signal,
+    }),
+  ]);
+
+  if (!response.ok) {
+    throw new Error(`zen models request failed (${response.status})`);
+  }
+  if (!metadataResponse.ok) {
+    throw new Error(`models.dev request failed (${metadataResponse.status})`);
+  }
+
+  const rawPayload = await response.json().catch(() => null);
+  const rawMetadata = await metadataResponse.json().catch(() => null);
+  const payload = asObject(rawPayload);
+  const metadata = asObject(rawMetadata);
+  const metadataProvider = asObject(metadata?.opencode);
+  const metadataModels = asObject(metadataProvider?.models);
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  const models = rows
+    .map((entry) => {
+      const id = typeof (entry as { id?: unknown })?.id === 'string'
+        ? (entry as { id: string }).id.trim()
+        : '';
+      const ownedBy = typeof (entry as { owned_by?: unknown })?.owned_by === 'string'
+        ? (entry as { owned_by: string }).owned_by
+        : undefined;
+      const metadataModel = asObject(metadataModels?.[id]);
+      const cost = asObject(metadataModel?.cost);
+      if (!id || cost?.input !== 0 || cost?.output !== 0) return null;
+      return ownedBy ? { id, owned_by: ownedBy } : { id };
+    })
+    .filter((entry): entry is { id: string; owned_by?: string } => entry !== null);
+
+  cachedZenModels = { models, at: Date.now() };
+  return models;
+};
+
+export async function handleSystemBridgeMessage(
+  message: BridgeMessageInput,
+  ctx: BridgeContext | undefined,
+  deps: SystemRuntimeDeps,
+): Promise<BridgeResponse | null> {
+  const { id, type, payload } = message;
+
+  switch (type) {
+    case 'api:opencode/directory': {
+      const target = (payload as { path?: string })?.path;
+      if (!target) {
+        return { id, type, success: false, error: 'Path is required' };
+      }
+      const baseDirectory =
+        ctx?.manager?.getWorkingDirectory() || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir();
+      const resolvedPath = deps.resolveUserPath(target, baseDirectory);
+      const result = await ctx?.manager?.setWorkingDirectory(resolvedPath);
+      if (!result) {
+        return { id, type, success: false, error: 'OpenCode manager unavailable' };
+      }
+      return { id, type, success: true, data: result };
+    }
+
+    case 'api:models/metadata': {
+      try {
+        const data = await deps.fetchModelsMetadata();
+        return { id, type, success: true, data };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:session-activity:get': {
+      return { id, type, success: true, data: getSessionActivitySnapshot() };
+    }
+
+    case 'api:zen:models': {
+      try {
+        const models = await fetchFreeZenModels();
+        return { id, type, success: true, data: { models } };
+      } catch (error) {
+        if (cachedZenModels) {
+          return { id, type, success: true, data: { models: cachedZenModels.models } };
+        }
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:openchamber:update-check': {
+      try {
+        const body = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+        const currentVersion = typeof body.currentVersion === 'string' && body.currentVersion.trim().length > 0
+          ? body.currentVersion.trim()
+          : String(ctx?.context?.extension?.packageJSON?.version || 'unknown');
+        const instanceMode = typeof body.instanceMode === 'string' && body.instanceMode.trim().length > 0
+          ? body.instanceMode.trim()
+          : 'local';
+        const deviceClass = typeof body.deviceClass === 'string' && body.deviceClass.trim().length > 0
+          ? body.deviceClass.trim()
+          : 'desktop';
+        const platformRaw = typeof body.platform === 'string' && body.platform.trim().length > 0
+          ? body.platform.trim()
+          : os.platform();
+        const archRaw = typeof body.arch === 'string' && body.arch.trim().length > 0
+          ? body.arch.trim()
+          : os.arch();
+        const reportUsage = body.reportUsage !== false;
+
+        const installId = getOrCreateInstallId('vscode');
+        const requestBody = {
+          appType: 'vscode',
+          deviceClass,
+          platform: mapNodePlatformToApiPlatform(platformRaw),
+          arch: mapNodeArchToApiArch(archRaw),
+          channel: 'stable',
+          currentVersion,
+          installId,
+          instanceMode,
+          reportUsage,
+        };
+
+        const response = await fetch(deps.updateCheckUrl, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(10_000),
+        });
+
+        if (!response.ok) {
+          const text = await response.text().catch(() => 'update check failed');
+          return { id, type, success: false, error: text || `Update check failed with ${response.status}` };
+        }
+
+        const data = await response.json();
+        return { id, type, success: true, data };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'editor:openFile': {
+      const { path: filePath, line, column } = payload as { path: string; line?: number; column?: number };
+      try {
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        const options: vscode.TextDocumentShowOptions = {};
+        if (typeof line === 'number') {
+          const pos = new vscode.Position(Math.max(0, line - 1), column || 0);
+          options.selection = new vscode.Range(pos, pos);
+        }
+        await vscode.window.showTextDocument(doc, options);
+        return { id, type, success: true };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'editor:openDiff': {
+      const { original, modified, label, line, patch } = payload as {
+        original: string;
+        modified: string;
+        label?: string;
+        line?: number;
+        patch?: string;
+      };
+      try {
+        const modifiedUri = vscode.Uri.file(modified);
+        const modifiedDoc = await vscode.workspace.openTextDocument(modifiedUri);
+        let originalUri = original ? vscode.Uri.file(original) : modifiedUri;
+
+        if (typeof patch === 'string' && patch.trim().length > 0) {
+          const originalContent = reconstructOriginalContentFromPatch(modifiedDoc.getText(), patch);
+          if (typeof originalContent === 'string') {
+            ensureVirtualDiffProviderRegistered(ctx);
+            originalUri = createVirtualOriginalDiffUri(modified, originalContent);
+          }
+        }
+
+        const leftLabel = original ? path.basename(original) : `${path.basename(modified)} (before)`;
+        const title = label || `${leftLabel} ↔ ${path.basename(modified)}`;
+
+        await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title);
+
+        if (typeof line === 'number' && Number.isFinite(line)) {
+          const targetLine = Math.max(0, Math.trunc(line) - 1);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const targetEditor = vscode.window.visibleTextEditors.find(
+            (editor) => editor.document.uri.toString() === modifiedUri.toString(),
+          );
+          if (targetEditor) {
+            const target = new vscode.Position(targetLine, 0);
+            targetEditor.selection = new vscode.Selection(target, target);
+            targetEditor.revealRange(new vscode.Range(target, target), vscode.TextEditorRevealType.InCenter);
+          }
+        }
+
+        return { id, type, success: true };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/auth:delete': {
+      const { providerId, scope, directory } = (payload || {}) as { providerId?: string; scope?: string; directory?: string };
+      if (!providerId) {
+        return { id, type, success: false, error: 'Provider ID is required' };
+      }
+      const normalizedScope = typeof scope === 'string' ? scope : 'auth';
+      const workingDirectory = typeof directory === 'string' && directory.trim().length > 0
+        ? directory.trim()
+        : ctx?.manager?.getWorkingDirectory();
+      try {
+        let removed = false;
+        if (normalizedScope === 'auth') {
+          removed = providerId === CURSOR_ACP_PROVIDER_ID
+            ? clearCursorSdkAuth({ readAuth: readAuthFile, writeAuth: writeAuthFile })
+            : removeProviderAuth(providerId);
+        } else if (normalizedScope === 'user' || normalizedScope === 'project' || normalizedScope === 'custom') {
+          removed = removeProviderConfig(providerId, workingDirectory, normalizedScope);
+        } else if (normalizedScope === 'all') {
+          const authRemoved = providerId === CURSOR_ACP_PROVIDER_ID
+            ? clearCursorSdkAuth({ readAuth: readAuthFile, writeAuth: writeAuthFile })
+            : removeProviderAuth(providerId);
+          const userRemoved = removeProviderConfig(providerId, workingDirectory, 'user');
+          const projectRemoved = workingDirectory
+            ? removeProviderConfig(providerId, workingDirectory, 'project')
+            : false;
+          const customRemoved = removeProviderConfig(providerId, workingDirectory, 'custom');
+          removed = authRemoved || userRemoved || projectRemoved || customRemoved;
+        } else {
+          return { id, type, success: false, error: 'Invalid scope' };
+        }
+
+        if (removed) {
+          await ctx?.manager?.restart();
+        }
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            success: true,
+            removed,
+            requiresReload: removed,
+            message: removed
+              ? `Provider ${providerId} disconnected successfully. Reloading interface…`
+              : `Provider ${providerId} was not configured.`,
+            reloadDelayMs: removed ? deps.clientReloadDelayMs : undefined,
+          },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:auth/cursor-acp:save': {
+      const body = asObject(payload);
+      const key = typeof body?.key === 'string' ? body.key.trim() : '';
+      if (!key) {
+        return { id, type, success: false, error: 'Cursor SDK API key is required.' };
+      }
+      try {
+        saveCursorSdkAuth({
+          readAuth: readAuthFile,
+          writeAuth: writeAuthFile,
+          key,
+          type: typeof body?.type === 'string' && body.type.trim() ? body.type.trim() : 'api',
+        });
+        return {
+          id,
+          type,
+          success: true,
+          data: { success: true, configured: true },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/source:get': {
+      const { providerId, directory } = (payload || {}) as { providerId?: string; directory?: string };
+      if (!providerId) {
+        return { id, type, success: false, error: 'Provider ID is required' };
+      }
+      try {
+        const workingDirectory = typeof directory === 'string' && directory.trim().length > 0
+          ? directory.trim()
+          : ctx?.manager?.getWorkingDirectory();
+        const sources = getProviderSources(providerId, workingDirectory);
+        const authLookupIds = ['anthropic', 'claude', 'anthropic-oauth', 'opencode-with-claude'].includes(providerId)
+          ? [providerId, 'anthropic', 'claude']
+          : [providerId];
+        const auth = authLookupIds.map((id) => getProviderAuth(id)).find(Boolean);
+        if (providerId === CURSOR_ACP_PROVIDER_ID) {
+          sources.auth.exists = Boolean(
+            (typeof process.env.CURSOR_API_KEY === 'string' && process.env.CURSOR_API_KEY.trim()) ||
+            (auth && typeof auth === 'object' && (
+              (typeof (auth as { key?: unknown }).key === 'string' && ((auth as { key?: string }).key ?? '').trim()) ||
+              (typeof (auth as { token?: unknown }).token === 'string' && ((auth as { token?: string }).token ?? '').trim())
+            ))
+          );
+        } else {
+          sources.auth.exists = Boolean(auth);
+        }
+        return { id, type, success: true, data: { providerId, sources } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/anthropic/check-oauth': {
+      const { directory } = (payload || {}) as { directory?: string };
+      const workingDirectory = typeof directory === 'string' && directory.trim().length > 0
+        ? directory.trim()
+        : ctx?.manager?.getWorkingDirectory();
+      try {
+        const authCheck = await runClaudeCliAuthCheck();
+        if (!authCheck.ok) {
+          return { id, type, success: false, error: authCheck.error || 'Claude OAuth check failed.' };
+        }
+
+        const result = ensureAnthropicOAuthProviderConfig({ workingDirectory });
+        if (result.changed) {
+          await ctx?.manager?.restart();
+        }
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            success: true,
+            configured: true,
+            changed: result.changed,
+            path: result.path,
+            requiresReload: result.changed,
+            reloadDelayMs: result.changed ? deps.clientReloadDelayMs : undefined,
+          },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/configure': {
+      try {
+        const result = await cursorSdkRuntime.verifyConnection();
+        const status = cursorSdkRuntime.getRuntimeStatus();
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            ...result,
+            success: true,
+            configured: result.configured !== false,
+            changed: false,
+            requiresReload: false,
+            bridge: { kind: 'cursor-sdk' },
+            sdkAuthConfigured: result.sdkAuthConfigured ?? status.sdkAuthConfigured ?? false,
+            usageAuthConfigured: result.usageAuthConfigured ?? status.usageAuthConfigured ?? false,
+          },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/runtime-status': {
+      try {
+        return {
+          id,
+          type,
+          success: true,
+          data: cursorSdkRuntime.getRuntimeStatus(),
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/workspace': {
+      try {
+        const body = isRecord(payload) ? payload : {};
+        const requested = normalizeWorkspaceDirectory(body.directory ?? body.path);
+        if (!requested) {
+          return { id, type, success: false, error: 'Directory is required.' };
+        }
+        const stats = fs.statSync(requested);
+        if (!stats.isDirectory()) {
+          return { id, type, success: false, error: 'Specified path is not a directory.' };
+        }
+
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            success: true,
+            sdkManaged: true,
+            changed: false,
+            restarted: false,
+            path: requested,
+          },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/usage-auth/status': {
+      try {
+        return {
+          id,
+          type,
+          success: true,
+          data: { configured: readCursorUsageAuthConfigured() },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/usage-auth:save': {
+      const body = asObject(payload);
+      const sessionToken = normalizeCursorUsageSessionToken(body?.sessionToken);
+      if (!sessionToken) {
+        return { id, type, success: false, error: 'A Cursor usage session token is required.' };
+      }
+      try {
+        const auth = readAuthFile();
+        const existing = asObject(auth[CURSOR_ACP_PROVIDER_ID]) ?? {};
+        auth[CURSOR_ACP_PROVIDER_ID] = {
+          ...existing,
+          usageSessionToken: sessionToken,
+        };
+        writeAuthFile(auth);
+        return {
+          id,
+          type,
+          success: true,
+          data: { success: true, configured: true },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider/cursor-acp/usage-auth:clear': {
+      try {
+        const auth = readAuthFile();
+        const existing = asObject(auth[CURSOR_ACP_PROVIDER_ID]) ?? {};
+        const changed = Object.prototype.hasOwnProperty.call(existing, 'usageSessionToken');
+        if (changed) {
+          const nextEntry = { ...existing };
+          delete nextEntry.usageSessionToken;
+          auth[CURSOR_ACP_PROVIDER_ID] = nextEntry;
+          writeAuthFile(auth);
+        }
+        return {
+          id,
+          type,
+          success: true,
+          data: { success: true, configured: false, changed },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:quota:providers': {
+      try {
+        const providers = listConfiguredQuotaProviders();
+        return { id, type, success: true, data: { providers } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:quota:get': {
+      const { providerId } = (payload || {}) as { providerId?: string };
+      if (!providerId) {
+        return { id, type, success: false, error: 'Provider ID is required' };
+      }
+      try {
+        const result = await fetchQuotaForProvider(providerId);
+        return { id, type, success: true, data: result };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'vscode:command': {
+      const { command, args } = (payload || {}) as { command?: string; args?: unknown[] };
+      if (!command) {
+        return { id, type, success: false, error: 'Command is required' };
+      }
+      try {
+        const result = await vscode.commands.executeCommand(command, ...(args || []));
+        return { id, type, success: true, data: { result } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'vscode:openExternalUrl': {
+      const { url } = (payload || {}) as { url?: string };
+      const target = typeof url === 'string' ? url.trim() : '';
+      if (!target) {
+        return { id, type, success: false, error: 'URL is required' };
+      }
+      try {
+        await vscode.env.openExternal(vscode.Uri.parse(target));
+        return { id, type, success: true, data: { opened: true } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'notifications:can-notify': {
+      return { id, type, success: true, data: true };
+    }
+
+    case 'notifications:notify': {
+      const request = (payload || {}) as NotificationsNotifyRequestPayload;
+      const notification = request.payload || {};
+      const title = typeof notification.title === 'string' ? notification.title.trim() : '';
+      const body = typeof notification.body === 'string' ? notification.body.trim() : '';
+
+      const message = title && body
+        ? `${title}: ${body}`
+        : title || body;
+
+      if (!message) {
+        return { id, type, success: true, data: { shown: false } };
+      }
+
+      void vscode.window.showInformationMessage(message);
+      return { id, type, success: true, data: { shown: true } };
+    }
+
+    default:
+      return null;
+  }
+}

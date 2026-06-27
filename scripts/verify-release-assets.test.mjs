@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import {
+  missingRequiredReleaseAssets,
+  requiredReleaseAssetNames,
+} from './verify-release-assets.mjs';
+
+describe('release asset verification', () => {
+  it('requires both macOS app package architectures and update metadata', () => {
+    assert.deepEqual(requiredReleaseAssetNames('1.1.1'), [
+      'DevRyan-1.1.1-arm64.dmg',
+      'DevRyan-1.1.1-arm64.dmg.blockmap',
+      'DevRyan-1.1.1-arm64.zip',
+      'DevRyan-1.1.1-arm64.zip.blockmap',
+      'DevRyan-1.1.1-x64.dmg',
+      'DevRyan-1.1.1-x64.dmg.blockmap',
+      'DevRyan-1.1.1-x64.zip',
+      'DevRyan-1.1.1-x64.zip.blockmap',
+      'latest-mac.yml',
+      'openchamber-web-1.1.1.tgz',
+    ]);
+  });
+
+  it('reports exactly which required release assets are missing', () => {
+    const missing = missingRequiredReleaseAssets(
+      [
+        'DevRyan-1.1.1-arm64.dmg',
+        'DevRyan-1.1.1-arm64.dmg.blockmap',
+        'DevRyan-1.1.1-arm64.zip',
+        'DevRyan-1.1.1-arm64.zip.blockmap',
+        'DevRyan-1.1.1-x64.dmg',
+        'DevRyan-1.1.1-x64.dmg.blockmap',
+        'latest-mac.yml',
+      ],
+      '1.1.1',
+    );
+
+    assert.deepEqual(missing, [
+      'DevRyan-1.1.1-x64.zip',
+      'DevRyan-1.1.1-x64.zip.blockmap',
+      'openchamber-web-1.1.1.tgz',
+    ]);
+  });
+});

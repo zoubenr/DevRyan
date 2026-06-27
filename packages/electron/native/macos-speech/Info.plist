@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.openchamber.desktop.macos-speech-helper</string>
+  <key>CFBundleName</key>
+  <string>DevRyan Speech Helper</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>DevRyan uses your microphone to transcribe voice input locally through macOS Speech.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>DevRyan uses Apple Speech Recognition to turn your spoken prompts into text.</string>
+</dict>
+</plist>

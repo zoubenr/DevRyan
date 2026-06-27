@@ -1,0 +1,228 @@
+import React from 'react';
+import { cn } from '@/lib/utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
+import { useI18n } from '@/lib/i18n';
+
+interface ContextUsageProgressIconProps {
+  percentage: number;
+  className?: string;
+}
+
+const ContextUsageProgressIcon: React.FC<ContextUsageProgressIconProps> = ({ percentage, className }) => {
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const clampedPercentage = Math.min(Math.max(percentage, 0), 100);
+  const strokeDashoffset = circumference * (1 - clampedPercentage / 100);
+
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      className={cn('flex-shrink-0', className)}
+      aria-hidden="true"
+    >
+      <circle
+        cx="10"
+        cy="10"
+        r={radius}
+        stroke="currentColor"
+        strokeWidth="2.25"
+        opacity="0.22"
+      />
+      <circle
+        cx="10"
+        cy="10"
+        r={radius}
+        stroke="currentColor"
+        strokeWidth="2.25"
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={strokeDashoffset}
+        transform="rotate(-90 10 10)"
+      />
+    </svg>
+  );
+};
+
+interface ContextUsageDisplayProps {
+  totalTokens: number;
+  percentage: number;
+  colorPercentage?: number;
+  contextLimit: number;
+  outputLimit?: number;
+  size?: 'default' | 'compact';
+  isMobile?: boolean;
+  hideIcon?: boolean;
+  hideValue?: boolean;
+  showPercentIcon?: boolean;
+  className?: string;
+  valueClassName?: string;
+  percentIconClassName?: string;
+  onClick?: () => void;
+  pressed?: boolean;
+}
+
+export const ContextUsageDisplay: React.FC<ContextUsageDisplayProps> = ({
+  totalTokens,
+  percentage,
+  contextLimit,
+  outputLimit,
+  size = 'default',
+  isMobile = false,
+  hideIcon = false,
+  hideValue = false,
+  showPercentIcon = false,
+  className,
+  valueClassName,
+  percentIconClassName,
+  onClick,
+  pressed = false,
+}) => {
+  const { t } = useI18n();
+  const [mobileTooltipOpen, setMobileTooltipOpen] = React.useState(false);
+
+  const formatTokens = (tokens: number) => {
+    if (tokens >= 1_000_000) {
+      return `${(tokens / 1_000_000).toFixed(1)}M`;
+    }
+    if (tokens >= 1_000) {
+      return `${(tokens / 1_000).toFixed(1)}K`;
+    }
+    return tokens.toFixed(1).replace(/\.0$/, '');
+  };
+
+  const safeOutputLimit = typeof outputLimit === 'number' ? Math.max(outputLimit, 0) : 0;
+  const displayPercentage = Math.min(percentage, 999).toFixed(1);
+  const tooltipLines = [
+    `${t('contextUsage.mobile.usage')}: ${displayPercentage}%`,
+    t('contextUsage.tooltip.usedTokens', { tokens: formatTokens(totalTokens) }),
+    t('contextUsage.tooltip.contextLimit', { tokens: formatTokens(contextLimit) }),
+    t('contextUsage.tooltip.outputLimit', { tokens: formatTokens(safeOutputLimit) }),
+  ];
+  const ariaLabel = `${t('contextUsage.aria.label')}: ${displayPercentage}%, ${tooltipLines.join(', ')}`;
+
+  const isInteractive = !isMobile && typeof onClick === 'function';
+
+  const contextContent = (
+    <>
+      {!isMobile && !hideIcon && (
+        <ContextUsageProgressIcon
+          percentage={percentage}
+          className="h-4 w-4 text-muted-foreground"
+        />
+      )}
+      {!hideValue && (
+        <span className={cn('font-medium inline-flex items-center gap-1.5', valueClassName)}>
+          {showPercentIcon ? (
+            <>
+              <ContextUsageProgressIcon
+                percentage={percentage}
+                className={cn('h-3.5 w-3.5 text-muted-foreground', percentIconClassName)}
+              />
+              <span className="text-foreground">{displayPercentage}%</span>
+            </>
+          ) : (
+            <>
+              <span className="text-foreground">{displayPercentage}</span>%
+            </>
+          )}
+        </span>
+      )}
+      {hideValue && showPercentIcon && (
+        <ContextUsageProgressIcon
+          percentage={percentage}
+          className={cn('h-3.5 w-3.5 text-muted-foreground', percentIconClassName)}
+        />
+      )}
+    </>
+  );
+
+  const sharedClassName = cn(
+    'app-region-no-drag flex items-center gap-1.5 select-none',
+    size === 'compact' ? 'typography-micro' : 'typography-meta',
+    isInteractive
+      ? cn(
+        'rounded-md px-2 py-1.5 text-foreground transition-colors',
+        'hover:bg-interactive-hover',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary'
+      )
+      : 'text-muted-foreground/60',
+    className,
+  );
+
+  const contextElement = isInteractive ? (
+    <button
+      type="button"
+      className={sharedClassName}
+      aria-label={ariaLabel}
+      aria-pressed={pressed}
+      onClick={onClick}
+    >
+      {contextContent}
+    </button>
+  ) : isMobile ? (
+    <button
+      type="button"
+      className={cn(sharedClassName, 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary')}
+      aria-label={ariaLabel}
+      onClick={() => setMobileTooltipOpen(true)}
+    >
+      {contextContent}
+    </button>
+  ) : (
+    <div
+      className={sharedClassName}
+      aria-label={ariaLabel}
+    >
+      {contextContent}
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        {contextElement}
+        <MobileOverlayPanel
+          open={mobileTooltipOpen}
+          onClose={() => setMobileTooltipOpen(false)}
+          title={t('contextUsage.mobile.title')}
+        >
+          <div className="flex flex-col gap-1.5">
+            <div className="rounded-xl border border-border/40 bg-sidebar/30 px-3 py-2 space-y-1">
+              <div className="flex justify-between items-center">
+                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.usedTokens')}</span>
+                <span className="typography-meta text-foreground font-medium">{formatTokens(totalTokens)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.contextLimit')}</span>
+                <span className="typography-meta text-foreground font-medium">{formatTokens(contextLimit)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.outputLimit')}</span>
+                <span className="typography-meta text-foreground font-medium">{formatTokens(safeOutputLimit)}</span>
+              </div>
+              <div className="flex justify-between items-center pt-1 border-t border-border/40">
+                <span className="typography-meta text-muted-foreground">{t('contextUsage.mobile.usage')}</span>
+                <span className="typography-meta font-semibold text-foreground">
+                  {displayPercentage}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </MobileOverlayPanel>
+      </>
+    );
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{contextElement}</TooltipTrigger>
+      <TooltipContent side="top" align="center" sideOffset={6} className="whitespace-nowrap text-center">
+        <div>
+          <p className="typography-micro leading-tight">{tooltipLines[0]}</p>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
