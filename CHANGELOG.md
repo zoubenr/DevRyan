@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-27
+
+- OpenCode Slim: add Slim install/config helpers, managed plugin defaults, and runtime lifecycle integration so Slim-managed agents and overlays are available consistently.
+- Agents: improve runtime agent overlay generation, harness preflight checks, and settings helper coverage for managed OpenCode configurations.
+- Plugins: expand plugin settings state, persistence, and UI controls for installed plugin handling.
+- Chat: refine retry visibility, assistant status handling, and plan lifecycle behavior with focused regression coverage.
+- Model settings: strengthen model preference autosave, synchronization, hidden-model persistence, and queued-send behavior across UI state stores.
+- VS Code: align OpenCode configuration handling with the web runtime and add coverage for config updates.
+
 ## [1.0.0] - 2026-06-27
 
 - Release baseline: reset DevRyan versioning and release history so the current repository state is published as the new v1.0.0 starting point.

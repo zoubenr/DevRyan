@@ -421,10 +421,16 @@ export const createSettingsHelpers = (dependencies) => {
     if (favoriteModels) {
       result.favoriteModels = favoriteModels;
     }
+    if (typeof candidate.favoriteModelsUpdatedAt === 'number' && Number.isInteger(candidate.favoriteModelsUpdatedAt) && candidate.favoriteModelsUpdatedAt >= 0) {
+      result.favoriteModelsUpdatedAt = candidate.favoriteModelsUpdatedAt;
+    }
 
     const hiddenModels = sanitizeModelRefs(candidate.hiddenModels, 64);
     if (hiddenModels) {
       result.hiddenModels = hiddenModels;
+    }
+    if (typeof candidate.hiddenModelsUpdatedAt === 'number' && Number.isInteger(candidate.hiddenModelsUpdatedAt) && candidate.hiddenModelsUpdatedAt >= 0) {
+      result.hiddenModelsUpdatedAt = candidate.hiddenModelsUpdatedAt;
     }
 
     const recentModels = sanitizeModelRefs(candidate.recentModels, 16);

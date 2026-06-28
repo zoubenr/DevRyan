@@ -384,6 +384,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     }
     if (settingsSlug === 'plugins') {
       void usePluginsStore.getState().loadPlugins();
+      void usePluginsStore.getState().loadSlimStatus();
     }
   }, [activeProjectId, isSettingsDialogOpen, runtimeCtx.isVSCode, settingsSlug]);
 

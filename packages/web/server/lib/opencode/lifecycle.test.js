@@ -146,6 +146,12 @@ const createRuntime = (overrides = {}) => {
 };
 
 describe('OpenCode lifecycle', () => {
+  it('exposes the port cleanup helper required by graceful shutdown', () => {
+    const runtime = createRuntime();
+
+    expect(typeof runtime.killProcessOnPort).toBe('function');
+  });
+
   it('launches managed OpenCode with the managed PATH', async () => {
     delete process.env.OPENCODE_BINARY;
     const child = createMockChild();
@@ -493,6 +499,53 @@ describe('OpenCode lifecycle', () => {
       skillPolicy: expect.any(Object),
     });
     expect(options.env.OH_MY_OPENCODE_SLIM_PRESET).toBe('openai');
+    expect(options.env.DEVRYAN_OPENCODE_USER_CONFIG_DIR).toBe(opencodeConfigDir);
+    expect(options.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).toBe('true');
+
+    await server.close();
+  });
+
+  it('does not exclude packaged DevRyan agents for the DevRyan Slim wrapper mode', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const opencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    mkdirSync(opencodeConfigDir, { recursive: true });
+    writeFileSync(
+      join(opencodeConfigDir, 'opencode.json'),
+      `${JSON.stringify({ plugin: ['./plugins/devryan-oh-my-opencode-slim.mjs'] }, null, 2)}\n`,
+      'utf8',
+    );
+    writeFileSync(
+      join(opencodeConfigDir, 'oh-my-opencode-slim.json'),
+      `${JSON.stringify({
+        preset: 'openai',
+        presets: {
+          openai: {
+            orchestrator: { model: 'openai/gpt-5.5', variant: 'medium' },
+          },
+        },
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    const child = createMockChild();
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', 'opencode server listening on http://127.0.0.1:45678\n');
+      });
+      return child;
+    });
+    const syncPackagedAgents = vi.fn(async () => ({ changed: false, conflicts: [] }));
+
+    const runtime = createRuntime({ syncPackagedAgents });
+    const server = await runtime.startOpenCode();
+    const [, , options] = spawnMock.mock.calls[0];
+
+    expect(syncPackagedAgents).toHaveBeenCalledWith({
+      agentOverrides: {},
+      excludedAgentNames: [],
+      skillPolicy: expect.any(Object),
+    });
+    expect(options.env.OH_MY_OPENCODE_SLIM_PRESET).toBe('openai');
+    expect(options.env.DEVRYAN_OPENCODE_USER_CONFIG_DIR).toBe(opencodeConfigDir);
     expect(options.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).toBe('true');
 
     await server.close();

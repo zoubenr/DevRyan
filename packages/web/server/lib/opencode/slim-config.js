@@ -12,6 +12,9 @@ import {
 } from './shared.js';
 
 const SLIM_PLUGIN_PACKAGE_NAME = 'oh-my-opencode-slim';
+const SLIM_MANAGED_VERSION = '2.0.5';
+const DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE = 'devryan-oh-my-opencode-slim.mjs';
+const DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC = `./plugins/${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`;
 const SLIM_SCOPE = 'slim';
 const SLIM_CONFIG_BASENAME = 'oh-my-opencode-slim';
 const DEFAULT_DISABLED_AGENTS = ['observer'];
@@ -117,6 +120,16 @@ const isSlimPluginSpec = (spec) => (
   || spec.includes(`/node_modules/${SLIM_PLUGIN_PACKAGE_NAME}`)
 );
 
+const isDevRyanSlimWrapperPluginSpec = (spec) => (
+  spec === DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC
+  || spec.endsWith(`/plugins/${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`)
+  || spec.endsWith(`\\plugins\\${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`)
+);
+
+const isSlimRuntimePluginSpec = (spec) => (
+  isSlimPluginSpec(spec) || isDevRyanSlimWrapperPluginSpec(spec)
+);
+
 const readOpenCodeConfigsForPluginDetection = (workingDirectory, options = {}) => {
   if (typeof options.readOpenCodeConfig === 'function') {
     return [options.readOpenCodeConfig(workingDirectory)];
@@ -136,12 +149,25 @@ const readOpenCodeConfigsForPluginDetection = (workingDirectory, options = {}) =
   return configs;
 };
 
-const isSlimPluginEnabled = (workingDirectory, options = {}) => {
-  return readOpenCodeConfigsForPluginDetection(workingDirectory, options).some((config) => {
+const getSlimPluginState = (workingDirectory, options = {}) => {
+  let rawPluginEnabled = false;
+  let wrapperPluginEnabled = false;
+  for (const config of readOpenCodeConfigsForPluginDetection(workingDirectory, options)) {
     const plugins = Array.isArray(config?.plugin) ? config.plugin : [];
-    return plugins.some((entry) => isSlimPluginSpec(pluginSpecFromEntry(entry)));
-  });
+    for (const entry of plugins) {
+      const spec = pluginSpecFromEntry(entry);
+      rawPluginEnabled = rawPluginEnabled || isSlimPluginSpec(spec);
+      wrapperPluginEnabled = wrapperPluginEnabled || isDevRyanSlimWrapperPluginSpec(spec);
+    }
+  }
+  return {
+    rawPluginEnabled,
+    wrapperPluginEnabled,
+    pluginEnabled: rawPluginEnabled || wrapperPluginEnabled,
+  };
 };
+
+const isSlimPluginEnabled = (workingDirectory, options = {}) => getSlimPluginState(workingDirectory, options).pluginEnabled;
 
 const getPrimaryModelRef = (model) => {
   if (typeof model === 'string' && model.trim()) return model.trim();
@@ -272,11 +298,16 @@ const resolveSlimConfig = (workingDirectory, options = {}) => {
   const activePreset = getActivePresetName(mergedConfig, options);
   const agents = normalizeSlimAgents(mergedConfig, activePreset);
   const agentNames = Object.keys(agents).sort((a, b) => a.localeCompare(b));
-  const pluginEnabled = isSlimPluginEnabled(workingDirectory, options);
+  const pluginState = getSlimPluginState(workingDirectory, options);
+  const slimAgentCatalogEnabled = pluginState.rawPluginEnabled && agentNames.length > 0;
 
   return {
-    enabled: pluginEnabled && agentNames.length > 0,
-    pluginEnabled,
+    enabled: slimAgentCatalogEnabled,
+    pluginEnabled: pluginState.pluginEnabled,
+    slimRuntimeEnabled: pluginState.pluginEnabled,
+    slimAgentCatalogEnabled,
+    rawPluginEnabled: pluginState.rawPluginEnabled,
+    wrapperPluginEnabled: pluginState.wrapperPluginEnabled,
     configDirectory,
     userConfigPath,
     projectConfigPath,
@@ -338,12 +369,17 @@ const deleteSlimAgentModelOverride = (agentName, options = {}) => {
 };
 
 export {
+  DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE,
+  DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC,
+  SLIM_MANAGED_VERSION,
   SLIM_PLUGIN_PACKAGE_NAME,
   SLIM_REPLACED_AGENT_NAMES,
   SLIM_SCOPE,
   deleteSlimAgentModelOverride,
+  isDevRyanSlimWrapperPluginSpec,
   isSlimPluginEnabled,
   isSlimPluginSpec,
+  isSlimRuntimePluginSpec,
   resolveSlimConfig,
   writeSlimAgentModelOverride,
 };

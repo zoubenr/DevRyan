@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'yaml';
 
 import { syncRuntimeAgentOverlays } from './runtime-agent-overlays.js';
+import { DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE, DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC } from './slim-config.js';
 
 const writeAgent = async (agentDirectory, name, frontmatterLines, prompt) => {
   await fs.mkdir(agentDirectory, { recursive: true });
@@ -301,6 +302,53 @@ describe('syncRuntimeAgentOverlays', () => {
     await expect(fs.readFile(path.join(result.targetConfigDirectory, 'opencode.json'), 'utf8'))
       .resolves.toContain('oh-my-opencode-slim');
     expect(result.slimConfigWritten).toBe(true);
+  });
+
+  it('copies wrapper-mode Slim config and packaged wrapper plugin without excluding DevRyan agents', async () => {
+    const opencodeConfigDirectory = path.join(tempRoot, 'opencode-config');
+    const slimConfigPath = path.join(opencodeConfigDirectory, 'oh-my-opencode-slim.json');
+    const wrapperSource = 'export default async function wrapper() { return {}; }\n';
+    await writeJson(slimConfigPath, {
+      preset: 'openai',
+      presets: {
+        openai: {
+          orchestrator: { model: 'openai/gpt-5.5', variant: 'medium' },
+        },
+      },
+    });
+    await writeAgent(packagedAgentDirectory, 'orchestrator', [
+      'mode: primary',
+      'model: packaged/orchestrator',
+    ], 'Packaged DevRyan orchestrator prompt');
+    await fs.mkdir(packagedPluginDirectory, { recursive: true });
+    await fs.writeFile(path.join(packagedPluginDirectory, DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE), wrapperSource, 'utf8');
+
+    const result = await syncRuntimeAgentOverlays({
+      workingDirectory: projectDirectory,
+      packagedAgentDirectory,
+      packagedPluginDirectory,
+      overlayRoot,
+      manifestPath,
+      slimConfigDirectory: opencodeConfigDirectory,
+      readConfig: () => ({ plugin: [DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC] }),
+      readOpenCodeConfig: () => ({ plugin: [DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC] }),
+      agentOverrides: {
+        orchestrator: {
+          model: 'openai/gpt-5.5',
+          variant: 'medium',
+        },
+      },
+    });
+
+    const overlayConfig = JSON.parse(await fs.readFile(path.join(result.targetConfigDirectory, 'opencode.json'), 'utf8'));
+    const overlay = await readOverlayAgent(result.targetConfigDirectory, 'orchestrator');
+    await expect(fs.readFile(path.join(result.targetConfigDirectory, 'oh-my-opencode-slim.json'), 'utf8'))
+      .resolves.toContain('"preset": "openai"');
+    await expect(fs.readFile(path.join(result.targetConfigDirectory, 'plugins', DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE), 'utf8'))
+      .resolves.toBe(wrapperSource);
+    expect(overlayConfig.plugin).toContain(DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC);
+    expect(overlay.prompt).toBe('Packaged DevRyan orchestrator prompt');
+    expect(overlay.frontmatter.model).toBe('openai/gpt-5.5');
   });
 
   it('keeps project-directory allows out of global packaged agent sync output', async () => {

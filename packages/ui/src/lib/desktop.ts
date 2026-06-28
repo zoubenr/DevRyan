@@ -156,7 +156,9 @@ export type DesktopSettings = {
   inputBarOffset?: number;
 
   favoriteModels?: Array<{ providerID: string; modelID: string }>;
+  favoriteModelsUpdatedAt?: number;
   hiddenModels?: Array<{ providerID: string; modelID: string }>;
+  hiddenModelsUpdatedAt?: number;
   diffLayoutPreference?: 'dynamic' | 'inline' | 'side-by-side';
   diffViewMode?: 'single' | 'stacked';
   gitChangesViewMode?: 'flat' | 'tree';

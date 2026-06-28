@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseJsonc } from 'jsonc-parser';
 
 import {
+  DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC,
   resolveSlimConfig,
   writeSlimAgentModelOverride,
 } from './slim-config.js';
@@ -86,6 +87,53 @@ describe('oh-my-opencode-slim config adapter', () => {
       skills: ['*'],
     });
     expect(resolved.agents.observer).toBeUndefined();
+  });
+
+  it('treats the DevRyan wrapper as Slim runtime without enabling the Slim agent catalog', async () => {
+    await writeJson(path.join(configDirectory, 'opencode.json'), {
+      plugin: [DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC],
+    });
+    await writeJson(path.join(configDirectory, 'oh-my-opencode-slim.json'), {
+      preset: 'openai',
+      presets: {
+        openai: {
+          orchestrator: { model: 'openai/gpt-5.5', variant: 'medium' },
+          fixer: { model: 'openai/gpt-5.5', variant: 'low' },
+        },
+      },
+    });
+
+    const resolved = resolveSlimConfig(projectDirectory, { configDirectory });
+
+    expect(resolved.pluginEnabled).toBe(true);
+    expect(resolved.slimRuntimeEnabled).toBe(true);
+    expect(resolved.wrapperPluginEnabled).toBe(true);
+    expect(resolved.rawPluginEnabled).toBe(false);
+    expect(resolved.slimAgentCatalogEnabled).toBe(false);
+    expect(resolved.enabled).toBe(false);
+    expect(resolved.agentNames).toEqual(['fixer', 'orchestrator']);
+  });
+
+  it('keeps raw Slim mode as the only mode that exposes Slim agents as the catalog', async () => {
+    await writeJson(path.join(configDirectory, 'opencode.json'), {
+      plugin: ['oh-my-opencode-slim'],
+    });
+    await writeJson(path.join(configDirectory, 'oh-my-opencode-slim.json'), {
+      preset: 'openai',
+      presets: {
+        openai: {
+          orchestrator: { model: 'openai/gpt-5.5', variant: 'medium' },
+        },
+      },
+    });
+
+    const resolved = resolveSlimConfig(projectDirectory, { configDirectory });
+
+    expect(resolved.rawPluginEnabled).toBe(true);
+    expect(resolved.wrapperPluginEnabled).toBe(false);
+    expect(resolved.slimRuntimeEnabled).toBe(true);
+    expect(resolved.slimAgentCatalogEnabled).toBe(true);
+    expect(resolved.enabled).toBe(true);
   });
 
   it('writes model overrides to root agents while preserving Slim-owned fields and deleting cleared variants', async () => {

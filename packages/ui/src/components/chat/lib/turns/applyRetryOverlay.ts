@@ -9,6 +9,27 @@ const resolveMessageRole = (message: ChatMessageEntry): string | null => {
         ?? null;
 };
 
+const hasTextValue = (value: unknown): boolean => {
+    return typeof value === 'string' && value.trim().length > 0;
+};
+
+const hasRenderableAssistantContent = (message: ChatMessageEntry): boolean => {
+    for (const part of message.parts) {
+        if (part.type === 'tool') {
+            return true;
+        }
+
+        if (part.type === 'text' || part.type === 'reasoning') {
+            const candidate = part as Partial<{ text: unknown; content: unknown; value: unknown }>;
+            if (hasTextValue(candidate.text) || hasTextValue(candidate.content) || hasTextValue(candidate.value)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+};
+
 interface RetryOverlayInput {
     sessionId: string | null;
     message: string;
@@ -54,6 +75,10 @@ export const applyRetryOverlay = (
         const existing = messages[targetAssistantIndex];
         const existingInfo = existing.info as { error?: unknown };
         if (existingInfo.error) {
+            return messages;
+        }
+
+        if (hasRenderableAssistantContent(existing)) {
             return messages;
         }
 

@@ -14,7 +14,9 @@ export const startModelPrefsAutoSave = () => {
   let timer: number | null = null;
   let lastSent: ModelPrefsSnapshot = createModelPrefsBaseline({
     favoriteModels: useUIStore.getState().favoriteModels,
+    favoriteModelsUpdatedAt: useUIStore.getState().favoriteModelsUpdatedAt,
     hiddenModels: useUIStore.getState().hiddenModels,
+    hiddenModelsUpdatedAt: useUIStore.getState().hiddenModelsUpdatedAt,
   });
 
   const flush = () => {
@@ -22,7 +24,9 @@ export const startModelPrefsAutoSave = () => {
     const state = useUIStore.getState();
     const payload = {
       favoriteModels: state.favoriteModels,
+      favoriteModelsUpdatedAt: state.favoriteModelsUpdatedAt,
       hiddenModels: state.hiddenModels,
+      hiddenModelsUpdatedAt: state.hiddenModelsUpdatedAt,
     };
 
     if (modelPrefsEqual(lastSent, payload)) {
@@ -42,8 +46,18 @@ export const startModelPrefsAutoSave = () => {
   };
 
   const unsubscribe = useUIStore.subscribe((state, prevState) => {
-    const next = { favoriteModels: state.favoriteModels, hiddenModels: state.hiddenModels };
-    const prev = { favoriteModels: prevState.favoriteModels, hiddenModels: prevState.hiddenModels };
+    const next = {
+      favoriteModels: state.favoriteModels,
+      favoriteModelsUpdatedAt: state.favoriteModelsUpdatedAt,
+      hiddenModels: state.hiddenModels,
+      hiddenModelsUpdatedAt: state.hiddenModelsUpdatedAt,
+    };
+    const prev = {
+      favoriteModels: prevState.favoriteModels,
+      favoriteModelsUpdatedAt: prevState.favoriteModelsUpdatedAt,
+      hiddenModels: prevState.hiddenModels,
+      hiddenModelsUpdatedAt: prevState.hiddenModelsUpdatedAt,
+    };
     if (modelPrefsEqual(next, prev)) {
       return;
     }

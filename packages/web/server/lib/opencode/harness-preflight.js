@@ -374,6 +374,20 @@ function lintWarmup({ findings, latestWarmup }) {
   }
 }
 
+function lintSlimRuntime({ findings, slimRuntime }) {
+  if (!isObject(slimRuntime)) return;
+  if (slimRuntime.expectedMode !== 'devryan-wrapper') return;
+  if (slimRuntime.rawPluginEnabled !== true || slimRuntime.wrapperPluginEnabled === true) return;
+  findings.push(createFinding({
+    ruleId: 'slim-raw-mode-active',
+    severity: 'warning',
+    summary: 'Raw oh-my-opencode-slim is active while DevRyan wrapper mode is expected',
+    artifact: { type: 'plugin', name: 'oh-my-opencode-slim' },
+    suggestedNextAction: 'Run the Slim runtime repair action so DevRyan registers its wrapper plugin',
+    stopCondition: 'Stop relying on DevRyan prompt preservation until the raw Slim plugin is replaced by the wrapper',
+  }));
+}
+
 function lintAgentHarness(options = {}) {
   const agents = asArray(options.agents);
   const skills = asArray(options.skills);
@@ -392,6 +406,7 @@ function lintAgentHarness(options = {}) {
   lintSkills({ findings, skills });
   lintStaleOverrides({ findings, staleOverrides });
   lintWarmup({ findings, latestWarmup: options.latestWarmup });
+  lintSlimRuntime({ findings, slimRuntime: options.slimRuntime });
 
   return findings;
 }
@@ -476,6 +491,7 @@ function buildPreflightResult({
   latestWarmup,
   toolManifest,
   packagedAgents,
+  slimRuntime,
 }) {
   const findings = lintAgentHarness({
     agents,
@@ -484,6 +500,7 @@ function buildPreflightResult({
     staleOverrides,
     latestWarmup,
     toolManifest,
+    slimRuntime,
   });
   const promptAudit = auditPackagedPromptContext({ agents: packagedAgents });
   const harness = findings.length > 0
@@ -513,6 +530,7 @@ function buildPreflightResult({
     findings,
     toolManifest,
     latestWarmup,
+    slimRuntime,
     promptAudit,
   }, harness);
 }
@@ -532,6 +550,7 @@ function createHarnessPreflight(dependencies = {}) {
         latestWarmup: typeof dependencies.getLatestWarmup === 'function' ? dependencies.getLatestWarmup(context) : null,
         toolManifest: typeof dependencies.getToolManifest === 'function' ? dependencies.getToolManifest(context) : { tools: [], aliases: {}, sourceRuntime: 'server', directory: context.directory || null },
         packagedAgents: read('getPackagedAgents', context),
+        slimRuntime: typeof dependencies.getSlimRuntime === 'function' ? dependencies.getSlimRuntime(context) : null,
       };
 
       const pending = Object.entries(values).filter(([, value]) => maybePromise(value));

@@ -38,6 +38,10 @@ describe("usePluginsStore", () => {
       selectedId: null,
       isLoading: false,
       lastError: null,
+      slimStatus: null,
+      slimStatusLoading: false,
+      slimActionInFlight: null,
+      slimLastError: null,
     });
   });
 
@@ -61,7 +65,49 @@ describe("usePluginsStore", () => {
     expect(usePluginsStore.getState().files).toBe(firstFiles);
   });
 
-  test("store API is read-only aside from loading and selection", () => {
+  test("loads Slim status and installs the managed runtime through explicit actions", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input).includes("/api/config/slim/status")) {
+        return Response.json({
+          installedVersion: null,
+          runtimeEnabled: false,
+          wrapperConfigured: false,
+          packageDependencyInstalled: false,
+          issues: [{ code: "slim-package-missing", message: "missing" }],
+        });
+      }
+      if (String(input).includes("/api/config/slim/install")) {
+        return Response.json({
+          installedVersion: "2.0.5",
+          runtimeEnabled: true,
+          wrapperConfigured: true,
+          packageDependencyInstalled: true,
+          changedFiles: ["/tmp/home/.config/opencode/opencode.json"],
+          backupPaths: ["/tmp/home/.config/opencode/opencode.json.devryan-slim-backup"],
+          issues: [],
+        });
+      }
+      return pluginsResponse();
+    }) as typeof fetch;
+
+    await usePluginsStore.getState().loadSlimStatus();
+    expect(usePluginsStore.getState().slimStatus?.runtimeEnabled).toBe(false);
+    expect(usePluginsStore.getState().slimStatus?.wrapperConfigured).toBe(false);
+
+    const installed = await usePluginsStore.getState().installSlimRuntime();
+
+    expect(installed).toBe(true);
+    expect(calls).toContain("GET /api/config/slim/status");
+    expect(calls).toContain("POST /api/config/slim/install");
+    expect(usePluginsStore.getState().slimStatus?.installedVersion).toBe("2.0.5");
+    expect(usePluginsStore.getState().slimStatus?.runtimeEnabled).toBe(true);
+    expect(usePluginsStore.getState().slimStatus?.wrapperConfigured).toBe(true);
+    expect(usePluginsStore.getState().slimActionInFlight).toBeNull();
+  });
+
+  test("store API keeps plugin config read-only while exposing Slim setup actions", () => {
     const keys = Object.keys(usePluginsStore.getState()).sort();
 
     expect(keys).toEqual([
@@ -69,11 +115,18 @@ describe("usePluginsStore", () => {
       "errors",
       "files",
       "getById",
+      "installSlimRuntime",
       "isLoading",
       "lastError",
       "loadPlugins",
+      "loadSlimStatus",
+      "repairSlimRuntime",
       "selectedId",
       "setSelected",
+      "slimActionInFlight",
+      "slimLastError",
+      "slimStatus",
+      "slimStatusLoading",
     ]);
   });
 });

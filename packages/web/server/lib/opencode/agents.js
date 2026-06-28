@@ -342,9 +342,49 @@ function applyAgentModelOverrideToRuntimeFrontmatter(frontmatter, override) {
   return next;
 }
 
+function getDevRyanBaseConfigAgents(workingDirectory) {
+  const agentsByName = new Map();
+
+  for (const agent of listPackagedConfigAgents()) {
+    agentsByName.set(agent.name, agent);
+  }
+
+  for (const agent of listProjectAgents(workingDirectory)) {
+    agentsByName.set(agent.name, agent);
+  }
+
+  return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function applySlimModelMetadata(agent, slimAgent) {
+  if (!slimAgent) return agent;
+  const next = {
+    ...agent,
+    overrides: {
+      model: Boolean(slimAgent.overrides?.model),
+      variant: Boolean(slimAgent.overrides?.variant),
+      councillors: false,
+    },
+    slimRuntimeModel: true,
+  };
+  if (slimAgent.model) {
+    next.model = slimAgent.model;
+  }
+  if (Array.isArray(slimAgent.modelRefs)) {
+    next.modelRefs = [...slimAgent.modelRefs];
+  }
+  if (Object.prototype.hasOwnProperty.call(slimAgent, 'variant')) {
+    next.variant = slimAgent.variant;
+  } else {
+    delete next.variant;
+  }
+  return next;
+}
+
 function getBaseConfigAgents(workingDirectory, options = {}) {
+  const slim = resolveSlimConfig(workingDirectory, options);
   const slimAgents = getSlimConfigAgents(workingDirectory, options);
-  if (Object.keys(slimAgents).length > 0) {
+  if (slim.slimAgentCatalogEnabled && Object.keys(slimAgents).length > 0) {
     const agentsByName = new Map(Object.entries(slimAgents));
     for (const agent of listProjectAgents(workingDirectory)) {
       if (SLIM_REPLACED_AGENT_NAMES.has(agent.name)) {
@@ -355,14 +395,17 @@ function getBaseConfigAgents(workingDirectory, options = {}) {
     return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  const agentsByName = new Map();
-
-  for (const agent of listPackagedConfigAgents()) {
-    agentsByName.set(agent.name, agent);
-  }
-
-  for (const agent of listProjectAgents(workingDirectory)) {
-    agentsByName.set(agent.name, agent);
+  const agentsByName = new Map(getDevRyanBaseConfigAgents(workingDirectory).map((agent) => [agent.name, agent]));
+  if (slim.pluginEnabled && !slim.slimAgentCatalogEnabled) {
+    const runtimeSlimAgents = getSlimRuntimeModelAgents(workingDirectory, options);
+    for (const [name, slimAgent] of Object.entries(runtimeSlimAgents)) {
+      const existing = agentsByName.get(name);
+      if (existing) {
+        agentsByName.set(name, applySlimModelMetadata(existing, slimAgent));
+      } else {
+        agentsByName.set(name, slimAgent);
+      }
+    }
   }
 
   return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -417,8 +460,7 @@ function mergeSlimAgentLayers(installedAgent, configAgent) {
   return merged;
 }
 
-function getSlimConfigAgents(workingDirectory, options = {}) {
-  const slim = resolveSlimConfig(workingDirectory, options);
+function getSlimAgentsFromResolvedConfig(slim) {
   if (!slim.pluginEnabled) return {};
 
   const agentsByName = new Map();
@@ -432,6 +474,19 @@ function getSlimConfigAgents(workingDirectory, options = {}) {
   return Object.fromEntries(Array.from(agentsByName.entries()).sort(([a], [b]) => a.localeCompare(b)));
 }
 
+function getSlimConfigAgents(workingDirectory, options = {}) {
+  const slim = resolveSlimConfig(workingDirectory, options);
+  if (!slim.slimAgentCatalogEnabled) return {};
+
+  return getSlimAgentsFromResolvedConfig(slim);
+}
+
+function getSlimRuntimeModelAgents(workingDirectory, options = {}) {
+  const slim = resolveSlimConfig(workingDirectory, options);
+  if (!slim.pluginEnabled || slim.slimAgentCatalogEnabled) return {};
+  return getSlimAgentsFromResolvedConfig(slim);
+}
+
 function assertKnownAgentName(agentName, workingDirectory, options = {}) {
   const exists = getBaseConfigAgents(workingDirectory, options).some((agent) => agent.name === agentName);
   if (!exists) {
@@ -442,7 +497,10 @@ function assertKnownAgentName(agentName, workingDirectory, options = {}) {
 function writeAgentModelOverride(agentName, rawOverride, workingDirectory, options = {}) {
   const override = normalizeAgentModelOverride(rawOverride);
   const slimAgents = getSlimConfigAgents(workingDirectory, options);
-  if (slimAgents[agentName]) {
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory, options);
+  const slim = resolveSlimConfig(workingDirectory, options);
+  const devRyanAgentExists = getDevRyanBaseConfigAgents(workingDirectory).some((agent) => agent.name === agentName);
+  if (slimAgents[agentName] || slimRuntimeAgents[agentName] || (slim.pluginEnabled && devRyanAgentExists)) {
     return writeSlimAgentModelOverride(agentName, override, options);
   }
 
@@ -471,7 +529,10 @@ function writeAgentModelOverride(agentName, rawOverride, workingDirectory, optio
 function deleteAgentModelOverride(agentName, options = {}) {
   if (options.workingDirectory) {
     const slimAgents = getSlimConfigAgents(options.workingDirectory, options);
-    if (slimAgents[agentName]) {
+    const slimRuntimeAgents = getSlimRuntimeModelAgents(options.workingDirectory, options);
+    const slim = resolveSlimConfig(options.workingDirectory, options);
+    const devRyanAgentExists = getDevRyanBaseConfigAgents(options.workingDirectory).some((agent) => agent.name === agentName);
+    if (slimAgents[agentName] || slimRuntimeAgents[agentName] || (slim.pluginEnabled && devRyanAgentExists)) {
       return deleteSlimAgentModelOverride(agentName, options);
     }
   }
@@ -583,7 +644,7 @@ function listProjectAgents(workingDirectory) {
 function listConfigAgents(workingDirectory, options = {}) {
   const overrides = listAgentModelOverrides(options);
   return getBaseConfigAgents(workingDirectory, options)
-    .map((agent) => (agent.source === SLIM_SCOPE
+    .map((agent) => (agent.source === SLIM_SCOPE || agent.slimRuntimeModel
       ? agent
       : applyAgentModelOverride(agent, overrides[agent.name])))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -616,6 +677,11 @@ function getAgentScope(agentName, workingDirectory) {
   const packagedAgent = getPackagedAgent(agentName);
   if (packagedAgent) {
     return { scope: PACKAGED_AGENT_SCOPE, path: packagedAgent.path };
+  }
+
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
+  if (slimRuntimeAgents[agentName]) {
+    return { scope: SLIM_SCOPE, path: slimRuntimeAgents[agentName].__path || null };
   }
 
   return { scope: null, path: null };
@@ -698,6 +764,41 @@ function getAgentSources(agentName, workingDirectory) {
     }
   }
 
+  if (sources.md.exists && slim.agents[agentName]) {
+    sources.json = {
+      exists: Boolean(slim.projectConfigPath || slim.userConfigPath),
+      path: slim.projectConfigPath || slim.userConfigPath,
+      scope: SLIM_SCOPE,
+      fields: ['model', 'variant'],
+    };
+  }
+
+  if (!sources.md.exists) {
+    const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
+    const slimRuntimeAgent = slimRuntimeAgents[agentName];
+    if (slimRuntimeAgent) {
+      const mdPath = slimRuntimeAgent.__path || null;
+      const jsonPath = slim.projectConfigPath || slim.userConfigPath || null;
+      return {
+        md: {
+          exists: Boolean(mdPath),
+          path: mdPath,
+          scope: mdPath ? SLIM_SCOPE : null,
+          fields: mdPath ? Object.keys(parseMdFile(mdPath).frontmatter) : [],
+        },
+        json: {
+          exists: Boolean(jsonPath),
+          path: jsonPath,
+          scope: SLIM_SCOPE,
+          fields: ['model', 'variant'],
+        },
+        projectMd: { exists: false, path: null },
+        packagedMd: { exists: false, path: null },
+        userMd: { exists: false, path: null },
+      };
+    }
+  }
+
   return sources;
 }
 
@@ -711,13 +812,13 @@ function getAgentConfig(agentName, workingDirectory, options = {}) {
       config: slimAgents[agentName],
     };
   }
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory, options);
 
   const projectPath = workingDirectory ? getIndexedProjectAgentPath(workingDirectory, agentName) : null;
   if (projectPath && fs.existsSync(projectPath)) {
-    const config = applyAgentModelOverride(
-      parseAgentMdFile(projectPath, AGENT_SCOPE.PROJECT, path.join(workingDirectory, '.opencode', 'agents')),
-      overrides[agentName],
-    );
+    const baseConfig = parseAgentMdFile(projectPath, AGENT_SCOPE.PROJECT, path.join(workingDirectory, '.opencode', 'agents'));
+    const modelConfig = applySlimModelMetadata(baseConfig, slimRuntimeAgents[agentName]);
+    const config = modelConfig.slimRuntimeModel ? modelConfig : applyAgentModelOverride(modelConfig, overrides[agentName]);
     return {
       source: 'md',
       scope: AGENT_SCOPE.PROJECT,
@@ -737,11 +838,20 @@ function getAgentConfig(agentName, workingDirectory, options = {}) {
         builtIn: true,
       };
     applyParsedModelFields(baseConfig, packagedAgent.frontmatter.model);
-    const config = applyAgentModelOverride(baseConfig, overrides[agentName]);
+    const modelConfig = applySlimModelMetadata(baseConfig, slimRuntimeAgents[agentName]);
+    const config = modelConfig.slimRuntimeModel ? modelConfig : applyAgentModelOverride(modelConfig, overrides[agentName]);
     return {
       source: 'md',
       scope: PACKAGED_AGENT_SCOPE,
       config,
+    };
+  }
+
+  if (slimRuntimeAgents[agentName]) {
+    return {
+      source: 'slim',
+      scope: SLIM_SCOPE,
+      config: slimRuntimeAgents[agentName],
     };
   }
 

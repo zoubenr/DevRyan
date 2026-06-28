@@ -1131,6 +1131,41 @@ export interface PluginsListResponse {
   errors: PluginConfigError[];
 }
 
+export interface SlimSetupIssue {
+  code: string;
+  message: string;
+}
+
+export interface SlimWrapperStatus {
+  configured: boolean;
+  wrapperRegistered: boolean;
+  wrapperFileExists: boolean;
+  rawRegistered: boolean;
+  path: string;
+  spec: string;
+}
+
+export interface SlimSetupStatus {
+  ok?: boolean;
+  installedVersion: string | null;
+  configDirectory?: string;
+  configPath?: string;
+  slimConfigPath?: string;
+  wrapperPath?: string;
+  packageJsonPath?: string;
+  runtimeEnabled: boolean;
+  wrapperConfigured: boolean;
+  wrapperStatus?: SlimWrapperStatus;
+  packageDependencyInstalled: boolean;
+  slimConfigExists?: boolean;
+  backgroundSubagentsEnv?: string;
+  changedFiles?: string[];
+  backupPaths?: string[];
+  issues: SlimSetupIssue[];
+  repair?: boolean;
+  reload?: unknown;
+}
+
 // ============== Skills Catalog Types ==============
 
 export type SkillsCatalogSourceId = string;

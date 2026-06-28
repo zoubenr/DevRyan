@@ -7,7 +7,7 @@ import { spawnSync } from 'child_process';
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { normalizeWindowsDriveLetter } from './pathUtils';
-import { resolveSlimRuntimePreset, syncRuntimeAgentOverlays } from './opencodeConfig';
+import { resolveSlimRuntimeConfigDirectory, resolveSlimRuntimePreset, syncRuntimeAgentOverlays } from './opencodeConfig';
 import { resolveWorkingDirectoryChange } from './workingDirectoryChange';
 import {
   reapOrphanedManagedOpenCodeProcesses,
@@ -963,6 +963,7 @@ export function createOpenCodeManager(_context: vscode.ExtensionContext): OpenCo
       process.env.OPENCODE_SERVER_PASSWORD = password;
       const overlayResult = syncRuntimeAgentOverlays(workingDirectory);
       const slimPreset = resolveSlimRuntimePreset(workingDirectory);
+      const slimConfigDirectory = resolveSlimRuntimeConfigDirectory(workingDirectory);
 
       // SDK spawns `opencode serve` in current process cwd.
       // Some OpenCode endpoints behave differently based on server process cwd,
@@ -978,6 +979,7 @@ export function createOpenCodeManager(_context: vscode.ExtensionContext): OpenCo
           {
             OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || 'true',
             ...(slimPreset ? { OH_MY_OPENCODE_SLIM_PRESET: slimPreset } : {}),
+            ...(slimConfigDirectory ? { DEVRYAN_OPENCODE_USER_CONFIG_DIR: slimConfigDirectory } : {}),
             ...(overlayResult.targetConfigDirectory
               ? { OPENCODE_CONFIG_DIR: overlayResult.targetConfigDirectory }
               : {}),

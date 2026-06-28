@@ -124,6 +124,25 @@ describe("opencode client sends", () => {
     expect(JSON.stringify(body)).not.toContain("Cursor ACP compatibility instructions")
   })
 
+  test("sends synthetic preface text before the visible user prompt", async () => {
+    await opencodeClient.sendMessage({
+      id: "session-openai",
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      text: "make a plan",
+      prefaceText: "plan mode instruction",
+      prefaceTextSynthetic: true,
+      directory: "/repo/openai",
+    })
+
+    const body = getPromptBody()
+    expect(body.parts.map((part: { text?: string }) => part.text)).toEqual([
+      "plan mode instruction",
+      "make a plan",
+    ])
+    expect(body.parts[0]?.synthetic).toBe(true)
+  })
+
   test("does not repair workspace for non-Cursor prompt sends", async () => {
     await opencodeClient.sendMessage({
       id: "session-openai",

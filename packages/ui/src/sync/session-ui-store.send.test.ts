@@ -498,6 +498,7 @@ describe("session-ui-store send routing", () => {
       starterAssistantMessages: new Map(),
       sessionPlanAvailable: new Map(),
       sessionPlanIndicator: new Map(),
+      sessionCompletionIndicator: new Map(),
       implementedPlanRequests: new Set(),
       planModeUserMessages: new Set(),
       planModeUserMessagesBySession: new Map(),
@@ -730,6 +731,52 @@ describe("session-ui-store send routing", () => {
       implementationMessageId: "msg-implementation-user",
     })
     expect(useSessionUIStore.getState().sessionPlanAvailable.get("session-a")).toBe(true)
+  })
+
+  test("clearSessionTurnCompletion clears completed plan indicators", () => {
+    useSessionUIStore.setState({
+      sessionPlanAvailable: new Map([["session-a", true]]),
+      sessionPlanIndicator: new Map([
+        ["session-a", { state: "completed", sourceMessageId: "msg-plan" }],
+      ]),
+      sessionCompletionIndicator: new Map([
+        ["session-a", { messageId: "msg-complete", completedAt: 123 }],
+      ]),
+    })
+
+    useSessionUIStore.getState().clearSessionTurnCompletion("session-a")
+
+    const state = useSessionUIStore.getState()
+    expect(state.sessionCompletionIndicator.has("session-a")).toBe(false)
+    expect(state.sessionPlanIndicator.has("session-a")).toBe(false)
+    expect(state.sessionPlanAvailable.get("session-a")).toBe(true)
+  })
+
+  test("clearSessionTurnCompletion preserves implementing plan indicators", () => {
+    useSessionUIStore.setState({
+      sessionPlanAvailable: new Map([["session-a", true]]),
+      sessionPlanIndicator: new Map([
+        ["session-a", {
+          state: "implementing",
+          sourceMessageId: "msg-plan",
+          implementationMessageId: "msg-implementation-user",
+        }],
+      ]),
+      sessionCompletionIndicator: new Map([
+        ["session-a", { messageId: "msg-complete", completedAt: 123 }],
+      ]),
+    })
+
+    useSessionUIStore.getState().clearSessionTurnCompletion("session-a")
+
+    const state = useSessionUIStore.getState()
+    expect(state.sessionCompletionIndicator.has("session-a")).toBe(false)
+    expect(state.sessionPlanIndicator.get("session-a")).toEqual({
+      state: "implementing",
+      sourceMessageId: "msg-plan",
+      implementationMessageId: "msg-implementation-user",
+    })
+    expect(state.sessionPlanAvailable.get("session-a")).toBe(true)
   })
 
   test("sendMessageToSession exposes implementation send message ids", async () => {
@@ -1627,10 +1674,9 @@ describe("session-ui-store send routing", () => {
       "normal",
     )
 
-    const additionalParts = sendMessageCalls[0]?.additionalParts as Array<Record<string, unknown>> | undefined
-    expect(additionalParts).toHaveLength(1)
-    expect(additionalParts?.[0]?.synthetic).toBe(true)
-    expectPlanModeInstructionContract(String(additionalParts?.[0]?.text ?? ""))
+    expect(sendMessageCalls[0]?.prefaceTextSynthetic).toBe(true)
+    expectPlanModeInstructionContract(String(sendMessageCalls[0]?.prefaceText ?? ""))
+    expect(sendMessageCalls[0]?.additionalParts).toBe(undefined)
   })
 
   test("explicit planMode false prevents plan-mode synthetic instructions", async () => {
@@ -2710,9 +2756,9 @@ describe("session-ui-store send routing", () => {
     expect(sendMessageCalls[0]?.providerID).toBe("provider-selected")
     expect(sendMessageCalls[0]?.modelID).toBe("model-selected")
     expect(sendMessageCalls[0]?.variant).toBe("fast")
-    const additionalParts = sendMessageCalls[0]?.additionalParts as Array<Record<string, unknown>> | undefined
-    expect(additionalParts).toHaveLength(1)
-    expectPlanModeInstructionContract(String(additionalParts?.[0]?.text ?? ""))
+    expect(sendMessageCalls[0]?.prefaceTextSynthetic).toBe(true)
+    expectPlanModeInstructionContract(String(sendMessageCalls[0]?.prefaceText ?? ""))
+    expect(sendMessageCalls[0]?.additionalParts).toBe(undefined)
     expect(savedSessionModels.some((entry) =>
       entry.sessionId === "session-new"
       && entry.providerID === "provider-selected"

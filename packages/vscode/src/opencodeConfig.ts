@@ -45,6 +45,8 @@ const AGENT_OVERRIDES_CONFIG_KEY = 'agentOverrides';
 const ALLOWED_AGENT_OVERRIDE_KEYS = new Set(['model', 'variant', 'councillors']);
 const CLEARED_VARIANT_SENTINEL = '';
 const SLIM_PLUGIN_PACKAGE_NAME = 'oh-my-opencode-slim';
+const DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE = 'devryan-oh-my-opencode-slim.mjs';
+const DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC = `./plugins/${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`;
 const SLIM_CONFIG_BASENAME = 'oh-my-opencode-slim';
 const SLIM_CONFIG_FILE_NAMES = [`${SLIM_CONFIG_BASENAME}.jsonc`, `${SLIM_CONFIG_BASENAME}.json`];
 const SLIM_DEFAULT_DISABLED_AGENTS = ['observer'];
@@ -187,6 +189,14 @@ export const getAgentScope = (
     if (fs.existsSync(projectPath)) {
       return { scope: AGENT_SCOPE.PROJECT, path: projectPath };
     }
+  }
+
+  const slimRuntimeAgent = getSlimRuntimeModelAgents(workingDirectory)[agentName];
+  if (slimRuntimeAgent) {
+    return {
+      scope: AGENT_SCOPE.SLIM,
+      path: typeof slimRuntimeAgent.__path === 'string' ? slimRuntimeAgent.__path : null,
+    };
   }
 
   return { scope: null, path: null };
@@ -507,10 +517,26 @@ const isSlimPluginSpec = (spec: string): boolean => (
   || spec.includes(`/node_modules/${SLIM_PLUGIN_PACKAGE_NAME}`)
 );
 
-const isSlimPluginEnabled = (workingDirectory?: string): boolean => {
+const isDevRyanSlimWrapperPluginSpec = (spec: string): boolean => (
+  spec === DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC
+  || spec.endsWith(`/plugins/${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`)
+  || spec.endsWith(`\\plugins\\${DEVRYAN_SLIM_WRAPPER_PLUGIN_FILE}`)
+);
+
+const getSlimPluginState = (workingDirectory?: string): {
+  rawPluginEnabled: boolean;
+  wrapperPluginEnabled: boolean;
+  pluginEnabled: boolean;
+} => {
   const config = readConfig(workingDirectory);
   const plugin = Array.isArray(config.plugin) ? config.plugin : [];
-  return plugin.some((entry) => isSlimPluginSpec(pluginSpecFromEntry(entry)));
+  const rawPluginEnabled = plugin.some((entry) => isSlimPluginSpec(pluginSpecFromEntry(entry)));
+  const wrapperPluginEnabled = plugin.some((entry) => isDevRyanSlimWrapperPluginSpec(pluginSpecFromEntry(entry)));
+  return {
+    rawPluginEnabled,
+    wrapperPluginEnabled,
+    pluginEnabled: rawPluginEnabled || wrapperPluginEnabled,
+  };
 };
 
 const getSlimActivePreset = (config: Record<string, unknown>): string | null => {
@@ -594,6 +620,10 @@ const normalizeSlimAgent = (
 const resolveSlimConfig = (workingDirectory?: string): {
   enabled: boolean;
   pluginEnabled: boolean;
+  slimRuntimeEnabled: boolean;
+  slimAgentCatalogEnabled: boolean;
+  rawPluginEnabled: boolean;
+  wrapperPluginEnabled: boolean;
   configDirectory: string;
   userConfigPath: string | null;
   projectConfigPath: string | null;
@@ -620,10 +650,15 @@ const resolveSlimConfig = (workingDirectory?: string): {
     if (disabled.has(name) || !isPlainObject(rawAgent)) continue;
     agents[name] = normalizeSlimAgent(name, rawAgent as Record<string, unknown>, rootAgents[name]);
   }
-  const pluginEnabled = isSlimPluginEnabled(workingDirectory);
+  const pluginState = getSlimPluginState(workingDirectory);
+  const slimAgentCatalogEnabled = pluginState.rawPluginEnabled && Object.keys(agents).length > 0;
   return {
-    enabled: pluginEnabled && Object.keys(agents).length > 0,
-    pluginEnabled,
+    enabled: slimAgentCatalogEnabled,
+    pluginEnabled: pluginState.pluginEnabled,
+    slimRuntimeEnabled: pluginState.pluginEnabled,
+    slimAgentCatalogEnabled,
+    rawPluginEnabled: pluginState.rawPluginEnabled,
+    wrapperPluginEnabled: pluginState.wrapperPluginEnabled,
     configDirectory,
     userConfigPath,
     projectConfigPath,
@@ -639,6 +674,11 @@ export const resolveSlimRuntimePreset = (workingDirectory?: string): string | un
     return undefined;
   }
   return slim.activePreset;
+};
+
+export const resolveSlimRuntimeConfigDirectory = (workingDirectory?: string): string | undefined => {
+  const slim = resolveSlimConfig(workingDirectory);
+  return slim.pluginEnabled ? slim.configDirectory : undefined;
 };
 
 const getSlimConfigWritePath = (): string => (
@@ -1731,6 +1771,42 @@ const listProjectConfigAgents = (workingDirectory?: string): ConfigAgent[] => {
   return listAgentsFromRoot(path.join(workingDirectory, '.opencode', 'agents'), AGENT_SCOPE.PROJECT);
 };
 
+const listDevRyanBaseConfigAgents = (workingDirectory?: string): ConfigAgent[] => {
+  const agentsByName = new Map<string, ConfigAgent>();
+  for (const agent of listPackagedConfigAgents()) {
+    agentsByName.set(agent.name, agent);
+  }
+  for (const agent of listProjectConfigAgents(workingDirectory)) {
+    agentsByName.set(agent.name, agent);
+  }
+  return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
+};
+
+const applySlimModelMetadata = (agent: ConfigAgent, slimAgent?: ConfigAgent): ConfigAgent => {
+  if (!slimAgent) return agent;
+  const next = {
+    ...agent,
+    overrides: {
+      model: Boolean((slimAgent.overrides as Record<string, unknown> | undefined)?.model),
+      variant: Boolean((slimAgent.overrides as Record<string, unknown> | undefined)?.variant),
+      councillors: false,
+    },
+    slimRuntimeModel: true,
+  } as ConfigAgent;
+  if (slimAgent.model) {
+    next.model = slimAgent.model;
+  }
+  if (Array.isArray(slimAgent.modelRefs)) {
+    next.modelRefs = [...slimAgent.modelRefs];
+  }
+  if (Object.prototype.hasOwnProperty.call(slimAgent, 'variant')) {
+    next.variant = slimAgent.variant;
+  } else {
+    delete next.variant;
+  }
+  return next;
+};
+
 const listSlimInstalledAgents = (slim: ReturnType<typeof resolveSlimConfig>): ConfigAgent[] => {
   const disabled = getSlimDisabledAgents(slim.mergedConfig);
   return listAgentsFromRoot(path.join(slim.configDirectory, 'agents'), AGENT_SCOPE.SLIM)
@@ -1769,6 +1845,14 @@ const mergeSlimAgentLayers = (installedAgent: ConfigAgent | undefined, configAge
 
 const getSlimConfigAgents = (workingDirectory?: string): Record<string, ConfigAgent> => {
   const slim = resolveSlimConfig(workingDirectory);
+  if (!slim.slimAgentCatalogEnabled) {
+    return {};
+  }
+
+  return getSlimAgentsFromResolvedConfig(slim);
+};
+
+const getSlimAgentsFromResolvedConfig = (slim: ReturnType<typeof resolveSlimConfig>): Record<string, ConfigAgent> => {
   if (!slim.pluginEnabled) {
     return {};
   }
@@ -1787,9 +1871,16 @@ const getSlimConfigAgents = (workingDirectory?: string): Record<string, ConfigAg
   return Object.fromEntries(Array.from(agentsByName.entries()).sort(([a], [b]) => a.localeCompare(b)));
 };
 
+const getSlimRuntimeModelAgents = (workingDirectory?: string): Record<string, ConfigAgent> => {
+  const slim = resolveSlimConfig(workingDirectory);
+  if (!slim.pluginEnabled || slim.slimAgentCatalogEnabled) return {};
+  return getSlimAgentsFromResolvedConfig(slim);
+};
+
 const getBaseConfigAgents = (workingDirectory?: string): ConfigAgent[] => {
+  const slim = resolveSlimConfig(workingDirectory);
   const slimAgents = getSlimConfigAgents(workingDirectory);
-  if (Object.keys(slimAgents).length > 0) {
+  if (slim.slimAgentCatalogEnabled && Object.keys(slimAgents).length > 0) {
     const agentsByName = new Map<string, ConfigAgent>(Object.entries(slimAgents));
     for (const agent of listProjectConfigAgents(workingDirectory)) {
       if (SLIM_REPLACED_AGENT_NAMES.has(agent.name)) {
@@ -1800,12 +1891,13 @@ const getBaseConfigAgents = (workingDirectory?: string): ConfigAgent[] => {
     return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  const agentsByName = new Map<string, ConfigAgent>();
-  for (const agent of listPackagedConfigAgents()) {
-    agentsByName.set(agent.name, agent);
-  }
-  for (const agent of listProjectConfigAgents(workingDirectory)) {
-    agentsByName.set(agent.name, agent);
+  const agentsByName = new Map<string, ConfigAgent>(listDevRyanBaseConfigAgents(workingDirectory).map((agent) => [agent.name, agent]));
+  if (slim.pluginEnabled && !slim.slimAgentCatalogEnabled) {
+    const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
+    for (const [name, slimAgent] of Object.entries(slimRuntimeAgents)) {
+      const existing = agentsByName.get(name);
+      agentsByName.set(name, existing ? applySlimModelMetadata(existing, slimAgent) : slimAgent);
+    }
   }
   return Array.from(agentsByName.values()).sort((a, b) => a.name.localeCompare(b.name));
 };
@@ -1820,7 +1912,7 @@ const assertKnownAgentName = (agentName: string, workingDirectory?: string) => {
 export const listConfigAgents = (workingDirectory?: string): ConfigAgent[] => {
   const overrides = listAgentModelOverrides();
   return getBaseConfigAgents(workingDirectory)
-    .map((agent) => (agent.source === AGENT_SCOPE.SLIM
+    .map((agent) => (agent.source === AGENT_SCOPE.SLIM || agent.slimRuntimeModel
       ? agent
       : applyAgentModelOverride(agent, overrides[agent.name])))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -1836,25 +1928,34 @@ export const getAgentConfig = (agentName: string, workingDirectory?: string): { 
       config: slimAgents[agentName],
     };
   }
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
 
   const projectPath = workingDirectory ? getProjectAgentPath(workingDirectory, agentName) : null;
   if (projectPath && fs.existsSync(projectPath)) {
+    const baseConfig = parseAgentMdFile(projectPath, AGENT_SCOPE.PROJECT, path.join(workingDirectory!, '.opencode', 'agents'));
+    const modelConfig = applySlimModelMetadata(baseConfig, slimRuntimeAgents[agentName]);
     return {
       source: 'md',
       scope: AGENT_SCOPE.PROJECT,
-      config: applyAgentModelOverride(
-        parseAgentMdFile(projectPath, AGENT_SCOPE.PROJECT, path.join(workingDirectory!, '.opencode', 'agents')),
-        overrides[agentName],
-      ),
+      config: modelConfig.slimRuntimeModel ? modelConfig : applyAgentModelOverride(modelConfig, overrides[agentName]),
     };
   }
 
   const packagedAgent = listPackagedConfigAgents().find((agent) => agent.name === agentName);
   if (packagedAgent) {
+    const modelConfig = applySlimModelMetadata(packagedAgent, slimRuntimeAgents[agentName]);
     return {
       source: 'md',
       scope: AGENT_SCOPE.PACKAGED,
-      config: applyAgentModelOverride(packagedAgent, overrides[agentName]),
+      config: modelConfig.slimRuntimeModel ? modelConfig : applyAgentModelOverride(modelConfig, overrides[agentName]),
+    };
+  }
+
+  if (slimRuntimeAgents[agentName]) {
+    return {
+      source: 'slim',
+      scope: AGENT_SCOPE.SLIM,
+      config: slimRuntimeAgents[agentName],
     };
   }
 
@@ -2227,7 +2328,10 @@ export const syncRuntimeAgentOverlays = (workingDirectory?: string): {
 export const writeAgentModelOverride = (agentName: string, rawOverride: unknown, workingDirectory?: string): AgentModelOverride => {
   const override = normalizeAgentModelOverride(rawOverride);
   const slimAgents = getSlimConfigAgents(workingDirectory);
-  if (slimAgents[agentName]) {
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
+  const slim = resolveSlimConfig(workingDirectory);
+  const devRyanAgentExists = listDevRyanBaseConfigAgents(workingDirectory).some((agent) => agent.name === agentName);
+  if (slimAgents[agentName] || slimRuntimeAgents[agentName] || (slim.pluginEnabled && devRyanAgentExists)) {
     return writeSlimAgentModelOverride(agentName, override);
   }
 
@@ -2254,7 +2358,10 @@ export const writeAgentModelOverride = (agentName: string, rawOverride: unknown,
 
 export const deleteAgentModelOverride = (agentName: string, workingDirectory?: string): boolean => {
   const slimAgents = getSlimConfigAgents(workingDirectory);
-  if (slimAgents[agentName]) {
+  const slimRuntimeAgents = getSlimRuntimeModelAgents(workingDirectory);
+  const slim = resolveSlimConfig(workingDirectory);
+  const devRyanAgentExists = listDevRyanBaseConfigAgents(workingDirectory).some((agent) => agent.name === agentName);
+  if (slimAgents[agentName] || slimRuntimeAgents[agentName] || (slim.pluginEnabled && devRyanAgentExists)) {
     return deleteSlimAgentModelOverride(agentName);
   }
 
@@ -2327,6 +2434,40 @@ export const getAgentSources = (agentName: string, workingDirectory?: string): C
     const { frontmatter, body } = parseMdFile(mdPath);
     sources.md.fields = Object.keys(frontmatter);
     if (body) sources.md.fields.push('prompt');
+  }
+
+  if (mdExists && slim.agents[agentName]) {
+    sources.json = {
+      exists: Boolean(slim.projectConfigPath || slim.userConfigPath),
+      path: slim.projectConfigPath || slim.userConfigPath || '',
+      scope: AGENT_SCOPE.SLIM,
+      fields: ['model', 'variant'],
+    };
+  }
+
+  if (!mdExists) {
+    const slimRuntimeAgent = getSlimRuntimeModelAgents(workingDirectory)[agentName];
+    if (slimRuntimeAgent) {
+      const mdPath = typeof slimRuntimeAgent.__path === 'string' ? slimRuntimeAgent.__path : null;
+      const jsonPath = slim.projectConfigPath || slim.userConfigPath || null;
+      return {
+        md: {
+          exists: Boolean(mdPath),
+          path: mdPath,
+          scope: mdPath ? AGENT_SCOPE.SLIM : null,
+          fields: mdPath ? Object.keys(parseMdFile(mdPath).frontmatter) : [],
+        },
+        json: {
+          exists: Boolean(jsonPath),
+          path: jsonPath || '',
+          scope: AGENT_SCOPE.SLIM,
+          fields: ['model', 'variant'],
+        },
+        projectMd: { exists: false, path: null },
+        packagedMd: { exists: false, path: null },
+        userMd: { exists: false, path: null },
+      };
+    }
   }
 
   return sources;

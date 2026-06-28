@@ -2,10 +2,12 @@ export type ModelRef = { providerID: string; modelID: string };
 
 export type ModelPrefsSnapshot = {
   favoriteModels: ModelRef[];
+  favoriteModelsUpdatedAt: number;
   hiddenModels: ModelRef[];
+  hiddenModelsUpdatedAt: number;
 };
 
-export type ModelPrefsKey = keyof ModelPrefsSnapshot;
+export type ModelPrefsKey = 'favoriteModels' | 'hiddenModels';
 
 const cloneModelRefs = (refs: ModelRef[]): ModelRef[] => refs.map((ref) => ({
   providerID: ref.providerID,
@@ -24,7 +26,9 @@ export const modelRefsEqual = (a: ModelRef[], b: ModelRef[]): boolean => {
 
 export const createModelPrefsBaseline = (snapshot: ModelPrefsSnapshot): ModelPrefsSnapshot => ({
   favoriteModels: cloneModelRefs(snapshot.favoriteModels),
+  favoriteModelsUpdatedAt: snapshot.favoriteModelsUpdatedAt,
   hiddenModels: cloneModelRefs(snapshot.hiddenModels),
+  hiddenModelsUpdatedAt: snapshot.hiddenModelsUpdatedAt,
 });
 
 export const getChangedModelPrefsKeys = (
@@ -55,9 +59,43 @@ export const resolveModelPrefsFromSettingsSnapshot = ({
   current: ModelPrefsSnapshot;
   incoming: ModelPrefsSnapshot;
 }): ModelPrefsSnapshot => {
-  const changedKeys = new Set(getChangedModelPrefsKeys(baseline, current));
+  const resolveList = (
+    listKey: ModelPrefsKey,
+    timestampKey: 'favoriteModelsUpdatedAt' | 'hiddenModelsUpdatedAt',
+  ): Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey> => {
+    if (!modelRefsEqual(baseline[listKey], current[listKey])) {
+      return { [listKey]: current[listKey], [timestampKey]: current[timestampKey] } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+    }
+
+    const incomingTimestamp = incoming[timestampKey];
+    const currentTimestamp = current[timestampKey];
+
+    if (incomingTimestamp > currentTimestamp) {
+      return { [listKey]: incoming[listKey], [timestampKey]: incomingTimestamp } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+    }
+    if (currentTimestamp > incomingTimestamp) {
+      return { [listKey]: current[listKey], [timestampKey]: currentTimestamp } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+    }
+    if (incomingTimestamp === 0 && incoming[listKey].length === 0 && current[listKey].length > 0) {
+      return { [listKey]: current[listKey], [timestampKey]: currentTimestamp } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+    }
+    if (
+      incomingTimestamp === currentTimestamp
+      && current[listKey].length > 0
+      && !modelRefsEqual(incoming[listKey], current[listKey])
+    ) {
+      return { [listKey]: current[listKey], [timestampKey]: currentTimestamp } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+    }
+
+    return { [listKey]: incoming[listKey], [timestampKey]: incomingTimestamp } as Pick<ModelPrefsSnapshot, typeof listKey | typeof timestampKey>;
+  };
+
+  const favorite = resolveList('favoriteModels', 'favoriteModelsUpdatedAt');
+  const hidden = resolveList('hiddenModels', 'hiddenModelsUpdatedAt');
   return {
-    favoriteModels: changedKeys.has('favoriteModels') ? current.favoriteModels : incoming.favoriteModels,
-    hiddenModels: changedKeys.has('hiddenModels') ? current.hiddenModels : incoming.hiddenModels,
+    favoriteModels: favorite.favoriteModels,
+    favoriteModelsUpdatedAt: favorite.favoriteModelsUpdatedAt,
+    hiddenModels: hidden.hiddenModels,
+    hiddenModelsUpdatedAt: hidden.hiddenModelsUpdatedAt,
   };
 };

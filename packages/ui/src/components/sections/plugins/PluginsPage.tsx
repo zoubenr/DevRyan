@@ -1,7 +1,8 @@
 import React from "react";
-import { RiCodeBoxLine, RiFileTextLine, RiFolderLine } from "@remixicon/react";
+import { RiCodeBoxLine, RiDownloadCloud2Line, RiFileTextLine, RiFolderLine, RiRefreshLine } from "@remixicon/react";
 import { SettingsPageLayout } from "@/components/sections/shared/SettingsPageLayout";
 import { SettingsSection } from "@/components/sections/shared/SettingsSection";
+import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { usePluginsStore } from "@/stores/usePluginsStore";
@@ -30,12 +31,80 @@ const ScopeBadge: React.FC<{ scope: "user" | "project"; label: string }> = ({ sc
   </span>
 );
 
+const SlimStatusPanel: React.FC = () => {
+  const { t } = useI18n();
+  const status = usePluginsStore((state) => state.slimStatus);
+  const isLoading = usePluginsStore((state) => state.slimStatusLoading);
+  const actionInFlight = usePluginsStore((state) => state.slimActionInFlight);
+  const lastError = usePluginsStore((state) => state.slimLastError);
+  const installSlimRuntime = usePluginsStore((state) => state.installSlimRuntime);
+  const repairSlimRuntime = usePluginsStore((state) => state.repairSlimRuntime);
+  const busy = isLoading || actionInFlight !== null;
+  const stateLabel = status?.runtimeEnabled && status.wrapperConfigured
+    ? t("settings.plugins.slim.status.ready")
+    : t("settings.plugins.slim.status.needsSetup");
+  const issueMessages = status?.issues?.map((issue) => issue.message).filter(Boolean) ?? [];
+
+  return (
+    <SettingsSection title={t("settings.plugins.slim.title")}>
+      <div className="flex flex-col gap-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <DetailRow label={t("settings.plugins.slim.field.status")} value={isLoading ? t("settings.plugins.slim.status.loading") : stateLabel} />
+          <DetailRow label={t("settings.plugins.slim.field.version")} value={status?.installedVersion ?? t("settings.plugins.slim.value.missing")} mono />
+          <DetailRow label={t("settings.plugins.slim.field.wrapper")} value={status?.wrapperConfigured ? t("settings.plugins.slim.value.configured") : t("settings.plugins.slim.value.missing")} />
+          <DetailRow label={t("settings.plugins.slim.field.background")} value={status?.backgroundSubagentsEnv ?? "true"} mono />
+        </div>
+        {status?.backupPaths && status.backupPaths.length > 0 ? (
+          <div className="rounded-md border border-border bg-[var(--surface-elevated)] p-3">
+            <div className="typography-meta text-muted-foreground">{t("settings.plugins.slim.field.backups")}</div>
+            <div className="mt-1 space-y-1">
+              {status.backupPaths.map((backupPath) => (
+                <div key={backupPath} className="typography-meta break-all font-mono text-foreground">{backupPath}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {issueMessages.length > 0 || lastError ? (
+          <div className="rounded-md border border-[color-mix(in_srgb,var(--status-warning)_35%,var(--border))] bg-[color-mix(in_srgb,var(--status-warning)_8%,var(--background))] p-3 text-[var(--status-warning)]">
+            {lastError ? <div className="typography-meta">{lastError}</div> : null}
+            {issueMessages.map((message) => (
+              <div key={message} className="typography-meta">{message}</div>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => { void installSlimRuntime(); }}
+            disabled={busy}
+          >
+            <RiDownloadCloud2Line className="h-4 w-4" />
+            {actionInFlight === "install" ? t("settings.plugins.slim.action.installing") : t("settings.plugins.slim.action.install")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => { void repairSlimRuntime(); }}
+            disabled={busy}
+          >
+            <RiRefreshLine className="h-4 w-4" />
+            {actionInFlight === "repair" ? t("settings.plugins.slim.action.repairing") : t("settings.plugins.slim.action.repair")}
+          </Button>
+        </div>
+      </div>
+    </SettingsSection>
+  );
+};
+
 const EntryDetails: React.FC<{ entry: PluginEntry }> = ({ entry }) => {
   const { t } = useI18n();
   const Icon = entry.parsedKind === "path" ? RiFolderLine : RiCodeBoxLine;
 
   return (
     <SettingsPageLayout>
+      <SlimStatusPanel />
       <div className="flex items-center gap-3">
         <Icon className="h-5 w-5 text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -77,6 +146,7 @@ const FileDetails: React.FC<{ file: PluginFile }> = ({ file }) => {
 
   return (
     <SettingsPageLayout>
+      <SlimStatusPanel />
       <div className="flex items-center gap-3">
         <RiFileTextLine className="h-5 w-5 text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -111,13 +181,16 @@ export const PluginsPage: React.FC = () => {
 
   if (!selected) {
     return (
-      <div className="flex h-full items-center justify-center px-6">
-        <div className="max-w-sm text-center text-muted-foreground">
-          <RiCodeBoxLine className="mx-auto mb-3 h-12 w-12 opacity-50" />
-          <p className="typography-body">{t("settings.plugins.page.empty.select")}</p>
-          <p className="typography-meta mt-1 opacity-75">{t("settings.plugins.page.empty.description")}</p>
+      <SettingsPageLayout>
+        <SlimStatusPanel />
+        <div className="flex min-h-[280px] items-center justify-center px-6">
+          <div className="max-w-sm text-center text-muted-foreground">
+            <RiCodeBoxLine className="mx-auto mb-3 h-12 w-12 opacity-50" />
+            <p className="typography-body">{t("settings.plugins.page.empty.select")}</p>
+            <p className="typography-meta mt-1 opacity-75">{t("settings.plugins.page.empty.description")}</p>
+          </div>
         </div>
-      </div>
+      </SettingsPageLayout>
     );
   }
 

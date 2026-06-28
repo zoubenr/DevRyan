@@ -354,6 +354,90 @@ describe('VS Code Cursor SDK config handling', () => {
     }
   });
 
+  it('keeps project agents authoritative for the DevRyan Slim wrapper mode', async () => {
+    const {
+      getAgentConfig,
+      listConfigAgents,
+      resolveSlimRuntimePreset,
+      syncRuntimeAgentOverlays,
+      writeAgentModelOverride,
+    } = await loadRuntime();
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-slim-wrapper-project-'));
+    const opencodeConfigDir = path.join(tempHome, '.config', 'opencode');
+    const slimConfigPath = path.join(opencodeConfigDir, 'oh-my-opencode-slim.json');
+    writeJson(path.join(opencodeConfigDir, 'opencode.json'), {
+      plugin: ['./plugins/devryan-oh-my-opencode-slim.mjs'],
+    });
+    writeJson(slimConfigPath, {
+      preset: 'openai',
+      presets: {
+        openai: {
+          orchestrator: { model: 'openai/gpt-5.5', variant: 'medium', skills: ['*'], mcps: ['*'] },
+          fixer: { model: 'openai/gpt-5.5', variant: 'low' },
+          'slim-only': { model: 'openai/gpt-5.4-mini', variant: 'low' },
+        },
+      },
+    });
+    writeAgentMarkdown(path.join(opencodeConfigDir, 'agents'), 'orchestrator', [
+      'mode: primary',
+      'model: stale/slim',
+    ]);
+    writeAgentMarkdown(path.join(projectDir, '.opencode', 'agents'), 'orchestrator', [
+      'mode: primary',
+      'model: stale/project-orchestrator',
+      'variant: stale',
+      'permission:',
+      '  "*": deny',
+      '  task:',
+      '    fixer: allow',
+    ]);
+
+    try {
+      const agents = listConfigAgents(projectDir);
+      const orchestrator = agents.find((agent) => agent.name === 'orchestrator');
+      const slimOnly = agents.find((agent) => agent.name === 'slim-only');
+
+      expect(resolveSlimRuntimePreset(projectDir)).toBe('openai');
+      expect(orchestrator).toMatchObject({
+        scope: 'project',
+        source: 'project',
+        prompt: 'orchestrator prompt',
+        model: { providerID: 'openai', modelID: 'gpt-5.5' },
+        variant: 'medium',
+      });
+      expect(orchestrator.permission).toEqual({
+        '*': 'deny',
+        task: { fixer: 'allow' },
+      });
+      expect(slimOnly).toMatchObject({
+        scope: 'slim',
+        source: 'slim',
+        model: { providerID: 'openai', modelID: 'gpt-5.4-mini' },
+      });
+
+      writeAgentModelOverride('orchestrator', { model: 'openai/gpt-5.4-mini', variant: null }, projectDir);
+      const slimConfig = readJson(slimConfigPath);
+      expect(slimConfig.agents.orchestrator).toEqual({
+        model: 'openai/gpt-5.4-mini',
+      });
+      expect(fs.existsSync(path.join(opencodeConfigDir, '.openchamber', 'config.json'))).toBe(false);
+      expect(getAgentConfig('orchestrator', projectDir).config).toMatchObject({
+        scope: 'project',
+        source: 'project',
+        model: { providerID: 'openai', modelID: 'gpt-5.4-mini' },
+        overrides: { model: true, variant: true, councillors: false },
+      });
+
+      const overlayResult = syncRuntimeAgentOverlays(projectDir);
+      const overlayConfig = readJson(path.join(overlayResult.targetConfigDirectory, 'opencode.json'));
+      const overlaySlimConfig = readJson(path.join(overlayResult.targetConfigDirectory, 'oh-my-opencode-slim.json'));
+      expect(overlayConfig.plugin).toContain('./plugins/devryan-oh-my-opencode-slim.mjs');
+      expect(overlaySlimConfig.preset).toBe('openai');
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves active Slim and user plugin entries in VS Code runtime overlays', async () => {
     const { syncRuntimeAgentOverlays } = await loadRuntime();
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devryan-vscode-slim-overlay-'));

@@ -345,7 +345,9 @@ const readCurrentModelPrefs = (): ModelPrefsSnapshot => {
   const state = useUIStore.getState();
   return {
     favoriteModels: state.favoriteModels,
+    favoriteModelsUpdatedAt: state.favoriteModelsUpdatedAt,
     hiddenModels: state.hiddenModels,
+    hiddenModelsUpdatedAt: state.hiddenModelsUpdatedAt,
   };
 };
 
@@ -550,11 +552,19 @@ const applyDesktopUiPreferences = (
 
   const hasFavoriteModels = Array.isArray(settings.favoriteModels);
   const hasHiddenModels = Array.isArray(settings.hiddenModels);
-  if (hasFavoriteModels || hasHiddenModels) {
+  const hasFavoriteModelsUpdatedAt = typeof settings.favoriteModelsUpdatedAt === 'number' && Number.isInteger(settings.favoriteModelsUpdatedAt) && settings.favoriteModelsUpdatedAt >= 0;
+  const hasHiddenModelsUpdatedAt = typeof settings.hiddenModelsUpdatedAt === 'number' && Number.isInteger(settings.hiddenModelsUpdatedAt) && settings.hiddenModelsUpdatedAt >= 0;
+  if (hasFavoriteModels || hasHiddenModels || hasFavoriteModelsUpdatedAt || hasHiddenModelsUpdatedAt) {
     const current = readCurrentModelPrefs();
     const incoming: ModelPrefsSnapshot = {
       favoriteModels: hasFavoriteModels ? settings.favoriteModels! : current.favoriteModels,
+      favoriteModelsUpdatedAt: hasFavoriteModelsUpdatedAt
+        ? settings.favoriteModelsUpdatedAt!
+        : (hasFavoriteModels ? 0 : current.favoriteModelsUpdatedAt),
       hiddenModels: hasHiddenModels ? settings.hiddenModels! : current.hiddenModels,
+      hiddenModelsUpdatedAt: hasHiddenModelsUpdatedAt
+        ? settings.hiddenModelsUpdatedAt!
+        : (hasHiddenModels ? 0 : current.hiddenModelsUpdatedAt),
     };
     const next = options?.modelPrefsBaseline
       ? resolveModelPrefsFromSettingsSnapshot({
@@ -568,8 +578,14 @@ const applyDesktopUiPreferences = (
     if (hasFavoriteModels && !modelRefsEqual(current.favoriteModels, next.favoriteModels)) {
       modelPrefsUpdate.favoriteModels = next.favoriteModels;
     }
+    if (hasFavoriteModelsUpdatedAt && current.favoriteModelsUpdatedAt !== next.favoriteModelsUpdatedAt) {
+      modelPrefsUpdate.favoriteModelsUpdatedAt = next.favoriteModelsUpdatedAt;
+    }
     if (hasHiddenModels && !modelRefsEqual(current.hiddenModels, next.hiddenModels)) {
       modelPrefsUpdate.hiddenModels = next.hiddenModels;
+    }
+    if (hasHiddenModelsUpdatedAt && current.hiddenModelsUpdatedAt !== next.hiddenModelsUpdatedAt) {
+      modelPrefsUpdate.hiddenModelsUpdatedAt = next.hiddenModelsUpdatedAt;
     }
     if (Object.keys(modelPrefsUpdate).length > 0) {
       useUIStore.setState(modelPrefsUpdate);
@@ -999,10 +1015,16 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (favoriteModels) {
     result.favoriteModels = favoriteModels;
   }
+  if (typeof candidate.favoriteModelsUpdatedAt === 'number' && Number.isInteger(candidate.favoriteModelsUpdatedAt) && candidate.favoriteModelsUpdatedAt >= 0) {
+    result.favoriteModelsUpdatedAt = candidate.favoriteModelsUpdatedAt;
+  }
 
   const hiddenModels = sanitizeModelRefs(candidate.hiddenModels, 64);
   if (hiddenModels) {
     result.hiddenModels = hiddenModels;
+  }
+  if (typeof candidate.hiddenModelsUpdatedAt === 'number' && Number.isInteger(candidate.hiddenModelsUpdatedAt) && candidate.hiddenModelsUpdatedAt >= 0) {
+    result.hiddenModelsUpdatedAt = candidate.hiddenModelsUpdatedAt;
   }
 
   if (
@@ -1211,12 +1233,13 @@ const _flushSettingsUpdate = async (): Promise<void> => {
   if (!changes || Object.keys(changes).length === 0) return;
 
   const runtimeSettings = getRuntimeSettingsAPI();
+  const modelPrefsBaseline = createModelPrefsBaseline(readCurrentModelPrefs());
   if (runtimeSettings) {
     try {
       const updated = await runtimeSettings.save(changes);
       if (updated) {
         persistToLocalStorage(updated);
-        applyDesktopUiPreferences(updated);
+        applyDesktopUiPreferences(updated, { modelPrefsBaseline });
       }
       return;
     } catch (error) {
@@ -1242,7 +1265,7 @@ const _flushSettingsUpdate = async (): Promise<void> => {
     const updated = (await response.json().catch(() => null)) as DesktopSettings | null;
     if (updated) {
       persistToLocalStorage(updated);
-      applyDesktopUiPreferences(updated);
+      applyDesktopUiPreferences(updated, { modelPrefsBaseline });
       // Invalidate GET cache so next read sees the fresh data
       _settingsCache = null;
     }

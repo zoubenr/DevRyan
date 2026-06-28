@@ -89,6 +89,27 @@ describe('settings helpers', () => {
     expect(calls).toContainEqual({ input: hiddenModels, limit: 64 });
   });
 
+  it('accepts non-negative integer model preference timestamps', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({
+      favoriteModelsUpdatedAt: 123,
+      hiddenModelsUpdatedAt: 0,
+    })).toEqual({
+      favoriteModelsUpdatedAt: 123,
+      hiddenModelsUpdatedAt: 0,
+    });
+  });
+
+  it('rejects invalid model preference timestamps', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({
+      favoriteModelsUpdatedAt: -1,
+      hiddenModelsUpdatedAt: 1.5,
+    })).toEqual({});
+  });
+
   it('accepts defaultPlanMode as a persisted shared setting', () => {
     const helpers = createTestHelpers();
 

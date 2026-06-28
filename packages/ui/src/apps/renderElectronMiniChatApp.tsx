@@ -19,7 +19,7 @@ const initializeSharedPreferences = () => {
   initializeLocale();
 
   void initializeAppearancePreferences().then(() => {
-    void Promise.all([
+    const settingsInit = Promise.all([
       syncDesktopSettings(),
       applyPersistedDirectoryPreferences(),
     ]).catch((err) => {
@@ -27,8 +27,10 @@ const initializeSharedPreferences = () => {
     });
 
     startAppearanceAutoSave();
-    startModelPrefsAutoSave();
     startTypographyWatcher();
+    void settingsInit.finally(() => {
+      startModelPrefsAutoSave();
+    });
   }).catch((err) => {
     console.error('[mini-chat-main] appearance init failed:', err);
   });

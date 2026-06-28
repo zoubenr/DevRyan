@@ -843,8 +843,18 @@ async function detectAndMarkPlanLifecycle(
     })
     ? completedCandidate
     : null
+  const manualAbortFlag = sessionUI.sessionAbortFlags.get(sessionID)
+  const isManuallyAbortedCandidate = (completedMessageId: string) => (
+    manualAbortFlag?.reason === "manual" && manualAbortFlag.id === completedMessageId
+  )
+  const suppressTurnCandidate = settledTurnCandidate
+    ? isManuallyAbortedCandidate(settledTurnCandidate.completedMessageId)
+    : false
+  const suppressPlanCandidate = settledPlanCandidate
+    ? isManuallyAbortedCandidate(settledPlanCandidate.completedMessageId)
+    : false
 
-  if (settledTurnCandidate && (!isViewed || isActiveInCurrentSession(directory, sessionID))) {
+  if (settledTurnCandidate && !suppressTurnCandidate && (!isViewed || isActiveInCurrentSession(directory, sessionID))) {
     sessionUI.markSessionTurnCompleted(
       sessionID,
       settledTurnCandidate.completedMessageId,
@@ -857,7 +867,7 @@ async function detectAndMarkPlanLifecycle(
     const isSubtask = Boolean((session as (Session & { parentID?: string | null }) | undefined)?.parentID)
     const shouldRecordCompletion = !isSubtask || useUIStore.getState().notifyOnSubtasks
 
-    if (shouldRecordCompletion && settledPlanCandidate) {
+    if (shouldRecordCompletion && settledPlanCandidate && !suppressPlanCandidate) {
       appendNotification({
         directory,
         session: sessionID,
@@ -866,7 +876,7 @@ async function detectAndMarkPlanLifecycle(
         viewed: false,
         type: "turn-complete",
       })
-    } else if (shouldRecordCompletion && settledTurnCandidate) {
+    } else if (shouldRecordCompletion && settledTurnCandidate && !suppressTurnCandidate) {
       appendNotification({
         directory,
         session: sessionID,
@@ -878,7 +888,7 @@ async function detectAndMarkPlanLifecycle(
     }
   }
 
-  if (settledPlanCandidate) {
+  if (settledPlanCandidate && !suppressPlanCandidate) {
     sessionUI.markPlanCompleted(sessionID, settledPlanCandidate.sourceMessageId)
   }
 

@@ -1632,7 +1632,7 @@ export const dict = {
   'chat.toolPart.awaitingResponse': 'Awaiting response...',
   'chat.toolPart.noOutputProduced': 'No output produced',
   'chat.toolPart.output': 'Output',
-  'chat.toolPart.openSubtask': 'Open {type} subtask',
+  'chat.toolPart.openSubtask': 'Open {type} Subtask',
   'chat.todo.total': 'Total',
   'chat.todo.inProgress': 'In Progress',
   'chat.todo.pending': 'Pending',

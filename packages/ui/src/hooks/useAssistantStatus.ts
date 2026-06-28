@@ -9,6 +9,7 @@ import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { postRendererTurnTimingMark } from '@/stores/utils/streamDebug';
 import { getAssistantToolStatusPhrase } from './assistantStatusFormatting';
 import { useSessionActivity } from './useSessionActivity';
+import { useRetryVisibility } from '@/components/chat/lib/turns/retryVisibility';
 
 export type AssistantActivity = 'idle' | 'streaming' | 'tooling' | 'cooldown' | 'permission';
 
@@ -289,6 +290,21 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
         ? (currentSessionStatus as { type: 'retry'; message?: string }).message
         : undefined;
 
+    const activeRetryStatus = React.useMemo(() => {
+        if (!effectiveSessionId || currentSessionStatus?.type !== 'retry') {
+            return null;
+        }
+
+        return {
+            sessionId: effectiveSessionId,
+            message: typeof sessionRetryMessage === 'string' ? sessionRetryMessage : '',
+            confirmedAt: (currentSessionStatus as { type: 'retry'; confirmedAt?: number }).confirmedAt,
+            attempt: sessionRetryAttempt,
+            next: sessionRetryNext,
+        };
+    }, [currentSessionStatus, effectiveSessionId, sessionRetryAttempt, sessionRetryMessage, sessionRetryNext]);
+    const visibleRetryStatus = useRetryVisibility(activeRetryStatus);
+
     interface ParsedStatusResult {
         activePartType: AssistantActivePartType;
         activeToolName: string | undefined;
@@ -402,7 +418,7 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             }
         }
 
-        const retryInfo = isRetry
+        const retryInfo = isRetry && visibleRetryStatus
             ? { attempt: sessionRetryAttempt, next: sessionRetryNext, message: sessionRetryMessage }
             : null;
 
@@ -427,7 +443,7 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             isComplete: false,
             retryInfo,
         };
-    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext, sessionRetryMessage]);
+    }, [activityPhase, isPhaseWorking, parsedStatus, abortState, sessionRetryAttempt, sessionRetryNext, sessionRetryMessage, visibleRetryStatus]);
 
     const forming = React.useMemo<FormingSummary>(() => {
 

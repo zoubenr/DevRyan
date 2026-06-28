@@ -1448,6 +1448,7 @@ export async function abortCurrentOperation(sessionId: string): Promise<void> {
     registerManualAbortGuard(sessionId, sessionDirectory)
     await sdk().session.abort({ sessionID: sessionId, directory: sessionDirectory })
     markManualAbort(sessionId, getLatestAssistantMessageId(sessionId, sessionDirectory))
+    useSessionUIStore.getState().clearSessionTurnCompletion(sessionId)
     forceSessionIdleAfterManualAbort(sessionId, sessionDirectory)
   } catch (error) {
     // The stop never reached the server — do not mask live retry/busy state.

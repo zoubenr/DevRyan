@@ -223,6 +223,16 @@ const normalizeModelRefs = (refs: readonly ModelRef[]): ModelRef[] => {
   return result;
 };
 
+const modelRefsEqual = (a: readonly ModelRef[], b: readonly ModelRef[]): boolean => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.providerID !== b[i]?.providerID) return false;
+    if (a[i]?.modelID !== b[i]?.modelID) return false;
+  }
+  return true;
+};
+
 const createContextPanelTab = (descriptor: ContextPanelTabDescriptor): ContextPanelTab => {
   const normalizedTargetPath = normalizeContextTargetPath(descriptor.targetPath);
   const dedupeKey = normalizeContextPanelTabDedupeKey(
@@ -561,7 +571,9 @@ interface UIStore {
   mobileKeyboardMode: MobileKeyboardMode;
 
   favoriteModels: ModelRef[];
+  favoriteModelsUpdatedAt: number;
   hiddenModels: ModelRef[];
+  hiddenModelsUpdatedAt: number;
   collapsedModelProviders: string[];
   recentAgents: string[];
   recentEfforts: Record<string, string[]>;
@@ -817,7 +829,9 @@ export const useUIStore = create<UIStore>()(
         inputBarOffset: 0,
         mobileKeyboardMode: getStoredMobileKeyboardMode(),
         favoriteModels: [],
+        favoriteModelsUpdatedAt: 0,
         hiddenModels: [],
+        hiddenModelsUpdatedAt: 0,
         collapsedModelProviders: [],
         recentAgents: [],
         recentEfforts: {},
@@ -1573,11 +1587,13 @@ export const useUIStore = create<UIStore>()(
                 favoriteModels: state.favoriteModels.filter(
                   (fav) => !(fav.providerID === providerID && fav.modelID === modelID)
                 ),
+                favoriteModelsUpdatedAt: Date.now(),
               };
             } else {
               // Add to favorites (newest first)
               return {
                 favoriteModels: [{ providerID, modelID }, ...state.favoriteModels],
+                favoriteModelsUpdatedAt: Date.now(),
               };
             }
           });
@@ -1602,7 +1618,7 @@ export const useUIStore = create<UIStore>()(
               return state;
             }
             nextFavorites.splice(newIndex, 0, moved);
-            return { favoriteModels: nextFavorites };
+            return { favoriteModels: nextFavorites, favoriteModelsUpdatedAt: Date.now() };
           });
         },
 
@@ -1623,8 +1639,14 @@ export const useUIStore = create<UIStore>()(
               return state;
             }
 
+            const hiddenModels = [...additions, ...retainedModels];
+            if (modelRefsEqual(hiddenModels, state.hiddenModels)) {
+              return state;
+            }
+
             return {
-              hiddenModels: [...additions, ...retainedModels],
+              hiddenModels,
+              hiddenModelsUpdatedAt: Date.now(),
             };
           });
         },
@@ -1638,7 +1660,9 @@ export const useUIStore = create<UIStore>()(
           set((state) => {
             const refKeys = new Set(normalizedRefs.map(buildModelRefKey));
             const hiddenModels = state.hiddenModels.filter((item) => !refKeys.has(buildModelRefKey(item)));
-            return hiddenModels.length === state.hiddenModels.length ? state : { hiddenModels };
+            return hiddenModels.length === state.hiddenModels.length
+              ? state
+              : { hiddenModels, hiddenModelsUpdatedAt: Date.now() };
           });
         },
 
@@ -1655,14 +1679,16 @@ export const useUIStore = create<UIStore>()(
             const retainedModels = state.hiddenModels.filter((item) => !aliasKeys.has(buildModelRefKey(item)));
 
             if (isHidden) {
-              return retainedModels.length === state.hiddenModels.length ? state : { hiddenModels: retainedModels };
+              return retainedModels.length === state.hiddenModels.length
+                ? state
+                : { hiddenModels: retainedModels, hiddenModelsUpdatedAt: Date.now() };
             }
 
             const retainedKeys = new Set(retainedModels.map(buildModelRefKey));
             const additions = normalizedCanonicalRefs.filter((ref) => !retainedKeys.has(buildModelRefKey(ref)));
             return additions.length === 0
               ? state
-              : { hiddenModels: [...additions, ...retainedModels] };
+              : { hiddenModels: [...additions, ...retainedModels], hiddenModelsUpdatedAt: Date.now() };
           });
         },
 
@@ -1686,14 +1712,20 @@ export const useUIStore = create<UIStore>()(
             const additions = modelIDs
               .filter((modelID) => typeof modelID === 'string' && modelID.length > 0)
               .map((modelID) => ({ providerID, modelID }));
-            return { hiddenModels: [...additions, ...current] };
+            const hiddenModels = [...additions, ...current];
+            return modelRefsEqual(hiddenModels, state.hiddenModels)
+              ? state
+              : { hiddenModels, hiddenModelsUpdatedAt: Date.now() };
           });
         },
 
         showAllModels: (providerID) => {
-          set((state) => ({
-            hiddenModels: state.hiddenModels.filter((item) => item.providerID !== providerID),
-          }));
+          set((state) => {
+            const hiddenModels = state.hiddenModels.filter((item) => item.providerID !== providerID);
+            return hiddenModels.length === state.hiddenModels.length
+              ? state
+              : { hiddenModels, hiddenModelsUpdatedAt: Date.now() };
+          });
         },
 
         toggleModelProviderCollapsed: (providerID) => {
@@ -1965,7 +1997,7 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createJSONStorage(() => getSafeStorage()),
-        version: 8,
+        version: 9,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
@@ -2043,6 +2075,16 @@ export const useUIStore = create<UIStore>()(
             }
           }
 
+          if (version < 9) {
+            const migratedAt = Date.now();
+            state.favoriteModelsUpdatedAt = Array.isArray(state.favoriteModels) && state.favoriteModels.length > 0
+              ? migratedAt
+              : 0;
+            state.hiddenModelsUpdatedAt = Array.isArray(state.hiddenModels) && state.hiddenModels.length > 0
+              ? migratedAt
+              : 0;
+          }
+
           return state;
         },
         partialize: (state) => ({
@@ -2081,7 +2123,9 @@ export const useUIStore = create<UIStore>()(
           padding: state.padding,
           cornerRadius: state.cornerRadius,
           favoriteModels: state.favoriteModels,
+          favoriteModelsUpdatedAt: state.favoriteModelsUpdatedAt,
           hiddenModels: state.hiddenModels,
+          hiddenModelsUpdatedAt: state.hiddenModelsUpdatedAt,
           collapsedModelProviders: state.collapsedModelProviders,
           recentAgents: state.recentAgents,
           recentEfforts: state.recentEfforts,

@@ -9,6 +9,7 @@ import {
   listConfigAgents,
   writeAgentModelOverride,
 } from './agents.js';
+import { DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC } from './slim-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../../..');
@@ -301,5 +302,86 @@ describe('agent model overrides', () => {
     expect(config.model).toEqual({ providerID: 'openai', modelID: 'gpt-5.4-mini' });
     expect(config.variant).toBe('low');
     expect(config.prompt).toBe('council prompt');
+  });
+
+  it('keeps DevRyan project agents authoritative in wrapper mode while applying Slim model metadata', async () => {
+    const slimConfigDirectory = path.dirname(userConfigPath);
+    const slimConfigPath = path.join(slimConfigDirectory, 'oh-my-opencode-slim.json');
+    await writeJson(userConfigPath, {
+      plugin: [DEVRYAN_SLIM_WRAPPER_PLUGIN_SPEC],
+    });
+    await writeJson(slimConfigPath, {
+      preset: 'openai',
+      presets: {
+        openai: {
+          orchestrator: { model: 'openai/gpt-5.5', variant: 'medium', skills: ['*'], mcps: ['*'] },
+          fixer: { model: 'openai/gpt-5.5', variant: 'low', skills: [], mcps: [] },
+          'slim-only': { model: 'openai/gpt-5.4-mini', variant: 'low' },
+        },
+      },
+    });
+    await writeSlimInstalledAgent(slimConfigDirectory, 'orchestrator', [
+      'mode: primary',
+      'model: stale/slim',
+      'permission:',
+      '  "*": allow',
+    ]);
+    await writeProjectAgent(projectDirectory, 'orchestrator', [
+      'mode: primary',
+      'model: stale/project-orchestrator',
+      'variant: stale',
+      'permission:',
+      '  "*": deny',
+      '  task:',
+      '    fixer: allow',
+    ]);
+
+    const agents = listConfigAgents(projectDirectory, { userConfigPath, slimConfigDirectory });
+    const orchestrator = agents.find((agent) => agent.name === 'orchestrator');
+    const fixer = agents.find((agent) => agent.name === 'fixer');
+
+    expect(orchestrator).toMatchObject({
+      scope: 'project',
+      source: 'project',
+      prompt: 'orchestrator prompt',
+      model: { providerID: 'openai', modelID: 'gpt-5.5' },
+      modelRefs: ['openai/gpt-5.5'],
+      variant: 'medium',
+      permission: {
+        '*': 'deny',
+        task: { fixer: 'allow' },
+      },
+      overrides: { model: false, variant: false, councillors: false },
+    });
+    expect(fixer).toMatchObject({
+      scope: 'packaged',
+      source: 'packaged',
+      model: { providerID: 'openai', modelID: 'gpt-5.5' },
+      variant: 'low',
+    });
+    expect(agents.find((agent) => agent.name === 'slim-only')).toMatchObject({
+      scope: 'slim',
+      source: 'slim',
+      model: { providerID: 'openai', modelID: 'gpt-5.4-mini' },
+    });
+
+    writeAgentModelOverride(
+      'orchestrator',
+      { model: 'openai/gpt-5.4-mini', variant: null },
+      projectDirectory,
+      { userConfigPath, slimConfigDirectory },
+    );
+
+    const slimConfig = await readJsonc(slimConfigPath);
+    expect(slimConfig.agents.orchestrator).toEqual({
+      model: 'openai/gpt-5.4-mini',
+    });
+    await expect(fs.stat(path.join(path.dirname(userConfigPath), '.openchamber', 'config.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(getAgentConfig('orchestrator', projectDirectory, { userConfigPath, slimConfigDirectory }).config).toMatchObject({
+      scope: 'project',
+      source: 'project',
+      model: { providerID: 'openai', modelID: 'gpt-5.4-mini' },
+      overrides: { model: true, variant: true, councillors: false },
+    });
   });
 });

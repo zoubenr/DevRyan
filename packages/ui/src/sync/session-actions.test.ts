@@ -32,6 +32,9 @@ const setCurrentSessionCalls: Array<{ id: string | null; directory?: string | nu
 let mockCurrentSessionId: string | null = null
 let mockSessionAbortFlags: Map<string, { timestamp: number; acknowledged: boolean; reason?: "manual"; id?: string }> = new Map()
 let mockAbortControllers: Map<string, AbortController> = new Map()
+const clearSessionTurnCompletionCalls: string[] = []
+let mockSessionCompletionIndicator: Map<string, { messageId: string; completedAt: number }> = new Map()
+let mockPendingCompletionIndicatorSessions: Set<string> = new Set()
 const sessionDirectories: Record<string, string | null> = {
   "session-a": "/test/project",
   "session-b": "/other/project",
@@ -166,6 +169,11 @@ mock.module("./session-ui-store", () => ({
         controller.abort()
         mockAbortControllers.delete(key)
         return true
+      },
+      clearSessionTurnCompletion: (sessionId: string) => {
+        clearSessionTurnCompletionCalls.push(sessionId)
+        mockSessionCompletionIndicator.delete(sessionId)
+        mockPendingCompletionIndicatorSessions.delete(sessionId)
       },
     }),
     setState: (
@@ -2110,8 +2118,11 @@ describe("revertToMessage recovery behavior", () => {
     sessionAbortCalls.length = 0
     sessionMessageCalls.length = 0
     scopedRevertCalls.length = 0
+    clearSessionTurnCompletionCalls.length = 0
     mockSessionAbortFlags = new Map()
     mockAbortControllers = new Map()
+    mockSessionCompletionIndicator = new Map()
+    mockPendingCompletionIndicatorSessions = new Set()
     sessionDirectories["session-a"] = "/test/project"
     sessionAbortHandler = () => Promise.resolve({ data: true })
     sessionMessagesHandler = () => Promise.resolve({ data: [] })
@@ -2161,6 +2172,55 @@ describe("revertToMessage recovery behavior", () => {
 
     expect(sessionAbortCalls).toEqual([{ sessionID: "session-a", directory: "/test/project" }])
     expect(mockSessionAbortFlags.get("session-a")).toBe(undefined)
+  })
+
+  test("clears existing completion indicators after sdk abort succeeds", async () => {
+    mockSessionCompletionIndicator = new Map([
+      ["session-a", { messageId: "msg-assistant", completedAt: 123 }],
+    ])
+    const store = createStore({}, [makeSession("session-a")])
+    const childStores = createChildStores([["/test/project", store]])
+
+    const { abortCurrentOperation, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    await abortCurrentOperation("session-a")
+
+    expect(clearSessionTurnCompletionCalls).toEqual(["session-a"])
+    expect(mockSessionCompletionIndicator.has("session-a")).toBe(false)
+  })
+
+  test("cancels pending delayed completion indicators after sdk abort succeeds", async () => {
+    mockPendingCompletionIndicatorSessions = new Set(["session-a"])
+    const store = createStore({}, [makeSession("session-a")])
+    const childStores = createChildStores([["/test/project", store]])
+
+    const { abortCurrentOperation, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    await abortCurrentOperation("session-a")
+
+    expect(clearSessionTurnCompletionCalls).toEqual(["session-a"])
+    expect(mockPendingCompletionIndicatorSessions.has("session-a")).toBe(false)
+  })
+
+  test("does not clear completion indicators when sdk abort fails", async () => {
+    mockSessionCompletionIndicator = new Map([
+      ["session-a", { messageId: "msg-assistant", completedAt: 123 }],
+    ])
+    mockPendingCompletionIndicatorSessions = new Set(["session-a"])
+    const store = createStore({}, [makeSession("session-a")])
+    const childStores = createChildStores([["/test/project", store]])
+    sessionAbortHandler = () => Promise.reject(new Error("abort failed"))
+
+    const { abortCurrentOperation, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, childStores, () => "/test/project")
+
+    await withMutedConsoleError(() => abortCurrentOperation("session-a"))
+
+    expect(clearSessionTurnCompletionCalls).toEqual([])
+    expect(mockSessionCompletionIndicator.has("session-a")).toBe(true)
+    expect(mockPendingCompletionIndicatorSessions.has("session-a")).toBe(true)
   })
 
   test("abortCurrentOperation cancels pending local sends before sdk abort", async () => {

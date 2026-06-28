@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 import {
     createScopedBlockingRequestsSelector,
 } from './lib/blockingRequests';
+import { useRetryVisibility } from './lib/turns/retryVisibility';
 
 // New sync system imports
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -445,35 +446,38 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = tr
             sessionId: currentSessionId,
             message: rawMessage || DEFAULT_RETRY_MESSAGE,
             confirmedAt: (effectiveSessionStatusForCurrent as { confirmedAt?: number }).confirmedAt,
+            attempt: (effectiveSessionStatusForCurrent as { attempt?: number }).attempt,
+            next: (effectiveSessionStatusForCurrent as { next?: number }).next,
         };
     }, [currentSessionId, effectiveSessionStatusForCurrent]);
+    const visibleRetryStatus = useRetryVisibility(activeRetryStatus);
     const [retryFallbackTimestamp, setRetryFallbackTimestamp] = React.useState<number>(0);
     const retryFallbackSessionRef = React.useRef<string | null>(null);
     const focusResyncInFlightRef = React.useRef<Set<string>>(new Set());
 
     React.useEffect(() => {
-        if (!activeRetryStatus || typeof activeRetryStatus.confirmedAt === 'number') {
+        if (!visibleRetryStatus || typeof visibleRetryStatus.confirmedAt === 'number') {
             retryFallbackSessionRef.current = null;
             setRetryFallbackTimestamp(0);
             return;
         }
 
-        if (retryFallbackSessionRef.current !== activeRetryStatus.sessionId) {
-            retryFallbackSessionRef.current = activeRetryStatus.sessionId;
+        if (retryFallbackSessionRef.current !== visibleRetryStatus.sessionId) {
+            retryFallbackSessionRef.current = visibleRetryStatus.sessionId;
             setRetryFallbackTimestamp(Date.now());
         }
-    }, [activeRetryStatus]);
+    }, [visibleRetryStatus]);
 
     const retryOverlay = React.useMemo(() => {
-        if (!activeRetryStatus) {
+        if (!visibleRetryStatus) {
             return null;
         }
 
         return {
-            ...activeRetryStatus,
+            ...visibleRetryStatus,
             fallbackTimestamp: retryFallbackTimestamp,
         };
-    }, [activeRetryStatus, retryFallbackTimestamp]);
+    }, [visibleRetryStatus, retryFallbackTimestamp]);
 
     // History metadata — use sync's hasMore/isLoading
     const historyMeta = React.useMemo(() => {

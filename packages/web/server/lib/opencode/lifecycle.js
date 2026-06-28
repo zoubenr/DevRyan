@@ -208,6 +208,53 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     });
   };
 
+  const killProcessOnPort = (port) => {
+    const numericPort = Number(port);
+    if (!Number.isFinite(numericPort) || numericPort <= 0 || numericPort > 65535) {
+      return [];
+    }
+    if (process.platform === 'win32') {
+      return [];
+    }
+
+    let stdout = '';
+    try {
+      const result = spawnSync('lsof', ['-nP', '-t', `-iTCP:${Math.trunc(numericPort)}`, '-sTCP:LISTEN'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2500,
+      });
+      stdout = typeof result?.stdout === 'string' ? result.stdout : '';
+    } catch {
+      return [];
+    }
+
+    const pids = stdout
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+      }
+    }
+
+    if (pids.length > 0) {
+      setTimeout(() => {
+        for (const pid of pids) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+          }
+        }
+      }, 1200).unref?.();
+    }
+
+    return pids;
+  };
+
   const closeManagedOpenCodeChild = async (child) => {
     if (!child) {
       return true;
@@ -623,6 +670,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       overlays: overlayResult ?? { changed: false, targetConfigDirectory: null },
       targetConfigDirectory: overlayResult?.targetConfigDirectory ?? null,
       slimPreset: slimConfig.pluginEnabled && slimConfig.activePreset ? slimConfig.activePreset : null,
+      slimConfigDirectory: slimConfig.pluginEnabled ? slimConfig.configDirectory : null,
       runtimeApplied: true,
       requiresReload: true,
     };
@@ -666,6 +714,9 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
           OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || 'true',
           ...(agentRuntimeConfig?.slimPreset
             ? { OH_MY_OPENCODE_SLIM_PRESET: agentRuntimeConfig.slimPreset }
+            : {}),
+          ...(agentRuntimeConfig?.slimConfigDirectory
+            ? { DEVRYAN_OPENCODE_USER_CONFIG_DIR: agentRuntimeConfig.slimConfigDirectory }
             : {}),
           ...(agentRuntimeConfig?.targetConfigDirectory
             ? { OPENCODE_CONFIG_DIR: agentRuntimeConfig.targetConfigDirectory }
@@ -1131,6 +1182,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     bootstrapOpenCodeAtStartup,
     startHealthMonitoring,
     triggerHealthCheck,
+    killProcessOnPort,
     waitForPortRelease,
   };
 };

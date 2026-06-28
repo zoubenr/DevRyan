@@ -345,15 +345,10 @@ async function routeMessage(params: {
     }),
   )
 
-  const additionalParts = params.planMode === true
-    ? [
-        {
-          text: buildPlanModeSyntheticInstruction(),
-          synthetic: true,
-        },
-        ...(handoffAdditionalParts ?? []),
-      ]
-    : handoffAdditionalParts
+  const planModePrefaceText = params.planMode === true
+    ? buildPlanModeSyntheticInstruction()
+    : undefined
+  const additionalParts = handoffAdditionalParts
 
   assertPdfAttachmentsSupported({
     providerID: params.providerID,
@@ -446,6 +441,8 @@ async function routeMessage(params: {
       providerID: params.providerID,
       modelID: params.modelID,
       text: params.content,
+      prefaceText: planModePrefaceText,
+      prefaceTextSynthetic: planModePrefaceText ? true : undefined,
       agent: params.agent,
       variant: params.variant,
       files: params.files,

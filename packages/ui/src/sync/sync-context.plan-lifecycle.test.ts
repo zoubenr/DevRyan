@@ -157,6 +157,7 @@ describe("sync plan lifecycle on message.part.delta", () => {
       sessionPlanIndicator: new Map(),
       sessionPlanAvailable: new Map(),
       sessionCompletionIndicator: new Map(),
+      sessionAbortFlags: new Map(),
       implementedPlanRequests: new Set(),
       planModeUserMessages: new Set(),
       planModeUserMessagesBySession: new Map(),
@@ -779,6 +780,134 @@ describe("sync plan lifecycle on message.part.delta", () => {
       sourceMessageId: ASSISTANT_MESSAGE_ID,
       implementationMessageId: IMPLEMENT_USER_MESSAGE_ID,
     })
+  })
+
+  test("manual abort suppresses matching ordinary turn completion and notifications only for that message", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const abortedPart = textPart("Aborted output.")
+    const laterAssistantId = "msg_3_assistant"
+    const laterPart = {
+      id: "prt_assistant_2",
+      sessionID: SESSION_ID,
+      messageID: laterAssistantId,
+      type: "text",
+      text: "Completed later work.",
+    } as Part
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [
+          userMessage(),
+          assistantMessage(),
+        ],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [abortedPart],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+    useSessionUIStore.setState({
+      sessionAbortFlags: new Map([
+        [SESSION_ID, { reason: "manual", id: ASSISTANT_MESSAGE_ID, acknowledged: false, timestamp: 1 }],
+      ]),
+    })
+
+    applySyncEventForTest(DIRECTORY, partUpdatedEvent(abortedPart), childStores, routingIndexFor([USER_MESSAGE_ID, ASSISTANT_MESSAGE_ID, laterAssistantId]))
+    await flushAsync()
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
+    expect(useNotificationStore.getState().list).toHaveLength(0)
+
+    store.setState((current) => ({
+      message: {
+        ...current.message,
+        [SESSION_ID]: [
+          ...(current.message[SESSION_ID] ?? []),
+          { ...assistantMessage(), id: laterAssistantId, time: { created: 4, completed: 5 } } as Message,
+        ],
+      },
+      part: {
+        ...current.part,
+        [laterAssistantId]: [laterPart],
+      },
+    }))
+
+    applySyncEventForTest(DIRECTORY, partUpdatedEvent(laterPart), childStores, routingIndexFor([USER_MESSAGE_ID, ASSISTANT_MESSAGE_ID, laterAssistantId]))
+    await flushAsync()
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.get(SESSION_ID)).toEqual({
+      messageId: laterAssistantId,
+      completedAt: 5,
+    })
+    expect(useNotificationStore.getState().list).toHaveLength(1)
+    expect(useNotificationStore.getState().list[0]?.messageId).toBe(laterAssistantId)
+  })
+
+  test("manual abort suppresses matching plan completion and notifications", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const completedPart = implementTextPart("Implemented the plan.")
+    const implementationKey = `${SESSION_ID}:${ASSISTANT_MESSAGE_ID}:plan:0`
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Plan session", time: { created: 1, updated: 2 } } as Session],
+      message: {
+        [SESSION_ID]: [
+          userMessage(),
+          assistantMessage(),
+          implementingUserMessage(),
+          implementingAssistantMessage(),
+        ],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [planModePart()],
+        [ASSISTANT_MESSAGE_ID]: [textPart(structuredPlanBody)],
+        [IMPLEMENT_USER_MESSAGE_ID]: [],
+        [IMPLEMENT_ASSISTANT_MESSAGE_ID]: [completedPart],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+
+    useSessionUIStore.getState().recordUserMessagePlanMode(SESSION_ID, USER_MESSAGE_ID, true)
+    useSessionUIStore.getState().markPlanProposed(SESSION_ID, ASSISTANT_MESSAGE_ID)
+    useSessionUIStore.getState().markPlanImplementationRequested(implementationKey)
+    useSessionUIStore.getState().markPlanImplementing(
+      SESSION_ID,
+      ASSISTANT_MESSAGE_ID,
+      IMPLEMENT_USER_MESSAGE_ID,
+    )
+    useSessionUIStore.setState({
+      sessionAbortFlags: new Map([
+        [SESSION_ID, { reason: "manual", id: IMPLEMENT_ASSISTANT_MESSAGE_ID, acknowledged: false, timestamp: 1 }],
+      ]),
+    })
+
+    applySyncEventForTest(
+      DIRECTORY,
+      partUpdatedEvent(completedPart),
+      childStores,
+      routingIndexFor([USER_MESSAGE_ID, ASSISTANT_MESSAGE_ID, IMPLEMENT_USER_MESSAGE_ID, IMPLEMENT_ASSISTANT_MESSAGE_ID]),
+    )
+    await flushAsync()
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionPlanIndicator.get(SESSION_ID)).toEqual({
+      state: "implementing",
+      sourceMessageId: ASSISTANT_MESSAGE_ID,
+      implementationMessageId: IMPLEMENT_USER_MESSAGE_ID,
+    })
+    expect(useNotificationStore.getState().list).toHaveLength(0)
   })
 
   test("settles stale busy status to idle when a terminal assistant message lands", async () => {
