@@ -15,6 +15,8 @@ let pendingPermissionsError: unknown = null
 let sessionStatusError: unknown = null
 let sessionGetResponse: Record<string, State["session"][number] | null> = {}
 let sessionMessagesResponse: Record<string, Array<{ info: State["message"][string][number]; parts?: State["part"][string] }>> = {}
+let autoAcceptingSessions = new Set<string>()
+const respondToPermissionCalls: Array<{ sessionID: string; requestID: string; reply: string }> = []
 
 mock.module("@/lib/opencode/client", () => ({
   opencodeClient: {
@@ -52,8 +54,15 @@ mock.module("@/lib/opencode/client", () => ({
 
 mock.module("@/stores/permissionStore", () => ({
   usePermissionStore: {
-    getState: () => ({ isSessionAutoAccepting: () => false }),
+    getState: () => ({ isSessionAutoAccepting: (sessionId: string) => autoAcceptingSessions.has(sessionId) }),
   },
+}))
+
+mock.module("../session-actions", () => ({
+  setActionRefs: () => undefined,
+  respondToPermission: mock(async (sessionID: string, requestID: string, reply: string) => {
+    respondToPermissionCalls.push({ sessionID, requestID, reply })
+  }),
 }))
 
 mock.module("@/stores/useConfigStore", () => ({
@@ -121,6 +130,8 @@ describe("resyncBlockingRequestsForDirectory", () => {
     sessionStatusError = null
     sessionGetResponse = {}
     sessionMessagesResponse = {}
+    autoAcceptingSessions = new Set<string>()
+    respondToPermissionCalls.length = 0
   })
 
   test("calls listPendingQuestions and listPendingPermissions exactly once for the directory", async () => {
@@ -186,6 +197,24 @@ describe("resyncBlockingRequestsForDirectory", () => {
     expect(store.getState().question["ses_unknown"]).toEqual(undefined)
   })
 
+  test("auto-responds to pending permissions instead of retaining them", async () => {
+    const store = createDirectoryStore({
+      session: [
+        { id: "parent", title: "parent", time: { created: 1, updated: 1 }, version: "1" } as State["session"][number],
+        { id: "child", parentID: "parent", title: "child", time: { created: 1, updated: 1 }, version: "1" } as State["session"][number],
+      ],
+    })
+    pendingPermissionsResponse = [buildPermission({ id: "perm_child", sessionID: "child" })]
+    autoAcceptingSessions.add("child")
+
+    await resyncBlockingRequestsForDirectory("/repo", store)
+
+    expect(respondToPermissionCalls).toEqual([
+      { sessionID: "child", requestID: "perm_child", reply: "once" },
+    ])
+    expect(store.getState().permission.child).toEqual(undefined)
+  })
+
   test("returns early without fetching when no candidate sessions are known", async () => {
     const store = createDirectoryStore({ session: [] })
     await resyncBlockingRequestsForDirectory("/repo", store)
@@ -209,6 +238,8 @@ describe("resyncDirectoryAfterReconnect", () => {
     sessionStatusError = null
     sessionGetResponse = {}
     sessionMessagesResponse = {}
+    autoAcceptingSessions = new Set<string>()
+    respondToPermissionCalls.length = 0
   })
 
   test("resyncs an explicitly targeted session even when reconnect heuristics have no candidates", async () => {

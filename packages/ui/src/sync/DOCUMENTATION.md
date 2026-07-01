@@ -185,6 +185,12 @@ Keep this in sync with `handleDirectoryEvent` in `sync-context.tsx`:
 
 Server compatibility events named `openchamber:session-status` are normalized in `event-pipeline.ts` before routing and coalescing. The normalized event uses the canonical `session.status` type with `properties.sessionID` and a `properties.status` object. This keeps reducers, routing keys, and coalescing on the same path as OpenCode-native status events.
 
+## Completion vs active work
+
+Completion indicators are derived from settled terminal assistant turns, not from historical unread state alone. A trailing assistant message can settle stale `busy`/`retry` status to `idle` only when it is terminal, has no running tool parts, and has no pending permission or question.
+
+Accepted `busy`/`retry` status is treated as a new-work edge. When the sync store still contains `busy`/`retry` after reducing a status event, `sync-context.tsx` clears pending and visible completion indicators for that session. Delayed completion timers in `session-ui-store.ts` also re-check live status before writing so a green dot cannot appear after the session has started working again.
+
 ## Active-session recovery watchdog
 
 `sync-context.tsx` tracks the last observed `session.status` and message/part output event per `directory + sessionID`. A 5-second watchdog checks only the active viewed session; when that session remains `busy` or `retry` without fresh status or output activity for 20 seconds, it runs a targeted reconnect resync for that session only. A 15-second per-session cooldown prevents repeated recovery calls.

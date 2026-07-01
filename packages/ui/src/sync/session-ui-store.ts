@@ -55,6 +55,7 @@ import {
   getSyncMessages,
   getSyncParts,
   getSyncQuestions,
+  getSyncSessionStatus,
   getDirectoryState,
   getSyncChildStores,
   getSyncSessionDirectoryAnyDirectory,
@@ -124,6 +125,12 @@ const clearPendingCompletionTimers = (sessionId: string) => {
   clearPendingPlanCompletionTimer(sessionId)
 }
 
+const isLiveSessionWorking = (sessionId: string): boolean => {
+  const directory = getSyncSessionDirectoryAnyDirectory(sessionId)
+  const status = directory ? getSyncSessionStatus(sessionId, directory) : undefined
+  return status?.type === "busy" || status?.type === "retry"
+}
+
 const scheduleSessionCompletionIndicator = (
   sessionId: string,
   entry: SessionCompletionIndicatorEntry,
@@ -131,6 +138,7 @@ const scheduleSessionCompletionIndicator = (
   clearPendingSessionCompletionTimer(sessionId)
   const timer = setTimeout(() => {
     pendingSessionCompletionTimers.delete(sessionId)
+    if (isLiveSessionWorking(sessionId)) return
     useSessionUIStore.setState((state) => {
       const current = state.sessionCompletionIndicator.get(sessionId)
       if (current?.messageId === entry.messageId && current.completedAt === entry.completedAt) return state
@@ -150,6 +158,7 @@ const schedulePlanCompletionIndicator = (
   clearPendingPlanCompletionTimer(sessionId)
   const timer = setTimeout(() => {
     pendingPlanCompletionTimers.delete(sessionId)
+    if (isLiveSessionWorking(sessionId)) return
     useSessionUIStore.setState((state) => {
       const current = state.sessionPlanIndicator.get(sessionId)
       const nextEntry = nextPlanIndicatorEntry(

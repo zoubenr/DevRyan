@@ -962,6 +962,32 @@ function isIdleSessionStatusEvent(payload: Event): boolean {
   return props?.status?.type === "idle"
 }
 
+function isWorkingSessionStatusEvent(payload: Event): boolean {
+  if (payload.type !== "session.status") return false
+  const props = payload.properties as { status?: SessionStatus } | undefined
+  const statusType = props?.status?.type
+  return statusType === "busy" || statusType === "retry"
+}
+
+function clearCompletionForAcceptedWorkingStatus(
+  payload: Event,
+  store: StoreApi<DirectoryStore>,
+): void {
+  if (!isWorkingSessionStatusEvent(payload)) return
+
+  const sessionID = getSessionIdFromPayload(payload)
+  if (!sessionID) return
+
+  const statusType = store.getState().session_status?.[sessionID]?.type
+  if (statusType !== "busy" && statusType !== "retry") return
+
+  void import("./session-ui-store")
+    .then(({ useSessionUIStore }) => {
+      useSessionUIStore.getState().clearSessionTurnCompletion(sessionID)
+    })
+    .catch(() => undefined)
+}
+
 function getOutputSessionIdFromPayload(
   state: State,
   routingIndex: EventRoutingIndex,
@@ -2067,6 +2093,8 @@ function handleEvent(
       enqueueSessionMaterialization(resolvedDirectory, materializationSessionID, childStores)
     }
   }
+
+  clearCompletionForAcceptedWorkingStatus(payload, store)
 
   replayPendingPartDeltasForEvent(resolvedDirectory, payload, store)
 

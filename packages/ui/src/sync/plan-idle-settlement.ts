@@ -60,6 +60,16 @@ export function shouldSettleTerminalSessionStatus({
 }): boolean {
   const statusType = state.session_status[sessionID]?.type
   if (statusType !== "busy" && statusType !== "retry") return false
+  return hasSettledTerminalAssistantTurn({ sessionID, state })
+}
+
+export function hasSettledTerminalAssistantTurn({
+  sessionID,
+  state,
+}: {
+  sessionID: string
+  state: PlanIdleSettlementState
+}): boolean {
   if ((state.permission[sessionID]?.length ?? 0) > 0) return false
   if ((state.question[sessionID]?.length ?? 0) > 0) return false
 

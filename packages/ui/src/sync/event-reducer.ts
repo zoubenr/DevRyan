@@ -36,6 +36,7 @@ import {
 } from "./revert-transactions"
 import { clearAbortGuard, filterSessionStatusThroughAbortGuard } from "./abort-retry-guard"
 import { isFinalToolStatus } from "../lib/toolStatus"
+import { hasSettledTerminalAssistantTurn } from "./plan-idle-settlement"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const DELTA_OVERLAP_FIELDS = ["text", "output"] as const
@@ -590,7 +591,14 @@ export function applyDirectoryEvent(
       // because abort during the backoff sleep is ignored upstream. The guard
       // coerces those to idle for a bounded window and schedules bounded
       // re-aborts so the loop is cancelled when its next attempt fires.
-      const status = filterSessionStatusThroughAbortGuard(props.sessionID, props.status)
+      const filteredStatus = filterSessionStatusThroughAbortGuard(props.sessionID, props.status)
+      const filteredStatusType = filteredStatus.type
+      const status = (filteredStatusType === "busy" || filteredStatusType === "retry") && hasSettledTerminalAssistantTurn({
+        sessionID: props.sessionID,
+        state: draft,
+      })
+        ? { type: "idle" } as const
+        : filteredStatus
       if (areSessionStatusesEqual(draft.session_status[props.sessionID], status)) {
         return false
       }

@@ -62,6 +62,24 @@ describe("blocking request session scoping", () => {
     expect(selected.permissions.map((entry) => entry.id)).toEqual(["perm_1"])
   })
 
+  test("selects external-directory permissions for the active session", () => {
+    const selector = createScopedBlockingRequestsSelector("ses_a")
+    const externalPermission = {
+      ...permission("perm_external", "ses_a"),
+      permission: "external_directory",
+      patterns: ["/Users/dev/Documents/private-note.md"],
+      metadata: { path: "/Users/dev/Documents/private-note.md" },
+      always: ["/Users/dev/Documents/*"],
+    } as PermissionRequest
+
+    const selected = selector(state({
+      session: [session("ses_a")],
+      permission: { ses_a: [externalPermission] },
+    }))
+
+    expect(selected.permissions).toEqual([externalPermission])
+  })
+
   test("surfaces child-session multiple-choice questions in the parent chat", () => {
     const selector = createScopedBlockingRequestsSelector<PermissionRequest, QuestionRequest>("parent")
     const childQuestion = {

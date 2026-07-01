@@ -488,6 +488,46 @@ describe("sync plan lifecycle on message.part.delta", () => {
       completedAt: 3,
     })
     expect(useNotificationStore.getState().sessionHasCompletion(SESSION_ID)).toBe(true)
+    expect(store.getState().session_status[SESSION_ID]).toEqual({ type: "idle" })
+  })
+
+  test("cancels pending normal completion when a new busy turn starts before settlement", async () => {
+    const childStores = new ChildStoreManager()
+    const store = childStores.ensureChild(DIRECTORY)
+    const nextUserMessage = {
+      id: "msg_next_user",
+      sessionID: SESSION_ID,
+      role: "user",
+      time: { created: 4 },
+    } as Message
+
+    store.setState({
+      ...INITIAL_STATE,
+      session: [{ id: SESSION_ID, title: "Task session", time: { created: 1, updated: 4 } } as Session],
+      message: {
+        [SESSION_ID]: [userMessage(), assistantMessage(), nextUserMessage],
+      },
+      part: {
+        [USER_MESSAGE_ID]: [],
+        [ASSISTANT_MESSAGE_ID]: [textPart("Completed work.")],
+        [nextUserMessage.id]: [],
+      },
+      session_status: {
+        [SESSION_ID]: { type: "idle" } as SessionStatus,
+      },
+    })
+
+    useSessionUIStore.getState().markSessionTurnCompleted(SESSION_ID, ASSISTANT_MESSAGE_ID, 3)
+    applySyncEventForTest(DIRECTORY, sessionStatusEvent({ type: "busy" } as SessionStatus), childStores, routingIndexFor([
+      USER_MESSAGE_ID,
+      ASSISTANT_MESSAGE_ID,
+      nextUserMessage.id,
+    ]))
+    await flushAsync()
+    await waitForCompletionIndicatorSettlement()
+
+    expect(store.getState().session_status[SESSION_ID]).toEqual({ type: "busy" })
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has(SESSION_ID)).toBe(false)
   })
 
   test("marks implemented plan completed and records unread completion from part update", async () => {

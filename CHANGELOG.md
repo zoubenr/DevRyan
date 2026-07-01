@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-01
+
+- OpenCode: update the bundled SDK dependency to 1.17.12 across web, UI, VS Code, and the workspace lockfile.
+- Desktop: keep Electron directory and file permission requests on the OpenCode approval path while preserving native picker behavior for legacy Tauri installs.
+- Chat: prevent stale completion indicators from appearing after a session starts working again, and settle stale busy/retry status only after terminal assistant turns.
+- Permissions: improve auto-accept and external-directory permission handling for child sessions and resync flows with focused regression coverage.
+
 ## [1.0.1] - 2026-06-27
 
 - OpenCode Slim: add Slim install/config helpers, managed plugin defaults, and runtime lifecycle integration so Slim-managed agents and overlays are available consistently.

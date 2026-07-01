@@ -48,6 +48,7 @@ let mockSyncMessages: Array<Record<string, unknown>> = []
 let mockPartsByMessage = new Map<string, Array<Record<string, unknown>>>()
 let mockSourceParts: Array<Record<string, unknown>> = []
 let mockChildStoreState: Record<string, unknown> = { message: {}, part: {} }
+let mockSessionDirectoryAnyDirectory: string | undefined
 let mockQuestionsBySession = new Map<string, Array<Record<string, unknown>>>()
 let mockDescendantSessionIds = new Map<string, string[]>()
 let mockArchivedSessions: Array<Record<string, unknown>> = []
@@ -375,8 +376,11 @@ mock.module("./sync-refs", () => ({
   getSyncMessages: () => mockSyncMessages,
   getSyncSessionMaterializationStatus: () => "ready",
   getSyncParts: (messageId: string) => mockPartsByMessage.get(messageId) ?? mockSourceParts,
-  getSyncSessionStatus: () => undefined,
-  getSyncSessionDirectoryAnyDirectory: () => undefined,
+  getSyncSessionStatus: (sessionId: string) => {
+    const statuses = mockChildStoreState.session_status as Record<string, { type?: string }> | undefined
+    return statuses?.[sessionId]
+  },
+  getSyncSessionDirectoryAnyDirectory: () => mockSessionDirectoryAnyDirectory,
   getSyncPermissions: () => [],
   getSyncQuestions: (sessionId: string) => mockQuestionsBySession.get(sessionId) ?? [],
   getDirectoryState: () => mockDirectoryState,
@@ -469,6 +473,7 @@ describe("session-ui-store send routing", () => {
     mockPartsByMessage = new Map()
     mockSourceParts = []
     mockChildStoreState = { message: {}, part: {} }
+    mockSessionDirectoryAnyDirectory = undefined
     mockQuestionsBySession = new Map()
     mockDescendantSessionIds = new Map()
     mockArchivedSessions = []
@@ -645,6 +650,33 @@ describe("session-ui-store send routing", () => {
       messageId: "msg-a",
       completedAt: 123,
     })
+  })
+
+  test("does not show settled normal completion when live status became busy", async () => {
+    mockSessionDirectoryAnyDirectory = "/repo"
+    mockChildStoreState = {
+      message: {},
+      part: {},
+      session_status: {
+        "session-a": { type: "idle" },
+      },
+    }
+    useSessionUIStore.setState({
+      sessionCompletionIndicator: new Map(),
+      sessionPlanIndicator: new Map(),
+    })
+
+    useSessionUIStore.getState().markSessionTurnCompleted("session-a", "msg-a", 123)
+    mockChildStoreState = {
+      ...mockChildStoreState,
+      session_status: {
+        "session-a": { type: "busy" },
+      },
+    }
+
+    await waitForCompletionIndicatorSettlement()
+
+    expect(useSessionUIStore.getState().sessionCompletionIndicator.has("session-a")).toBe(false)
   })
 
   test("clears completed plan indicators when a session is acknowledged without hiding plan availability", () => {

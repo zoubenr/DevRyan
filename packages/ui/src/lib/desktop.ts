@@ -220,6 +220,8 @@ export const isTauriShell = (): boolean => {
 
 export const isElectronShell = (): boolean => getElectronRuntime()?.runtime === 'electron';
 
+const isLegacyTauriShell = (): boolean => isTauriShell() && !isElectronShell();
+
 export const hasDesktopInvoke = (): boolean => {
   if (typeof window === 'undefined') return false;
   const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
@@ -303,6 +305,8 @@ export const isDesktopLocalOriginActive = (): boolean => {
   return Boolean(currentUrl && isLoopbackHost(currentUrl.hostname));
 };
 
+const canUseLegacyTauriNativeDialog = (): boolean => isLegacyTauriShell() && isDesktopLocalOriginActive();
+
 export const isDesktopShell = (): boolean => {
   if (typeof window === 'undefined') return false;
   return isTauriShell() || isElectronShell();
@@ -357,8 +361,10 @@ export const getDesktopHomeDirectory = async (): Promise<string | null> => {
 export const requestDirectoryAccess = async (
   directoryPath: string
 ): Promise<{ success: boolean; path?: string; projectId?: string; error?: string }> => {
-  // Desktop shell on local instance: use native folder picker.
-  if (isTauriShell() && isDesktopLocalOriginActive()) {
+  // Electron exposes a Tauri-compatible shim, but permission-style directory
+  // access should stay in OpenCode so `permission.asked` can render the chat
+  // approval card instead of triggering native macOS folder prompts.
+  if (canUseLegacyTauriNativeDialog()) {
     try {
       const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
       const selected = await tauri?.dialog?.open?.({
@@ -382,7 +388,7 @@ export const requestDirectoryAccess = async (
 export const requestFileAccess = async (
   options?: { filters?: Array<{ name: string; extensions: string[] }> }
 ): Promise<{ success: boolean; path?: string; error?: string }> => {
-  if (isTauriShell() && isDesktopLocalOriginActive()) {
+  if (canUseLegacyTauriNativeDialog()) {
     try {
       const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
       const selected = await tauri?.dialog?.open?.({
