@@ -21,16 +21,16 @@ const DEFAULT_SLIM_CONFIG = {
   companion: { enabled: false },
   presets: {
     openai: {
-      orchestrator: { model: 'openai/gpt-5.5', variant: 'medium', skills: ['*'], mcps: ['*'] },
-      oracle: { model: 'openai/gpt-5.5', variant: 'high', skills: ['*'], mcps: ['*'] },
+      orchestrator: { model: 'openai/gpt-5.5', variant: 'medium', skills: ['*'], mcps: [] },
+      oracle: { model: 'openai/gpt-5.5', variant: 'high', skills: ['*'], mcps: [] },
       librarian: { model: 'openai/gpt-5.4-mini', variant: 'low', skills: ['codemap'], mcps: [] },
       explorer: { model: 'openai/gpt-5.4-mini', variant: 'low', skills: ['codemap'], mcps: [] },
       designer: { model: 'openai/gpt-5.4-mini', variant: 'medium', skills: [], mcps: [] },
       fixer: { model: 'openai/gpt-5.5', variant: 'low', skills: [], mcps: [] },
     },
     'opencode-go': {
-      orchestrator: { model: 'opencode-go/glm-5.1', skills: ['*'], mcps: ['*'] },
-      oracle: { model: 'opencode-go/deepseek-v4-pro', variant: 'max', skills: ['*'], mcps: ['*'] },
+      orchestrator: { model: 'opencode-go/glm-5.1', skills: ['*'], mcps: [] },
+      oracle: { model: 'opencode-go/deepseek-v4-pro', variant: 'max', skills: ['*'], mcps: [] },
       council: { model: 'opencode-go/deepseek-v4-pro', variant: 'high', skills: [], mcps: [] },
       librarian: { model: 'opencode-go/minimax-m2.7', skills: ['codemap'], mcps: [] },
       explorer: { model: 'opencode-go/minimax-m2.7', skills: ['codemap'], mcps: [] },

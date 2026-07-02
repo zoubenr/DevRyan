@@ -28,9 +28,6 @@ describe("useMcpConfigStore", () => {
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {
       calls.push(`${init?.method || "GET"} ${String(input)}`);
-      if (String(input).startsWith("/api/config/mcp/recover")) {
-        return Response.json({ migrated: [], skipped: [], requiresReload: false });
-      }
       return String(input).includes(encodeURIComponent("/repo/two"))
         ? mcpResponse("two-server")
         : mcpResponse("one-server");
@@ -42,19 +39,14 @@ describe("useMcpConfigStore", () => {
     await useMcpConfigStore.getState().loadMcpConfigs({ force: true, directory: "/repo/two" });
     expect(useMcpConfigStore.getState().mcpServers.map((server) => server.name)).toEqual(["two-server"]);
     expect(calls).toEqual([
-      `POST /api/config/mcp/recover?directory=${encodeURIComponent("/repo/one")}`,
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/one")}`,
-      `POST /api/config/mcp/recover?directory=${encodeURIComponent("/repo/two")}`,
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/two")}`,
     ]);
   });
 
   test("clears the selected MCP when the loaded directory no longer contains it", async () => {
     useMcpConfigStore.setState({ selectedMcpName: "old-server" });
-    globalThis.fetch = (async (input) => {
-      if (String(input).startsWith("/api/config/mcp/recover")) {
-        return Response.json({ migrated: [], skipped: [], requiresReload: false });
-      }
+    globalThis.fetch = (async () => {
       return mcpResponse("new-server");
     }) as typeof fetch;
 
@@ -63,17 +55,10 @@ describe("useMcpConfigStore", () => {
     expect(useMcpConfigStore.getState().selectedMcpName).toBeNull();
   });
 
-  test("runs safe MCP recovery before the first forced config load for a directory", async () => {
+  test("does not run MCP recovery during forced config loads", async () => {
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {
       calls.push(`${init?.method || "GET"} ${String(input)}`);
-      if (String(input).startsWith("/api/config/mcp/recover")) {
-        return Response.json({
-          migrated: [{ name: "legacy-server", scope: "project", targetPath: "/repo/recovery/opencode.json" }],
-          skipped: [],
-          requiresReload: true,
-        });
-      }
       return mcpResponse("legacy-server");
     }) as typeof fetch;
 
@@ -81,7 +66,6 @@ describe("useMcpConfigStore", () => {
     await useMcpConfigStore.getState().loadMcpConfigs({ force: true, directory: "/repo/recovery" });
 
     expect(calls).toEqual([
-      `POST /api/config/mcp/recover?directory=${encodeURIComponent("/repo/recovery")}`,
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/recovery")}`,
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/recovery")}`,
     ]);
@@ -102,7 +86,6 @@ describe("useMcpConfigStore", () => {
 
     expect(calls).toEqual([
       `PATCH /api/config/mcp/linear?directory=${encodeURIComponent("/repo/project")} {"Content-Type":"application/json","x-opencode-directory":"/repo/project"} {"enabled":true}`,
-      `POST /api/config/mcp/recover?directory=${encodeURIComponent("/repo/project")} {"x-opencode-directory":"/repo/project"} `,
       `GET /api/config/mcp?directory=${encodeURIComponent("/repo/project")} {"x-opencode-directory":"/repo/project"} `,
     ]);
   });

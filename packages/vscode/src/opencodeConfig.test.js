@@ -574,4 +574,29 @@ describe('VS Code MCP OAuth stale-state handling', () => {
     expect(recovered.skipped).toContainEqual({ name: 'linear', reason: 'deleted' });
     expect(listMcpConfigs(projectDir).find((entry) => entry.name === 'linear')).toBeUndefined();
   });
+
+  it('ignores home-folder ambient MCP configs while preserving official user and project configs', async () => {
+    const { listMcpConfigs } = await loadRuntime();
+    const projectDir = path.join(tempHome, 'project');
+    writeJson(path.join(tempHome, '.config', 'opencode', 'opencode.json'), {
+      mcp: {
+        userOfficial: { type: 'remote', url: 'https://official.example.test/mcp' },
+      },
+    });
+    writeJson(path.join(tempHome, '.opencode', 'opencode.json'), {
+      mcp: {
+        context7: { type: 'remote', url: 'https://ambient.example.test/mcp' },
+      },
+    });
+    writeJson(path.join(projectDir, '.opencode', 'opencode.json'), {
+      mcp: {
+        projectLocal: { type: 'local', command: ['project-mcp'] },
+      },
+    });
+
+    expect(listMcpConfigs(projectDir).map((entry) => [entry.name, entry.type, entry.url, entry.command, entry.scope]).sort()).toEqual([
+      ['projectLocal', 'local', undefined, ['project-mcp'], 'project'],
+      ['userOfficial', 'remote', 'https://official.example.test/mcp', undefined, 'user'],
+    ].sort());
+  });
 });

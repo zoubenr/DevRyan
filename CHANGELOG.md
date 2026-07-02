@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-07-02
+
+- Release: bump DevRyan workspace, Electron, VS Code, web, and legacy desktop metadata to 1.0.4.
+- OpenCode: update the bundled SDK dependency to 1.17.13 across web, UI, VS Code, and the workspace lockfile.
+
 ## [1.0.3] - 2026-07-02
 
 - Event stream: add a replayable global SSE endpoint and route synthetic UI events through the global hub so reconnecting clients can recover missed message updates.

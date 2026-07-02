@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import os from 'node:os';
 import express from 'express';
 
 const execFileAsync = promisify(execFile);
@@ -25,21 +26,25 @@ const encodeDirectoryQuery = (directory) => {
   return params.toString();
 };
 
+const toPosixRelative = (relativePath) => relativePath.split(path.sep).join('/');
+
 const ensureInsideDirectory = (directory, filePath) => {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) {
     throw new Error('Invalid diff file path');
   }
 
   const root = path.resolve(directory);
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  const absolute = path.resolve(root, normalized);
+  const normalized = filePath.replace(/\\/g, '/');
+  const absolute = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(root, normalized.replace(/^\/+/, ''));
   const relative = path.relative(root, absolute);
 
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Diff file path escapes the project directory: ${filePath}`);
   }
 
-  return { absolute, relative: normalized };
+  return { absolute, relative: toPosixRelative(relative) };
 };
 
 const fileExists = async (absolutePath) => {
@@ -298,6 +303,15 @@ const fetchSessionMessages = async ({ buildOpenCodeUrl, getOpenCodeAuthHeaders, 
   });
 };
 
+const fetchSession = async ({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID }) => {
+  const query = new URLSearchParams({ directory });
+  return fetchJson(buildOpenCodeUrl(`/session/${encodeURIComponent(sessionID)}?${query}`, ''), {
+    method: 'GET',
+    headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
+    signal: AbortSignal.timeout(15_000),
+  });
+};
+
 const callUpstreamRevert = async ({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID, messageID }) => fetchJson(
   buildOpenCodeUrl(`/session/${encodeURIComponent(sessionID)}/revert?${encodeDirectoryQuery(directory)}`, ''),
   {
@@ -342,10 +356,132 @@ const collectRevertDiffs = (records, messageID) => {
   return diffs;
 };
 
-const prepareScopedRevert = async (directory, diffs) => {
+const collectPatchSnapshotTargets = (records, messageID) => {
+  const ordered = sortMessageRecords(Array.isArray(records) ? records : []);
+  const targetIndex = ordered.findIndex((record) => record?.info?.id === messageID);
+  if (targetIndex < 0) {
+    throw new Error('Target message was not found in the session');
+  }
+
+  const targets = [];
+  const seen = new Set();
+  for (const record of ordered.slice(targetIndex)) {
+    for (const part of Array.isArray(record?.parts) ? record.parts : []) {
+      if (part?.type !== 'patch' || typeof part.hash !== 'string' || !Array.isArray(part.files)) {
+        continue;
+      }
+      for (const file of part.files) {
+        if (typeof file !== 'string' || file.trim().length === 0) continue;
+        const key = `${part.hash}\0${file}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ file, snapshot: part.hash });
+      }
+    }
+  }
+  return targets;
+};
+
+const defaultOpenCodeSnapshotRoot = () => {
+  const dataRoot = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.trim().length > 0
+    ? process.env.XDG_DATA_HOME
+    : path.join(os.homedir(), '.local', 'share');
+  return path.join(dataRoot, 'opencode', 'snapshot');
+};
+
+const findSnapshotGitDir = async (snapshotRoot, projectID, snapshotHash) => {
+  const projectSnapshotRoot = path.join(snapshotRoot, projectID);
+  let entries;
+  try {
+    entries = await fs.readdir(projectSnapshotRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const gitDir = path.join(projectSnapshotRoot, entry.name);
+    try {
+      const { stdout } = await execFileAsync('git', ['--git-dir', gitDir, 'cat-file', '-t', snapshotHash], {
+        maxBuffer: 64 * 1024,
+      });
+      const type = String(stdout).trim();
+      if (type === 'tree' || type === 'commit') {
+        return gitDir;
+      }
+    } catch {
+      // Keep scanning; OpenCode can leave multiple snapshot repositories.
+    }
+  }
+
+  return null;
+};
+
+const readSnapshotGitFile = async ({ snapshotRoot, projectID, snapshotHash, directory, file }) => {
+  const { absolute, relative } = ensureInsideDirectory(directory, file);
+  const gitDir = await findSnapshotGitDir(snapshotRoot, projectID, snapshotHash);
+  if (!gitDir) {
+    throw new Error(`Cannot safely revert ${relative}; OpenCode snapshot ${snapshotHash} was not found`);
+  }
+
+  try {
+    const { stdout } = await execFileAsync('git', ['--git-dir', gitDir, 'show', `${snapshotHash}:${relative}`], {
+      encoding: 'buffer',
+      maxBuffer: 100 * 1024 * 1024,
+    });
+    return {
+      path: relative,
+      absolute,
+      exists: true,
+      content: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout),
+    };
+  } catch (error) {
+    const message = String(error?.stderr || error?.message || '');
+    if (message.includes('exists on disk, but not in') || message.includes('Path') || message.includes('does not exist')) {
+      return { path: relative, absolute, exists: false, content: Buffer.alloc(0) };
+    }
+    throw error;
+  }
+};
+
+const collectSnapshotTargetSnapshots = async ({
+  directory,
+  records,
+  messageID,
+  session,
+  snapshotRoot = defaultOpenCodeSnapshotRoot(),
+}) => {
+  const projectID = typeof session?.projectID === 'string' ? session.projectID : '';
+  if (!projectID) {
+    return [];
+  }
+
+  const snapshotsByFile = new Map();
+  for (const target of collectPatchSnapshotTargets(records, messageID)) {
+    const { relative } = ensureInsideDirectory(directory, target.file);
+    if (snapshotsByFile.has(relative)) continue;
+    snapshotsByFile.set(
+      relative,
+      await readSnapshotGitFile({
+        snapshotRoot,
+        projectID,
+        snapshotHash: target.snapshot,
+        directory,
+        file: target.file,
+      }),
+    );
+  }
+
+  return Array.from(snapshotsByFile.values());
+};
+
+const prepareScopedRevert = async (directory, diffs, snapshotTargetSnapshots = []) => {
   const targetFiles = new Set();
   for (const diff of diffs) {
     targetFiles.add(ensureInsideDirectory(directory, diff.file).relative);
+  }
+  for (const snapshot of snapshotTargetSnapshots) {
+    targetFiles.add(snapshot.path);
   }
 
   // Decision: use Git status as the protection boundary before calling OpenCode's
@@ -369,6 +505,9 @@ const prepareScopedRevert = async (directory, diffs) => {
   for (const diff of [...diffs].reverse()) {
     const { relative } = ensureInsideDirectory(directory, diff.file);
     desiredTargetSnapshots.set(relative, reverseApplyDiffToSnapshot(desiredTargetSnapshots.get(relative), diff));
+  }
+  for (const snapshot of snapshotTargetSnapshots) {
+    desiredTargetSnapshots.set(snapshot.path, snapshot);
   }
 
   return { snapshots, desiredTargetSnapshots };
@@ -417,20 +556,33 @@ export const runScopedSessionRevert = async ({
   directory,
   sessionID,
   messageID,
+  openCodeSnapshotRoot,
 }) => {
   return withDirectoryScopedRevertLock(directory, async () => {
-    const records = await fetchSessionMessages({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID });
+    const [records, sessionSnapshot] = await Promise.all([
+      fetchSessionMessages({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID }),
+      fetchSession({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID }).catch(() => null),
+    ]);
     const diffs = collectRevertDiffs(records, messageID);
-    const prepared = await prepareScopedRevert(directory, diffs);
-    let session;
+    const snapshotTargetSnapshots = diffs.length === 0
+      ? await collectSnapshotTargetSnapshots({
+        directory,
+        records,
+        messageID,
+        session: sessionSnapshot,
+        snapshotRoot: openCodeSnapshotRoot,
+      })
+      : [];
+    const prepared = await prepareScopedRevert(directory, diffs, snapshotTargetSnapshots);
+    let revertedSession;
     try {
-      session = await callUpstreamRevert({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID, messageID });
+      revertedSession = await callUpstreamRevert({ buildOpenCodeUrl, getOpenCodeAuthHeaders, directory, sessionID, messageID });
     } catch (error) {
       await restoreProtectedSnapshots(prepared, { restoreOriginal: true });
       throw error;
     }
     await restoreProtectedSnapshots(prepared);
-    return session;
+    return revertedSession;
   });
 };
 
@@ -461,6 +613,7 @@ export const registerScopedSessionRevertRoute = (app, deps) => {
         directory,
         sessionID,
         messageID,
+        openCodeSnapshotRoot: deps.openCodeSnapshotRoot,
       });
       return res.json(session);
     } catch (error) {

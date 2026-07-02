@@ -42,6 +42,17 @@ describe('SessionNodeItem row hover metadata', () => {
     expect(source).not.toContain('TooltipContent side="right" sideOffset={8} className="max-w-xs text-left"');
     expect(source).not.toContain('{sessionUpdatedLabel}</div>');
   });
+
+  test('wires compact metadata to a row-local responsive container', () => {
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(testDir, 'SessionNodeItem.tsx'), 'utf8');
+    const styles = readFileSync(join(testDir, '..', '..', '..', 'index.css'), 'utf8');
+
+    expect(source).toContain('@container/session-sidebar-row');
+    expect(source).toContain('session-sidebar-row__compact-time');
+    expect(styles).toContain('@container session-sidebar-row');
+    expect(styles).toContain('.session-sidebar-row__compact-time');
+  });
 });
 
 describe('session sidebar quick hover actions', () => {
@@ -72,6 +83,18 @@ describe('session sidebar archive reflow animation wiring', () => {
     expect(itemSource).toContain('SessionSidebarMotionRow');
     expect(groupSource).toContain('AnimatePresence initial={false}');
     expect(folderSource).toContain('AnimatePresence initial={false}');
+
+    // The children AnimatePresence must be nested INSIDE the
+    // SessionSidebarMotionRow so the whole subtree collapses as one unit
+    // on archive/unarchive (prevents children snapping out after the parent
+    // row finishes its exit animation). Assert ordering: the children
+    // AnimatePresence block appears before the motion row's closing tag.
+    const motionRowOpen = itemSource.indexOf('<SessionSidebarMotionRow>');
+    const motionRowClose = itemSource.indexOf('</SessionSidebarMotionRow>');
+    const childrenAnimatePresence = itemSource.indexOf('hasChildren ?', motionRowOpen);
+    expect(motionRowOpen).toBeGreaterThan(-1);
+    expect(childrenAnimatePresence).toBeGreaterThan(motionRowOpen);
+    expect(motionRowClose).toBeGreaterThan(childrenAnimatePresence);
   });
 
   test('collapses entering and exiting rows without scale animation', () => {

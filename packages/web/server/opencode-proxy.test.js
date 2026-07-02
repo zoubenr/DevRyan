@@ -61,6 +61,7 @@ const createProxyApp = (upstreamPort, options = {}) => {
     buildOpenCodeUrl: (requestPath) => `http://127.0.0.1:${upstreamPort}${requestPath}`,
     ensureOpenCodeApiPrefix: () => {},
     turnTimingRuntime: options.turnTimingRuntime,
+    openCodeSnapshotRoot: options.openCodeSnapshotRoot,
   });
   return app;
 };
@@ -85,6 +86,15 @@ const addedLinePatch = (filePath, beforeLine, addedLine) => `diff --git a/${file
  ${beforeLine}
 +${addedLine}
 `;
+
+const createOpenCodeSnapshotRepo = async (directory, snapshotRoot, projectID) => {
+  const projectSnapshotRoot = path.join(snapshotRoot, projectID);
+  const snapshotGitDir = path.join(projectSnapshotRoot, 'snapshot.git');
+  await fs.mkdir(projectSnapshotRoot, { recursive: true });
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: directory });
+  await execFileAsync('git', ['clone', '--bare', directory, snapshotGitDir]);
+  return stdout.trim();
+};
 
 describe('OpenCode proxy SSE forwarding', () => {
   let upstreamServer;
@@ -497,6 +507,77 @@ describe('OpenCode scoped session revert', () => {
     expect(response.status).toBe(200);
     expect(upstreamRevertCalls).toBe(1);
     expect(await fs.readFile(path.join(repoDirectory, 'same.txt'), 'utf8')).toBe('one\ntwo\nthree\nsession-b\nfour\n');
+  });
+
+  it('restores aborted patch files from OpenCode snapshots when message diffs are not finalized', async () => {
+    repoDirectory = await createTestRepo();
+    await fs.writeFile(path.join(repoDirectory, 'target.txt'), 'base\n');
+    await fs.writeFile(path.join(repoDirectory, 'unrelated.txt'), 'base\n');
+    await commitAll(repoDirectory);
+    const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-snapshot-root-'));
+    const projectID = 'project-a';
+    const snapshotHash = await createOpenCodeSnapshotRepo(repoDirectory, snapshotRoot, projectID);
+
+    await fs.writeFile(path.join(repoDirectory, 'target.txt'), 'base\naborted-tool\n');
+    await fs.writeFile(path.join(repoDirectory, 'unrelated.txt'), 'base\nunrelated\n');
+
+    const upstream = express();
+    upstream.use(express.json());
+    upstream.get('/session/:sessionID', (_req, res) => {
+      res.json({ id: 'session-a', projectID });
+    });
+    upstream.get('/session/:sessionID/message', (_req, res) => {
+      res.json([
+        {
+          info: {
+            id: 'msg-target',
+            sessionID: 'session-a',
+            role: 'user',
+            time: { created: 1 },
+            agent: 'build',
+            model: { providerID: 'test', modelID: 'test' },
+            summary: { diffs: [] },
+          },
+          parts: [],
+        },
+        {
+          info: {
+            id: 'msg-assistant',
+            sessionID: 'session-a',
+            role: 'assistant',
+            time: { created: 2, completed: 3 },
+            parentID: 'msg-target',
+          },
+          parts: [
+            {
+              id: 'part-patch',
+              sessionID: 'session-a',
+              messageID: 'msg-assistant',
+              type: 'patch',
+              hash: snapshotHash,
+              files: [path.join(repoDirectory, 'target.txt')],
+            },
+          ],
+        },
+      ]);
+    });
+    upstream.post('/session/:sessionID/revert', (_req, res) => {
+      upstreamRevertCalls += 1;
+      res.json({ id: 'session-a', title: 'session-a', revert: { messageID: 'msg-target' } });
+    });
+    upstreamServer = await listen(upstream);
+
+    proxyServer = await listen(createProxyApp(upstreamServer.address().port, { openCodeSnapshotRoot: snapshotRoot }));
+    const response = await fetch(`http://127.0.0.1:${proxyServer.address().port}/api/openchamber/session/session-a/scoped-revert?directory=${encodeURIComponent(repoDirectory)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messageID: 'msg-target' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstreamRevertCalls).toBe(1);
+    expect(await fs.readFile(path.join(repoDirectory, 'target.txt'), 'utf8')).toBe('base\n');
+    expect(await fs.readFile(path.join(repoDirectory, 'unrelated.txt'), 'utf8')).toBe('base\nunrelated\n');
   });
 
   it('fails safely when another change edits the same hunk', async () => {

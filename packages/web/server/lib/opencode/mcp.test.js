@@ -37,7 +37,7 @@ describe('MCP config helpers', () => {
     vi.resetModules();
   });
 
-  it('merges legacy and official user MCP config with official entries taking precedence', async () => {
+  it('merges supported user MCP config and ignores home-folder ambient MCP config', async () => {
     const configDir = path.join(tempHome, '.config', 'opencode');
     const homeConfigDir = path.join(tempHome, '.opencode');
     writeJson(path.join(configDir, 'config.json'), {
@@ -64,7 +64,6 @@ describe('MCP config helpers', () => {
       ['legacy', 'local', ['legacy-cli'], undefined, 'user'],
       ['shared', 'local', ['official-shared'], undefined, 'user'],
       ['official', 'remote', undefined, 'https://example.test/mcp', 'user'],
-      ['home', 'remote', undefined, 'https://home.example.test/mcp', 'user'],
     ].sort());
   });
 

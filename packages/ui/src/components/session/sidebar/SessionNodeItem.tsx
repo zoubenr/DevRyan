@@ -894,7 +894,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
             data-session-archive-ancestor={isArchiveAncestorOnly ? '1' : '0'}
             onContextMenu={handleRowContextMenu}
             className={cn(
-              'group relative my-0.5 flex items-center rounded-sm px-1.5 py-1',
+              'group @container/session-sidebar-row relative my-0.5 flex items-center rounded-sm px-1.5 py-1',
               isMissingDirectory ? 'opacity-75' : '',
               depth > 0 && 'pl-[20px]',
               isRowSelected && 'bg-primary/15',
@@ -927,11 +927,11 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
               >
                 <div className="flex w-full items-center min-w-0 flex-1 overflow-hidden gap-1">
                   <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive ? 'text-primary' : 'text-foreground')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
-                  {alwaysShowActions ? <span className="ml-2 flex-shrink-0 text-[0.72rem] text-muted-foreground/75">{sessionCompactUpdatedLabel}</span> : null}
+                  {alwaysShowActions ? <span className="session-sidebar-row__compact-time ml-2 flex-shrink-0 text-[0.72rem] text-muted-foreground/75">{sessionCompactUpdatedLabel}</span> : null}
                   {!alwaysShowActions ? (
                     <div className="relative ml-1 flex h-4 min-w-4 flex-shrink-0 items-center justify-end">
                       <span className={cn(
-                        'whitespace-nowrap text-right text-[0.72rem] text-muted-foreground/75 transition-opacity duration-150',
+                        'session-sidebar-row__compact-time whitespace-nowrap text-right text-[0.72rem] text-muted-foreground/75 transition-opacity duration-150',
                         isMenuOpen
                           ? 'opacity-0'
                           : hideOnHoverClass,
@@ -1051,14 +1051,24 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
             </div>
           </div>
         </DraggableSessionRow>
+        {/*
+          Children live INSIDE the SessionSidebarMotionRow so the entire
+          subtree (parent row + descendants) collapses as a single animated
+          unit on archive/unarchive. Keeping children outside caused the
+          parent row to collapse while children stayed visible, then snapped
+          out instantly at the end of the parent's exit — visibly janky for
+          sessions with many sub-agent children. Each child still owns its
+          own SessionSidebarMotionRow for per-child enter/exit (e.g. when
+          a single child is archived or the parent is collapsed/expended).
+        */}
+        {hasChildren ? (
+          <AnimatePresence initial={false}>
+            {isExpanded
+              ? node.children.map((child) => renderSessionNode(child, depth + 1, sessionDirectory ?? groupDirectory, projectId, archivedBucket, undefined, renderContext))
+              : null}
+          </AnimatePresence>
+        ) : null}
       </SessionSidebarMotionRow>
-      {hasChildren ? (
-        <AnimatePresence initial={false}>
-          {isExpanded
-            ? node.children.map((child) => renderSessionNode(child, depth + 1, sessionDirectory ?? groupDirectory, projectId, archivedBucket, undefined, renderContext))
-            : null}
-        </AnimatePresence>
-      ) : null}
       <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
         <DialogContent showCloseButton={false} className="max-w-sm gap-5">
           <DialogHeader>

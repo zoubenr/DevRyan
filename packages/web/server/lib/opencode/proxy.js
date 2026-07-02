@@ -555,6 +555,7 @@ export const registerOpenCodeProxy = (app, deps) => {
   registerScopedSessionRevertRoute(app, {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+    openCodeSnapshotRoot: deps.openCodeSnapshotRoot,
   });
 
   app.post('/api/mcp/:name/:action', forwardMcpActionRequest);

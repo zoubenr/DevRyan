@@ -119,7 +119,6 @@ const MCP_LOAD_CACHE_TTL_MS = 5000;
 const DEFAULT_MCP_CACHE_KEY = '__default__';
 const mcpLastLoadedAt = new Map<string, number>();
 const mcpLoadInFlight = new Map<string, Promise<boolean>>();
-const mcpRecoveryAttempted = new Set<string>();
 
 const getMcpCacheKey = (directory: string | null): string => {
   return directory?.trim() || DEFAULT_MCP_CACHE_KEY;
@@ -182,17 +181,6 @@ export const useMcpConfigStore = create<McpConfigStore>()(
           const request = (async () => {
             set({ isLoading: true });
             try {
-              if (options?.force && !mcpRecoveryAttempted.has(cacheKey)) {
-                mcpRecoveryAttempted.add(cacheKey);
-                const recoverResponse = await fetch(`/api/config/mcp/recover${queryStringForDirectory(configDirectory)}`, {
-                  method: 'POST',
-                  headers: configDirectory ? { 'x-opencode-directory': configDirectory } : undefined,
-                });
-                if (!recoverResponse.ok) {
-                  console.warn('[McpConfigStore] MCP recovery request failed:', await recoverResponse.text().catch(() => ''));
-                }
-              }
-
               const queryParams = queryStringForDirectory(configDirectory);
               const response = await fetch(`/api/config/mcp${queryParams}`, {
                 headers: configDirectory ? { 'x-opencode-directory': configDirectory } : undefined,

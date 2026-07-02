@@ -19,13 +19,10 @@ const RUNTIME_AGENT_OVERLAY_MANIFEST_PATH = path.join(OPENCODE_CONFIG_DIR, '.ope
 const CUSTOM_CONFIG_FILE = process.env.OPENCODE_CONFIG
   ? path.resolve(process.env.OPENCODE_CONFIG)
   : null;
-const HOME_OPENCODE_CONFIG_DIR = path.join(os.homedir(), '.opencode');
 const USER_CONFIG_PATHS = [
   CONFIG_FILE,
   OFFICIAL_USER_CONFIG_FILE,
   path.join(OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.json'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
 ];
 const PROMPT_FILE_PATTERN = /^\{file:(.+)\}$/i;
 const PLUGIN_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/;

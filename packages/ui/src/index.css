@@ -941,6 +941,13 @@ html:not(.dark) .chat-scroll {
   }
 }
 
+/* Session sidebar rows: hide lower-priority metadata when a single row narrows. */
+@container session-sidebar-row (max-width: 13rem) {
+  .session-sidebar-row__compact-time {
+    display: none;
+  }
+}
+
 /* Utility: hide scrollbars without affecting layout */
 .scrollbar-none {
   -ms-overflow-style: none;

@@ -17,16 +17,19 @@ import { cn } from '@/lib/utils';
 import { ModelSelector } from './ModelSelector';
 import { BehaviorPage } from '@/components/sections/behavior/BehaviorPage';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Switch } from '@/components/ui/switch';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { useI18n } from '@/lib/i18n';
 import { formatAgentDisplayName } from '@/lib/agentDisplay';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
-import { getModelVariantDisplayState, getOrderedThinkingVariants, resolveThinkingVariant } from '@/lib/providers/variantControls';
+import { getModelVariantControlState, getModelVariantDisplayState, getOrderedThinkingVariants } from '@/lib/providers/variantControls';
+import { resolveAgentVariantForSave, resolveAgentVariantSelection } from './agentVariantSelection';
 import { formatEffortLabel, formatVisibleEffortLabel } from '@/components/chat/mobileControlsUtils';
 import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
@@ -279,6 +282,10 @@ export const AgentsPage: React.FC = () => {
     const provider = providers.find((entry) => entry.id === parsedModel.providerId);
     const providerModel = provider?.models.find((entry) => entry.id === parsedModel.modelId) as { variants?: Record<string, unknown> } | undefined;
     return getOrderedThinkingVariants(providerModel?.variants);
+  }, [providers]);
+  const getProviderForModelRef = React.useCallback((modelRef: string) => {
+    const parsedModel = parseModelIdentifier(modelRef);
+    return parsedModel ? providers.find((entry) => entry.id === parsedModel.providerId) : undefined;
   }, [providers]);
   const setCouncilModelAt = React.useCallback((index: number, value: string) => {
     setCouncilModels((prev) => {
@@ -593,13 +600,21 @@ export const AgentsPage: React.FC = () => {
 
     setIsSavingModelOverride(true);
     try {
-      const resolvedVariant = resolveThinkingVariant(variant, getAvailableVariantsForModel(trimmedModel));
+      const resolvedVariant = resolveAgentVariantForSave(
+        getProviderForModelRef(trimmedModel),
+        trimmedModel,
+        variant,
+      );
       const resolvedCouncillors = councilModels
         .map((entry, index) => {
           const trimmedCouncilModel = entry.trim();
           return {
             model: trimmedCouncilModel,
-            variant: resolveThinkingVariant(councilVariants[index], getAvailableVariantsForModel(trimmedCouncilModel)),
+            variant: resolveAgentVariantForSave(
+              getProviderForModelRef(trimmedCouncilModel),
+              trimmedCouncilModel,
+              councilVariants[index],
+            ),
           };
         })
         .filter((entry) => entry.model.length > 0);
@@ -618,7 +633,7 @@ export const AgentsPage: React.FC = () => {
     } finally {
       setIsSavingModelOverride(false);
     }
-  }, [councilModels, councilVariants, getAvailableVariantsForModel, isCouncilAgent, model, saveAgentModelOverride, selectedAgentName, t, variant]);
+  }, [councilModels, councilVariants, getProviderForModelRef, isCouncilAgent, model, saveAgentModelOverride, selectedAgentName, t, variant]);
 
   const handleResetModelOverride = React.useCallback(async () => {
     if (!selectedAgentName) {
@@ -645,21 +660,39 @@ export const AgentsPage: React.FC = () => {
     modelRef = model,
     value: string | undefined = variant,
     onChange: (value: string | undefined) => void = setVariant,
+    onModelChange: (value: string) => void = setModel,
   ) => {
-    const rowAvailableVariants = getAvailableVariantsForModel(modelRef);
-    const rowSupportsVariants = rowAvailableVariants.length > 0;
-    const resolvedValue = resolveThinkingVariant(value, rowAvailableVariants);
-    const selectValue = resolvedValue ?? NO_VARIANT_VALUE;
     const parsedRowModel = parseModelIdentifier(modelRef);
     const rowProvider = parsedRowModel ? providers.find((entry) => entry.id === parsedRowModel.providerId) : undefined;
+    const rowVariantControlState = parsedRowModel
+      ? getModelVariantControlState(rowProvider, parsedRowModel.modelId, value)
+      : null;
+    const rowAvailableVariants = rowVariantControlState?.visibleVariantOptions ?? getAvailableVariantsForModel(modelRef);
+    const rowSupportsVariants = rowAvailableVariants.length > 0;
+    const rowCanToggleFast = Boolean(rowVariantControlState?.canToggleFast);
+    const selectedVariant = typeof value === 'string'
+      ? rowAvailableVariants.find((entry) => entry === value.trim())
+        ?? rowAvailableVariants.find((entry) => entry.trim().toLowerCase() === value.trim().toLowerCase())
+      : undefined;
+    const selectValue = selectedVariant ?? NO_VARIANT_VALUE;
     const rowVariantDisplayState = parsedRowModel
       ? getModelVariantDisplayState(rowProvider, parsedRowModel.modelId, value)
       : null;
     const rowFastEnabled = Boolean(rowVariantDisplayState?.fastEnabled);
-    const rowEffortLabel = formatVisibleEffortLabel(
-      rowVariantDisplayState?.selectedVariant ?? value,
-      rowVariantDisplayState?.visibleVariantOptions ?? rowAvailableVariants,
-    );
+    const rowEffortLabel = selectedVariant
+      ? formatEffortLabel(selectedVariant)
+      : (
+        rowVariantDisplayState?.selectedVariant && rowAvailableVariants.length > 0
+          ? formatVisibleEffortLabel(rowVariantDisplayState.selectedVariant, rowAvailableVariants)
+          : formatEffortLabel(undefined)
+      );
+    const applyVariantUpdate = (updates: { fastEnabled?: boolean; variant?: string }) => {
+      const selection = resolveAgentVariantSelection(rowProvider, modelRef, value, updates);
+      if (selection.modelRef !== modelRef) {
+        onModelChange(selection.modelRef);
+      }
+      onChange(selection.variant);
+    };
 
     return (
       <div key={key} className="flex flex-col gap-1 py-1 sm:flex-row sm:items-center sm:gap-3">
@@ -674,11 +707,12 @@ export const AgentsPage: React.FC = () => {
             value={selectValue}
             onValueChange={(nextValue) => {
               if (nextValue === NO_VARIANT_VALUE) {
+                onChange(undefined);
                 return;
               }
-              onChange(nextValue);
+              applyVariantUpdate({ variant: nextValue });
             }}
-            disabled={isSavingModelOverride || !rowSupportsVariants}
+            disabled={isSavingModelOverride || (!rowSupportsVariants && !rowCanToggleFast)}
           >
             <SelectTrigger className="w-fit min-w-[120px]">
               <SelectValue placeholder={t('settings.agents.page.field.thinkingPlaceholder')}>
@@ -693,6 +727,23 @@ export const AgentsPage: React.FC = () => {
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
+              {rowCanToggleFast ? (
+                <>
+                  <div className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5">
+                    <span className="typography-ui-label text-foreground">Fast</span>
+                    <Switch
+                      checked={rowFastEnabled}
+                      onCheckedChange={(checked) => applyVariantUpdate({ fastEnabled: checked })}
+                      disabled={isSavingModelOverride}
+                      aria-label="Fast"
+                    />
+                  </div>
+                  <SelectSeparator />
+                </>
+              ) : null}
+              <SelectItem value={NO_VARIANT_VALUE}>
+                {formatEffortLabel(undefined)}
+              </SelectItem>
               {rowAvailableVariants.map((availableVariant) => (
                 <SelectItem key={availableVariant} value={availableVariant}>
                   {formatEffortLabel(availableVariant)}
@@ -750,6 +801,7 @@ export const AgentsPage: React.FC = () => {
           councilModel,
           councilVariants[index],
           (nextVariant) => setCouncilVariantAt(index, nextVariant),
+          (nextModelRef) => setCouncilModelAt(index, nextModelRef),
         )}
       </div>
     );

@@ -141,6 +141,10 @@ describe('Slim setup runtime', () => {
       model: 'openai/gpt-5.5',
       variant: 'medium',
     });
+    expect(slimConfig.presets.openai.orchestrator.mcps).toEqual([]);
+    expect(slimConfig.presets.openai.oracle.mcps).toEqual([]);
+    expect(slimConfig.presets['opencode-go'].orchestrator.mcps).toEqual([]);
+    expect(slimConfig.presets['opencode-go'].oracle.mcps).toEqual([]);
     expect(slimConfig.presets['opencode-go'].orchestrator.model).toBe('opencode-go/glm-5.1');
     expect(slimConfig.companion).toEqual({ enabled: false });
   });

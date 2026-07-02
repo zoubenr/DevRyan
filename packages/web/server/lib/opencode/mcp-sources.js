@@ -11,13 +11,10 @@ import {
 } from './shared.js';
 
 const OFFICIAL_USER_CONFIG_FILE = path.join(OPENCODE_CONFIG_DIR, 'opencode.json');
-const HOME_OPENCODE_CONFIG_DIR = path.join(os.homedir(), '.opencode');
 const USER_CONFIG_PATHS = [
   CONFIG_FILE,
   OFFICIAL_USER_CONFIG_FILE,
   path.join(OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.json'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
 ];
 const MCP_RECOVERY_MANIFEST_PATH = path.join(OPENCODE_CONFIG_DIR, '.openchamber', 'mcp-recovery.json');
 
@@ -50,7 +47,6 @@ function getProjectMcpWritePath(workingDirectory) {
 
 function getUserMcpSourceKind(userPath) {
   if (userPath === CONFIG_FILE) return 'user-legacy';
-  if (userPath.startsWith(`${HOME_OPENCODE_CONFIG_DIR}${path.sep}`)) return 'user-home';
   return 'user';
 }
 

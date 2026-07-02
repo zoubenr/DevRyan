@@ -31,15 +31,12 @@ function validateMcpName(name) {
  * List all MCP server configs from user-level opencode.json
  */
 const OFFICIAL_USER_CONFIG_FILE = path.join(OPENCODE_CONFIG_DIR, 'opencode.json');
-const HOME_OPENCODE_CONFIG_DIR = path.join(os.homedir(), '.opencode');
 const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 const MCP_AUTH_FILE = path.join(OPENCODE_DATA_DIR, 'mcp-auth.json');
 const USER_CONFIG_PATHS = [
   CONFIG_FILE,
   OFFICIAL_USER_CONFIG_FILE,
   path.join(OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.json'),
-  path.join(HOME_OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
 ];
 const MCP_RECOVERY_MANIFEST_PATH = path.join(OPENCODE_CONFIG_DIR, '.openchamber', 'mcp-recovery.json');
 

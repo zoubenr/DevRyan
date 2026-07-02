@@ -62,7 +62,7 @@ describe('MCP source helpers', () => {
     expect(getProjectMcpWritePath(projectDir)).toBe(rootPath);
   });
 
-  it('lists home .opencode MCP config as a user-scoped source', async () => {
+  it('does not list home .opencode MCP config as an active user-scoped source', async () => {
     const homePath = path.join(tempHome, '.opencode', 'opencode.json');
     writeJson(homePath, {
       mcp: {
@@ -73,7 +73,7 @@ describe('MCP source helpers', () => {
     const { describeMcpSource, getActiveMcpSources } = await loadMcpSourcesModule();
     const sources = getActiveMcpSources().map(describeMcpSource);
 
-    expect(sources).toContainEqual({
+    expect(sources).not.toContainEqual({
       path: homePath,
       scope: 'user',
       kind: 'user-home',
