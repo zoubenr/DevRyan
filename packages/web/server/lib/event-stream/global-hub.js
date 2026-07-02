@@ -15,6 +15,7 @@ export function createGlobalMessageStreamHub({
   const eventSubscribers = new Set();
   const statusSubscribers = new Set();
   const replay = [];
+  let syntheticEventSequence = 0;
 
   let controller = null;
   let reader = null;
@@ -38,6 +39,22 @@ export function createGlobalMessageStreamHub({
   const notifyStatus = (status) => {
     for (const subscriber of Array.from(statusSubscribers)) {
       notifySubscriber('status', subscriber, status);
+    }
+  };
+
+  const rememberReplayEvent = (normalized) => {
+    if (!normalized?.eventId) {
+      return;
+    }
+    replay.push(normalized);
+    if (replay.length > replayLimit) {
+      replay.splice(0, replay.length - replayLimit);
+    }
+  };
+
+  const notifyEvent = (normalized) => {
+    for (const subscriber of Array.from(eventSubscribers)) {
+      notifySubscriber('event', subscriber, normalized);
     }
   };
 
@@ -86,16 +103,8 @@ export function createGlobalMessageStreamHub({
       },
       onEvent(event) {
         const normalized = normalizeEvent(event);
-        if (normalized.eventId) {
-          replay.push(normalized);
-          if (replay.length > replayLimit) {
-            replay.splice(0, replay.length - replayLimit);
-          }
-        }
-
-        for (const subscriber of Array.from(eventSubscribers)) {
-          notifySubscriber('event', subscriber, normalized);
-        }
+        rememberReplayEvent(normalized);
+        notifyEvent(normalized);
       },
       onError(error) {
         if (controller?.signal.aborted) {
@@ -133,6 +142,34 @@ export function createGlobalMessageStreamHub({
     },
     hasConnected() {
       return everConnected;
+    },
+    publishSyntheticEvent({ payload, directory, eventId } = {}) {
+      if (!payload || typeof payload !== 'object') {
+        return null;
+      }
+      syntheticEventSequence += 1;
+      const normalizedDirectory =
+        typeof directory === 'string' && directory.length > 0
+          ? directory
+          : typeof payload?.properties?.directory === 'string' && payload.properties.directory.length > 0
+            ? payload.properties.directory
+            : 'global';
+      const normalizedEventId = typeof eventId === 'string' && eventId.length > 0
+        ? eventId
+        : `synthetic-${Date.now()}-${syntheticEventSequence}`;
+      const normalized = {
+        ...normalizeEvent({
+          envelope: {
+            directory: normalizedDirectory,
+            eventId: normalizedEventId,
+          },
+          payload,
+        }),
+        synthetic: true,
+      };
+      rememberReplayEvent(normalized);
+      notifyEvent(normalized);
+      return normalized;
     },
     subscribeEvent(subscriber) {
       eventSubscribers.add(subscriber);

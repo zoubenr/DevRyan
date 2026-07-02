@@ -79,11 +79,12 @@ describe('session sidebar archive reflow animation wiring', () => {
     const source = readFileSync(join(testDir, 'SessionSidebarMotionRow.tsx'), 'utf8');
     const itemSource = readFileSync(join(testDir, 'SessionNodeItem.tsx'), 'utf8');
 
-    expect(source).toContain('layout="position"');
-    expect(source).toContain('initial={{ height: 0, opacity: 0 }}');
-    expect(source).toContain("animate={{ height: 'auto', opacity: 1 }}");
-    expect(source).toContain('exit={{ height: 0, opacity: 0 }}');
+    expect(source).toContain("initial={{ gridTemplateRows: '0fr', opacity: 0 }}");
+    expect(source).toContain("animate={{ gridTemplateRows: '1fr', opacity: 1 }}");
+    expect(source).toContain("exit={{ gridTemplateRows: '0fr', opacity: 0 }}");
     expect(source).toContain("overflow: 'hidden'");
+    expect(source).toContain("display: 'grid'");
+    expect(source).toContain('minHeight: 0');
     expect(itemSource).toContain('left-[-10px]');
     expect(source).toContain('SESSION_LEADING_INDICATOR_CLIP_GUTTER_PX');
     expect(source).toContain('marginLeft: -SESSION_LEADING_INDICATOR_CLIP_GUTTER_PX');

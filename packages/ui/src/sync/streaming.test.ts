@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import type { Message, SessionStatus } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part, SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { INITIAL_STATE, type State } from "./types"
 import { updateStreamingState, useStreamingStore } from "./streaming"
 
@@ -16,7 +16,23 @@ const terminalAssistantMessage = (id: string, finish: string): Message => ({
   time: { created: 1 },
 } as unknown as Message)
 
-const stateWithMessages = (messages: Message[], status: SessionStatus = { type: "busy" } as SessionStatus): State => ({
+const toolPart = (messageID: string): Part => ({
+  id: `${messageID}_tool`,
+  sessionID: "ses_1",
+  messageID,
+  type: "tool",
+  tool: "write",
+  state: {
+    status: "completed",
+    time: { start: 1, end: 2 },
+  },
+} as unknown as Part)
+
+const stateWithMessages = (
+  messages: Message[],
+  status: SessionStatus = { type: "busy" } as SessionStatus,
+  part: State["part"] = {},
+): State => ({
   ...INITIAL_STATE,
   session_status: {
     ses_1: status,
@@ -24,6 +40,7 @@ const stateWithMessages = (messages: Message[], status: SessionStatus = { type: 
   message: {
     ses_1: messages,
   },
+  part,
 })
 
 describe("updateStreamingState", () => {
@@ -172,6 +189,21 @@ describe("updateStreamingState", () => {
 
     expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
     expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
+  })
+
+  test("does not replace a tool-call assistant with a trailing empty assistant shell", () => {
+    updateStreamingState(stateWithMessages([
+      message("msg_user_1", "user"),
+      terminalAssistantMessage("msg_assistant_1", "tool-calls"),
+      message("msg_assistant_empty", "assistant"),
+    ], { type: "busy" } as SessionStatus, {
+      msg_assistant_1: [toolPart("msg_assistant_1")],
+      msg_assistant_empty: [],
+    }))
+
+    expect(useStreamingStore.getState().streamingMessageIds.get("ses_1")).toBe("msg_assistant_1")
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_1")?.phase).toBe("streaming")
+    expect(useStreamingStore.getState().messageStreamStates.get("msg_assistant_empty")).toBe(undefined)
   })
 
   test("completes the streaming message when idle arrives after a terminal finish", () => {

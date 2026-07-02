@@ -64,12 +64,12 @@ type AssistantMessageWithState = AssistantMessage & {
 
 interface AssistantSessionMessageRecord {
     info: AssistantMessageWithState;
-    parts: Part[];
+    parts: readonly Part[];
 }
 
 type SessionMessageRecord = {
     info: Message;
-    parts: Part[];
+    parts: readonly Part[];
 };
 
 const DEFAULT_WORKING: WorkingSummary = {
@@ -98,6 +98,61 @@ const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_PARTS: Part[] = [];
 const EMPTY_SESSION_MESSAGES: SessionMessageRecord[] = [];
 const isAssistantMessage = (message: Message): message is AssistantMessageWithState => message.role === 'assistant';
+
+const sortAssistantSessionRecords = (records: readonly AssistantSessionMessageRecord[]): AssistantSessionMessageRecord[] => {
+    return records
+        .map((record, index) => ({ record, index }))
+        .sort((a, b) => {
+            const aCreated = typeof a.record.info.time?.created === 'number' ? a.record.info.time.created : null;
+            const bCreated = typeof b.record.info.time?.created === 'number' ? b.record.info.time.created : null;
+
+            if (aCreated !== null && bCreated !== null && aCreated !== bCreated) {
+                return aCreated - bCreated;
+            }
+
+            return a.index - b.index;
+        })
+        .map(({ record }) => record);
+};
+
+const hasAssistantStatusContext = (record: AssistantSessionMessageRecord): boolean => {
+    return (record.parts?.length ?? 0) > 0 || isTerminalSyncAssistantMessage(record.info);
+};
+
+export const selectAssistantStatusRecord = (
+    records: readonly SessionMessageRecord[],
+): AssistantSessionMessageRecord | null => {
+    const assistantMessages = records
+        .filter(
+            (msg): msg is AssistantSessionMessageRecord =>
+                isAssistantMessage(msg.info) && !isFullySyntheticMessage(msg.parts as Part[])
+        );
+
+    if (assistantMessages.length === 0) {
+        return null;
+    }
+
+    const sortedAssistantMessages = sortAssistantSessionRecords(assistantMessages);
+    for (let index = sortedAssistantMessages.length - 1; index >= 0; index -= 1) {
+        const record = sortedAssistantMessages[index];
+        if (hasAssistantStatusContext(record)) {
+            return record;
+        }
+    }
+
+    return sortedAssistantMessages[sortedAssistantMessages.length - 1];
+};
+
+export const selectAssistantStatusMessageId = (
+    messages: readonly Message[],
+    partsByMessageId: Record<string, readonly Part[] | undefined>,
+): string | null => {
+    const selected = selectAssistantStatusRecord(messages.map((msg) => ({
+        info: msg,
+        parts: partsByMessageId[msg.id] ?? EMPTY_PARTS,
+    })));
+    return selected?.info.id ?? null;
+};
 
 const isReasoningPart = (part: Part): part is ReasoningPart => part.type === 'reasoning';
 
@@ -232,14 +287,19 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
         effectiveDirectory ?? undefined,
     );
 
-    // Only subscribe to parts for the last assistant message — avoids re-render
-    // on every part delta for earlier messages.
-    const lastAssistantId = React.useMemo(() => {
-        for (let i = rawSessionMessages.length - 1; i >= 0; i--) {
-            if (rawSessionMessages[i].role === 'assistant') return rawSessionMessages[i].id;
-        }
-        return null;
-    }, [rawSessionMessages]);
+    // Subscribe to the latest assistant that has renderable status context.
+    // This skips trailing zero-part assistant shells that can arrive after
+    // tool-call turns while still keeping the subscription to one message.
+    const lastAssistantId = useDirectorySync(
+        React.useCallback((state) => {
+            if (!effectiveSessionId) return null;
+            return selectAssistantStatusMessageId(
+                state.message[effectiveSessionId] ?? EMPTY_MESSAGES,
+                state.part,
+            );
+        }, [effectiveSessionId]),
+        effectiveDirectory ?? undefined,
+    );
 
     const lastAssistantParts = useDirectorySync(
         React.useCallback((state) => {
@@ -317,28 +377,11 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             return { activePartType: undefined, activeToolName: undefined, statusText: 'working', isGenericStatus: true };
         }
 
-        const assistantMessages = sessionMessages
-            .filter(
-                (msg): msg is AssistantSessionMessageRecord =>
-                    isAssistantMessage(msg.info) && !isFullySyntheticMessage(msg.parts)
-            );
+        const lastAssistant = selectAssistantStatusRecord(sessionMessages);
 
-        if (assistantMessages.length === 0) {
+        if (!lastAssistant) {
             return { activePartType: undefined, activeToolName: undefined, statusText: 'working', isGenericStatus: true };
         }
-
-        const sortedAssistantMessages = [...assistantMessages].sort((a, b) => {
-            const aCreated = typeof a.info.time?.created === 'number' ? a.info.time.created : null;
-            const bCreated = typeof b.info.time?.created === 'number' ? b.info.time.created : null;
-
-            if (aCreated !== null && bCreated !== null && aCreated !== bCreated) {
-                return aCreated - bCreated;
-            }
-
-            return a.info.id.localeCompare(b.info.id);
-        });
-
-        const lastAssistant = sortedAssistantMessages[sortedAssistantMessages.length - 1];
 
         const { activePartType, activeToolName } = getAssistantActivePartStatus(lastAssistant.parts ?? [], {
             isTerminalAssistantMessage: isTerminalSyncAssistantMessage(lastAssistant.info),
@@ -453,16 +496,12 @@ export function useAssistantStatus(sessionId?: string | null, directoryOverride?
             return { isActive, characterCount: 0 };
         }
 
-        const assistantMessages = sessionMessages.filter(
-            (msg): msg is AssistantSessionMessageRecord =>
-                isAssistantMessage(msg.info) && !isFullySyntheticMessage(msg.parts)
-        );
+        const lastAssistant = selectAssistantStatusRecord(sessionMessages);
 
-        if (assistantMessages.length === 0) {
+        if (!lastAssistant) {
             return { isActive, characterCount: 0 };
         }
 
-        const lastAssistant = assistantMessages[assistantMessages.length - 1];
         let characterCount = 0;
 
         (lastAssistant.parts ?? []).forEach((part) => {

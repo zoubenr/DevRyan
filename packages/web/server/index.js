@@ -38,6 +38,7 @@ import { registerTtsRoutes } from './lib/tts/routes.js';
 import { detectSayTtsCapability } from './lib/tts/capability-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import {
+  createGlobalMessageStreamSseHandler,
   createGlobalUiEventBroadcaster,
   createGlobalMessageStreamHub,
   createMessageStreamWsRuntime,
@@ -499,6 +500,7 @@ const rejectWebSocketUpgrade = (...args) => requestSecurityRuntime.rejectWebSock
 
 
 const isRequestOriginAllowed = (...args) => requestSecurityRuntime.isRequestOriginAllowed(...args);
+let globalMessageStreamHub = null;
 
 const notificationEmitterRuntime = createNotificationEmitterRuntime({
   process,
@@ -514,6 +516,9 @@ const broadcastGlobalUiEvent = createGlobalUiEventBroadcaster({
   sseClients: uiNotificationClients,
   wsClients: uiNotificationWsClients,
   writeSseEvent,
+  globalEventHub: {
+    publishSyntheticEvent: (input) => globalMessageStreamHub?.publishSyntheticEvent?.(input) ?? null,
+  },
 });
 const broadcastUiNotification = (...args) => notificationEmitterRuntime.broadcastUiNotification(...args);
 
@@ -850,7 +855,7 @@ const notificationTriggerRuntime = createNotificationTriggerRuntime({
 const maybeSendPushForTrigger = (...args) => notificationTriggerRuntime.maybeSendPushForTrigger(...args);
 const setAutoAcceptSession = (...args) => notificationTriggerRuntime.setAutoAcceptSession(...args);
 
-const globalMessageStreamHub = createGlobalMessageStreamHub({
+globalMessageStreamHub = createGlobalMessageStreamHub({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   upstreamStallTimeoutMs: getUpstreamStallTimeoutMs,
@@ -1044,6 +1049,7 @@ const tunnelWiringRuntime = createTunnelWiringRuntime({
 });
 const startupPipelineRuntime = createStartupPipelineRuntime({
   createTerminalRuntime,
+  createGlobalMessageStreamSseHandler,
   createMessageStreamWsRuntime,
   createServerStartupRuntime,
 });

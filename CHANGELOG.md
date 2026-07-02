@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-02
+
+- Event stream: add a replayable global SSE endpoint and route synthetic UI events through the global hub so reconnecting clients can recover missed message updates.
+- OpenCode: ignore synthetic global events in the watcher path to prevent locally published updates from triggering duplicate upstream handling.
+- Chat: keep assistant status and streaming indicators attached to the latest assistant turn with renderable context instead of empty trailing assistant shells.
+- Sessions: smooth sidebar collapse and archive animations with grid-track row transitions and rotating disclosure chevrons.
+
 ## [1.0.2] - 2026-07-01
 
 - OpenCode: update the bundled SDK dependency to 1.17.12 across web, UI, VS Code, and the workspace lockfile.

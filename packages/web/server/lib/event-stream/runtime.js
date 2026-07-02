@@ -15,15 +15,119 @@ import {
   DEFAULT_UPSTREAM_STALL_TIMEOUT_MS,
 } from './upstream-reader.js';
 
+function getRequestLastEventId(req) {
+  const header = req?.headers?.['last-event-id'];
+  if (typeof header === 'string' && header.trim().length > 0) {
+    return header.trim();
+  }
+  if (Array.isArray(header)) {
+    const first = header.find((entry) => typeof entry === 'string' && entry.trim().length > 0);
+    if (first) return first.trim();
+  }
+  const queryValue = req?.query?.lastEventId;
+  if (typeof queryValue === 'string' && queryValue.trim().length > 0) {
+    return queryValue.trim();
+  }
+  return '';
+}
+
+function serializeMessageStreamSseEvent({ payload, directory, eventId }) {
+  const lines = [];
+  if (typeof eventId === 'string' && eventId.length > 0) {
+    lines.push(`id: ${eventId}`);
+  }
+  lines.push(`data: ${JSON.stringify({
+    ...(typeof directory === 'string' && directory.length > 0 ? { directory } : {}),
+    payload,
+  })}`);
+  return `${lines.join('\n')}\n\n`;
+}
+
+export function createGlobalMessageStreamSseHandler({
+  globalHub,
+  heartbeatIntervalMs = MESSAGE_STREAM_WS_HEARTBEAT_INTERVAL_MS,
+}) {
+  return (req, res) => {
+    if (!globalHub || typeof globalHub.subscribeEvent !== 'function') {
+      res.status?.(503);
+      res.end?.(JSON.stringify({ error: 'Global message stream is unavailable' }));
+      return;
+    }
+
+    res.status?.(200);
+    res.setHeader?.('Content-Type', 'text/event-stream');
+    res.setHeader?.('Cache-Control', 'no-cache');
+    res.setHeader?.('Connection', 'keep-alive');
+    res.setHeader?.('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    if (res.socket && typeof res.socket.setNoDelay === 'function') {
+      res.socket.setNoDelay(true);
+    }
+
+    const deliveredEventIds = new Set();
+    const writeEntry = (entry) => {
+      if (res.writableEnded || res.destroyed) {
+        return false;
+      }
+      if (typeof entry?.eventId === 'string' && entry.eventId.length > 0) {
+        deliveredEventIds.add(entry.eventId);
+      }
+      res.write(serializeMessageStreamSseEvent(entry));
+      return true;
+    };
+
+    const unsubscribe = globalHub.subscribeEvent(writeEntry);
+    const requestedLastEventId = getRequestLastEventId(req);
+    const { events } = typeof globalHub.replayAfter === 'function'
+      ? globalHub.replayAfter(requestedLastEventId)
+      : { events: [] };
+    for (const entry of events) {
+      if (entry?.eventId && deliveredEventIds.has(entry.eventId)) {
+        continue;
+      }
+      writeEntry(entry);
+    }
+
+    globalHub.start?.();
+
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded || res.destroyed) {
+        return;
+      }
+      res.write(':heartbeat\n\n');
+    }, heartbeatIntervalMs);
+    heartbeat.unref?.();
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      unsubscribe?.();
+      req.off?.('close', cleanup);
+      req.off?.('error', cleanup);
+    };
+
+    req.on?.('close', cleanup);
+    req.on?.('error', cleanup);
+  };
+}
+
 export function createGlobalUiEventBroadcaster({
   sseClients,
   wsClients,
   writeSseEvent,
+  globalEventHub = null,
 }) {
   return (payload, options = {}) => {
+    const directory = typeof options.directory === 'string' && options.directory.length > 0 ? options.directory : 'global';
+    const eventId = typeof options.eventId === 'string' && options.eventId.length > 0 ? options.eventId : undefined;
+    const publishedToGlobalHub = Boolean(globalEventHub?.publishSyntheticEvent?.({
+      payload,
+      directory,
+      eventId,
+    }));
     const hasSseClients = sseClients.size > 0;
-    const hasWsClients = wsClients.size > 0;
-    if (!hasSseClients && !hasWsClients) {
+    const hasWsClients = !publishedToGlobalHub && wsClients.size > 0;
+    if (!hasSseClients && !hasWsClients && !publishedToGlobalHub) {
       return;
     }
 
@@ -39,8 +143,8 @@ export function createGlobalUiEventBroadcaster({
     if (hasWsClients) {
       for (const socket of Array.from(wsClients)) {
         const sent = sendMessageStreamWsEvent(socket, payload, {
-          directory: typeof options.directory === 'string' && options.directory.length > 0 ? options.directory : 'global',
-          eventId: typeof options.eventId === 'string' && options.eventId.length > 0 ? options.eventId : undefined,
+          directory,
+          eventId,
         });
         if (!sent) {
           wsClients.delete(socket);

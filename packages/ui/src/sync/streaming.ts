@@ -43,6 +43,30 @@ const isIncompleteAssistantMessage = (message: Message | undefined): message is 
   Boolean(message && message.role === "assistant" && !isTerminalAssistantMessage(message))
 )
 
+const selectStreamingAssistantMessage = (messages: Message[], state: State): Message | null => {
+  let emptyAssistantFallback: Message | null = null
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role === "user") {
+      break
+    }
+    if (message.role !== "assistant") {
+      continue
+    }
+
+    const partCount = state.part[message.id]?.length ?? 0
+    if (partCount > 0 || isTerminalAssistantMessage(message)) {
+      return message
+    }
+    if (!emptyAssistantFallback) {
+      emptyAssistantFallback = message
+    }
+  }
+
+  return emptyAssistantFallback
+}
+
 export function updateStreamingState(state: State) {
   const now = Date.now()
   const currentStore = useStreamingStore.getState()
@@ -69,17 +93,21 @@ export function updateStreamingState(state: State) {
   for (const [sessionID, messages] of Object.entries(state.message)) {
     if (busySessionIds.has(sessionID)) continue
     const status = state.session_status?.[sessionID]
-    const trailing = messages[messages.length - 1]
+    const streamingCandidate = selectStreamingAssistantMessage(messages, state)
 
     if (status && status.type !== "busy") {
       const currentStreamingId = currentStreamingIds.get(sessionID)
-      if (currentStreamingId && trailing?.id === currentStreamingId && isIncompleteAssistantMessage(trailing)) {
+      if (
+        currentStreamingId
+        && streamingCandidate?.id === currentStreamingId
+        && isIncompleteAssistantMessage(streamingCandidate)
+      ) {
         busySessionIds.add(sessionID)
       }
       continue
     }
 
-    if (isIncompleteAssistantMessage(trailing)) {
+    if (isIncompleteAssistantMessage(streamingCandidate ?? undefined)) {
       busySessionIds.add(sessionID)
     }
   }
@@ -101,18 +129,10 @@ export function updateStreamingState(state: State) {
     const messages = state.message[sessionID]
     if (!messages || messages.length === 0) continue
 
-    // Only the trailing assistant turn can be streaming. If a new user turn is
-    // last, the next assistant message has not arrived yet.
-    let streamingMsg: Message | null = null
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        break
-      }
-      if (messages[i].role === "assistant") {
-        streamingMsg = messages[i]
-        break
-      }
-    }
+    // Only the current assistant turn can be streaming. If a trailing assistant
+    // shell has no parts yet, keep following the nearest assistant in the same
+    // turn that has renderable context.
+    const streamingMsg = selectStreamingAssistantMessage(messages, state)
 
     if (!streamingMsg || hasTerminalAssistantFinish(streamingMsg)) {
       const prevId = currentStreamingIds.get(sessionID)

@@ -1,6 +1,7 @@
 export const createStartupPipelineRuntime = (dependencies) => {
   const {
     createTerminalRuntime,
+    createGlobalMessageStreamSseHandler,
     createMessageStreamWsRuntime,
     createServerStartupRuntime,
   } = dependencies;
@@ -83,6 +84,12 @@ export const createStartupPipelineRuntime = (dependencies) => {
       triggerHealthCheck,
       upstreamStallTimeoutMs,
     });
+
+    if (globalEventHub && typeof createGlobalMessageStreamSseHandler === 'function') {
+      app.get('/api/global/event', createGlobalMessageStreamSseHandler({
+        globalHub: globalEventHub,
+      }));
+    }
 
     setupProxy(app);
     scheduleOpenCodeApiDetection();

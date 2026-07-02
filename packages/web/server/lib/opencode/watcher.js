@@ -41,6 +41,9 @@ export const createOpenCodeWatcherRuntime = (deps) => {
 
     if (globalEventHub) {
       unsubscribeEvent = globalEventHub.subscribeEvent((event) => {
+        if (event?.synthetic === true) {
+          return;
+        }
         const payload = unwrapGlobalEventPayload(event.payload);
         if (!payload || typeof payload !== 'object') {
           return;

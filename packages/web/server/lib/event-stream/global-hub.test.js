@@ -41,6 +41,63 @@ async function waitForAssertion(assertion) {
 }
 
 describe('createGlobalMessageStreamHub', () => {
+  it('publishes synthetic events through subscribers and replay', async () => {
+    const received = [];
+    const hub = createGlobalMessageStreamHub({
+      buildOpenCodeUrl: (pathname) => `http://127.0.0.1:4096${pathname}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      upstreamReconnectDelayMs: 100,
+      fetchImpl: async () => createSseResponse(),
+    });
+
+    hub.subscribeEvent((event) => {
+      received.push(event);
+    });
+
+    const published = hub.publishSyntheticEvent({
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'part_1',
+            sessionID: 'ses_1',
+            messageID: 'msg_1',
+            type: 'text',
+            text: 'hello',
+          },
+        },
+      },
+      directory: '/tmp/project',
+      eventId: 'synthetic-1',
+    });
+
+    expect(published).toEqual({
+      envelope: {
+        directory: '/tmp/project',
+        eventId: 'synthetic-1',
+      },
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'part_1',
+            sessionID: 'ses_1',
+            messageID: 'msg_1',
+            type: 'text',
+            text: 'hello',
+          },
+        },
+      },
+      directory: '/tmp/project',
+      eventId: 'synthetic-1',
+      synthetic: true,
+    });
+    expect(received).toEqual([published]);
+    expect(hub.replayAfter('')).toEqual({ events: [], gap: false });
+    expect(hub.replayAfter('synthetic-1')).toEqual({ events: [], gap: false });
+    expect(hub.replayAfter('missing-id')).toEqual({ events: [published], gap: true });
+  });
+
   it('continues fanout when an event subscriber throws', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const received = [];

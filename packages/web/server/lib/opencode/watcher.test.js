@@ -179,6 +179,16 @@ describe('createOpenCodeWatcherRuntime', () => {
     });
 
     await watcher.start();
+    globalEventHub.publishSyntheticEvent({
+      eventId: 'synthetic-1',
+      payload: {
+        type: 'session.status',
+        properties: {
+          sessionID: 'ses_synthetic',
+          status: { type: 'busy' },
+        },
+      },
+    });
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(hubFetchCalls).toBe(1);

@@ -9,19 +9,14 @@ type SessionSidebarMotionRowProps = {
 const rowEase = [0.33, 1, 0.68, 1] as const;
 
 const rowTransition = {
-  // Keep the reflow (layout) and the collapse (height) on the same duration so
-  // siblings settle into place at the same instant the row finishes closing.
-  // Two mover-properties ending at different times is what reads as a hitch at
-  // the tail of the animation.
-  layout: {
-    type: 'tween',
-    // easeOutCubic: quick start, gentle settle. Reads smoother than a
-    // critically-damped spring (which has a slow asymptotic tail) for
-    // the row reflow on archive/restore.
-    duration: 0.17,
-    ease: rowEase,
-  },
-  height: {
+  // CSS Grid track animation: the grid container animates
+  // grid-template-rows between 0fr and 1fr. The inner child stays at its
+  // natural height and never reflows — only the grid track clips. This
+  // eliminates the "text cut in half" artifact that height: 0 → auto
+  // produces because the browser reflows content at every intermediate
+  // height. With grid, the content is laid out once at full height and the
+  // track simply reveals/hides it.
+  gridTemplateRows: {
     type: 'tween',
     duration: 0.17,
     ease: rowEase,
@@ -45,20 +40,23 @@ export function SessionSidebarMotionRow({ children }: SessionSidebarMotionRowPro
 
   return (
     <motion.div
-      layout="position"
-      initial={{ height: 0, opacity: 0 }}
-      animate={{ height: 'auto', opacity: 1 }}
-      exit={{ height: 0, opacity: 0 }}
+      initial={{ gridTemplateRows: '0fr', opacity: 0 }}
+      animate={{ gridTemplateRows: '1fr', opacity: 1 }}
+      exit={{ gridTemplateRows: '0fr', opacity: 0 }}
       transition={rowTransition}
       style={{
+        display: 'grid',
         overflow: 'hidden',
         // Keep leading session indicators inside this wrapper's clipping box
-        // while still clipping vertically during the height-collapse animation.
+        // while still clipping vertically during the grid-track-collapse
+        // animation.
         marginLeft: -SESSION_LEADING_INDICATOR_CLIP_GUTTER_PX,
         paddingLeft: SESSION_LEADING_INDICATOR_CLIP_GUTTER_PX,
       }}
     >
-      {children}
+      {/* minHeight: 0 allows the grid item to shrink below its content
+          height in the 0fr track so the collapse actually hides content. */}
+      <div style={{ minHeight: 0 }}>{children}</div>
     </motion.div>
   );
 }

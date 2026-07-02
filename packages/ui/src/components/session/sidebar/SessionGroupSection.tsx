@@ -6,7 +6,6 @@ import {
   RiArchiveLine,
   RiArrowDownSLine,
   RiArrowLeftLongLine,
-  RiArrowRightSLine,
   RiDeleteBinLine,
   RiGitBranchLine,
 } from '@remixicon/react';
@@ -569,7 +568,7 @@ export function SessionGroupSection(props: Props): React.ReactNode {
                             'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
                             alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex',
                           )}>
-                            {isCollapsed ? <RiArrowRightSLine className="h-3.5 w-3.5" /> : <RiArrowDownSLine className="h-3.5 w-3.5" />}
+                            <RiArrowDownSLine className={cn('h-3.5 w-3.5 transition-transform duration-150 ease-[cubic-bezier(0.33,1,0.68,1)]', isCollapsed ? '-rotate-90' : 'rotate-0')} />
                           </span>
                         </span>
                         {prIndicator.url ? (
@@ -623,7 +622,7 @@ export function SessionGroupSection(props: Props): React.ReactNode {
                       'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
                       alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex',
                     )}>
-                      {isCollapsed ? <RiArrowRightSLine className="h-3.5 w-3.5" /> : <RiArrowDownSLine className="h-3.5 w-3.5" />}
+                      <RiArrowDownSLine className={cn('h-3.5 w-3.5 transition-transform duration-150 ease-[cubic-bezier(0.33,1,0.68,1)]', isCollapsed ? '-rotate-90' : 'rotate-0')} />
                     </span>
                   </span>
                   <span className="min-w-0 flex-1 truncate">{renderHighlightedText(group.label, normalizedSessionSearchQuery)}</span>
@@ -639,7 +638,7 @@ export function SessionGroupSection(props: Props): React.ReactNode {
                       'text-muted-foreground h-3.5 w-3.5 items-center justify-center',
                       alwaysShowActions ? 'inline-flex' : 'hidden group-hover/gh:inline-flex',
                     )}>
-                      {isCollapsed ? <RiArrowRightSLine className="h-3.5 w-3.5" /> : <RiArrowDownSLine className="h-3.5 w-3.5" />}
+                      <RiArrowDownSLine className={cn('h-3.5 w-3.5 transition-transform duration-150 ease-[cubic-bezier(0.33,1,0.68,1)]', isCollapsed ? '-rotate-90' : 'rotate-0')} />
                     </span>
                   </span>
                   <span className="min-w-0 flex-1 truncate">{renderHighlightedText(group.label, normalizedSessionSearchQuery)}</span>

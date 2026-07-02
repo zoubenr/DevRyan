@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { createGlobalUiEventBroadcaster, createMessageStreamWsRuntime } from './runtime.js';
+import { createGlobalMessageStreamHub } from './global-hub.js';
+import {
+  createGlobalMessageStreamSseHandler,
+  createGlobalUiEventBroadcaster,
+  createMessageStreamWsRuntime,
+} from './runtime.js';
 
 class FakeSocket extends EventEmitter {
   constructor() {
@@ -75,6 +80,70 @@ async function waitForCondition(predicate, timeoutMs = 250, intervalMs = 5) {
   return predicate();
 }
 
+function createMockSseRequest({ headers = {}, query = {} } = {}) {
+  const listeners = new Map();
+  return {
+    headers,
+    query,
+    on(event, handler) {
+      listeners.set(event, handler);
+      return this;
+    },
+    off(event, handler) {
+      if (listeners.get(event) === handler) {
+        listeners.delete(event);
+      }
+      return this;
+    },
+    emit(event) {
+      const handler = listeners.get(event);
+      if (typeof handler === 'function') {
+        handler();
+      }
+    },
+  };
+}
+
+function createMockSseResponse() {
+  const headers = new Map();
+  return {
+    writableEnded: false,
+    destroyed: false,
+    chunks: [],
+    socket: {
+      noDelay: false,
+      setNoDelay(value) {
+        this.noDelay = value;
+      },
+    },
+    statusCode: 200,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    setHeader(name, value) {
+      headers.set(name.toLowerCase(), value);
+    },
+    getHeader(name) {
+      return headers.get(name.toLowerCase());
+    },
+    flushHeaders() {
+      this.flushed = true;
+    },
+    write(chunk) {
+      this.chunks.push(String(chunk));
+      return true;
+    },
+    end(chunk = '') {
+      if (chunk) this.write(chunk);
+      this.writableEnded = true;
+    },
+    get body() {
+      return this.chunks.join('');
+    },
+  };
+}
+
 describe('event stream broadcaster', () => {
   it('fans out synthetic events to SSE and WS clients', () => {
     const sseEvents = [];
@@ -134,6 +203,111 @@ describe('event stream broadcaster', () => {
     broadcast({ type: 'openchamber:notification' });
 
     expect(wsClients.size).toBe(0);
+  });
+
+  it('publishes synthetic broadcasts into the global hub replay buffer', () => {
+    const received = [];
+    const hub = createGlobalMessageStreamHub({
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      upstreamReconnectDelayMs: 100,
+      fetchImpl: async () => createSseResponse(),
+    });
+    hub.subscribeEvent((event) => {
+      received.push(event);
+    });
+
+    const broadcast = createGlobalUiEventBroadcaster({
+      sseClients: new Set(),
+      wsClients: new Set(),
+      writeSseEvent() {
+        throw new Error('should not write direct SSE clients');
+      },
+      globalEventHub: hub,
+    });
+
+    broadcast(
+      {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'part_1',
+            sessionID: 'ses_1',
+            messageID: 'msg_1',
+            type: 'text',
+            text: 'hello',
+          },
+        },
+      },
+      { eventId: 'evt-synthetic', directory: '/tmp/project' },
+    );
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      eventId: 'evt-synthetic',
+      directory: '/tmp/project',
+      payload: {
+        type: 'message.part.updated',
+      },
+    });
+    expect(hub.replayAfter('missing-id')).toEqual({ events: received, gap: true });
+  });
+});
+
+describe('global message stream SSE handler', () => {
+  it('replays synthetic global hub events as SSE envelopes after Last-Event-ID', async () => {
+    const hub = createGlobalMessageStreamHub({
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      upstreamReconnectDelayMs: 100,
+      fetchImpl: async () => createSseResponse(),
+    });
+    const handler = createGlobalMessageStreamSseHandler({
+      globalHub: hub,
+      heartbeatIntervalMs: 60_000,
+    });
+
+    hub.publishSyntheticEvent({
+      eventId: 'evt-before',
+      directory: '/tmp/project',
+      payload: { type: 'session.updated', properties: { directory: '/tmp/project' } },
+    });
+    hub.publishSyntheticEvent({
+      eventId: 'evt-synthetic',
+      directory: '/tmp/project',
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'part_1',
+            sessionID: 'ses_1',
+            messageID: 'msg_1',
+            type: 'text',
+            text: 'streamed text',
+          },
+        },
+      },
+    });
+
+    const req = createMockSseRequest({ headers: { 'last-event-id': 'evt-before' } });
+    const res = createMockSseResponse();
+
+    handler(req, res);
+    await waitForCondition(() => res.body.includes('evt-synthetic'));
+
+    expect(res.getHeader('content-type')).toBe('text/event-stream');
+    expect(res.getHeader('cache-control')).toBe('no-cache');
+    expect(res.getHeader('connection')).toBe('keep-alive');
+    expect(res.getHeader('x-accel-buffering')).toBe('no');
+    expect(res.flushed).toBe(true);
+    expect(res.socket.noDelay).toBe(true);
+    expect(res.body).not.toContain('evt-before');
+    expect(res.body).toContain('id: evt-synthetic\n');
+    expect(res.body).toContain('"directory":"/tmp/project"');
+    expect(res.body).toContain('"payload":{"type":"message.part.updated"');
+
+    req.emit('close');
+    hub.stop();
   });
 });
 

@@ -17,7 +17,6 @@ import {
   RiArchiveLine,
   RiArrowDownSLine,
   RiArrowGoBackLine,
-  RiArrowRightSLine,
   RiCheckLine,
   RiCloseLine,
   RiDeleteBinLine,
@@ -661,7 +660,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         ? t('sessions.sidebar.session.subsessions.collapse')
         : t('sessions.sidebar.session.subsessions.expand')}
     >
-      {isExpanded ? <RiArrowDownSLine className="h-3 w-3" /> : <RiArrowRightSLine className="h-3 w-3" />}
+      <RiArrowDownSLine className={cn('h-3 w-3 transition-transform duration-150 ease-[cubic-bezier(0.33,1,0.68,1)]', isExpanded ? 'rotate-0' : '-rotate-90')} />
     </button>
   ) : null;
 

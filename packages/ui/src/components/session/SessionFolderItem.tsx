@@ -3,7 +3,6 @@ import { AnimatePresence } from 'motion/react';
 import {
   RiFolderLine,
   RiFolderOpenLine,
-  RiArrowRightSLine,
   RiArrowDownSLine,
   RiPencilAiLine,
   RiDeleteBinLine,
@@ -245,11 +244,7 @@ const SessionFolderItemBase = <TSessionNode,>({
               <span className="typography-micro text-muted-foreground/70 flex-shrink-0">
                 • {sessions.length}
               </span>
-              {isCollapsed ? (
-                <RiArrowRightSLine className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-              ) : (
-                <RiArrowDownSLine className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-              )}
+              <RiArrowDownSLine className={cn('h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-transform duration-150 ease-[cubic-bezier(0.33,1,0.68,1)]', isCollapsed ? '-rotate-90' : 'rotate-0')} />
             </div>
           )}
 
